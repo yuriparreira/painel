@@ -3,6 +3,12 @@
 import { I } from './icons.js';
 import * as D from './data.js';
 
+// Dados reais: o arquivo carregado em Importar fica só neste navegador.
+const REALK = 'painel-real-v1';
+let realErr = null;
+try { const t = localStorage.getItem(REALK); if (t) D.useReal(JSON.parse(t)); } catch (e) { realErr = e; }
+const cardName = (m) => (m === 'Cartão Alfa' ? D.CARDS[0].n : m);
+
 const app = document.getElementById('app');
 const main = document.getElementById('main');
 const sheetRoot = document.getElementById('sheet-root');
@@ -160,7 +166,7 @@ const cardNext = () => cardOf('proxima');
 // Conta paga mostra o valor que foi pago (o mesmo que saiu do saldo), em qualquer tela.
 const bills = () => D.bills(S.paid, cardExtra(), diaNow()).map((b) => (b.pago && S.paidAmt[b.id] != null ? { ...b, v: S.paidAmt[b.id] } : b));
 function money() {
-  const now = diaNow(), payday = D.addDays(now, D.SAFE.paydayOff), B = bills();
+  const now = diaNow(), payday = D.payday(now), B = bills();
   const pagas = B.filter((b) => S.paid[b.id]).reduce((a, b) => a + (S.paidAmt[b.id] ?? b.v), 0); // sai do saldo o valor pago, não o atual
   const avista = S.expenses.filter((x) => x.met !== 'Cartão Alfa').reduce((a, x) => a + x.v, 0);
   const saldo = D.SAFE.saldo - pagas - avista;
@@ -170,7 +176,8 @@ function money() {
   const proxima = D.CARDS[0].faturas.proxima.v + cardNext();
   return { saldo, contas, due, fb, fatura: fb.v, faturaAntes, proxima, payday, dias: D.diffDays(payday, now), livre: saldo - contas - faturaAntes };
 }
-const livreLabel = (m) => `Livre para gastar até ${dShort(m.payday)}`;
+const livreLabel = (m) => (m.livre < 0 ? `Falta para as contas até ${dShort(m.payday)}` : `Livre para gastar até ${dShort(m.payday)}`);
+const livreBig = (m) => `<span class="big${m.livre < 0 ? ' neg' : ''}" style="margin-top:2px">${brl0(Math.abs(m.livre))}</span>`;
 function missionBill() { return bills().find((b) => !b.pago && !b.auto && D.diffDays(b.due, diaNow()) <= 1); }
 // A Missão do dia é escolhida uma vez e fica fixa: pagar a conta não troca o texto pela próxima.
 function missao() { if (!S.missaoRef) { const mb = missionBill(); S.missaoRef = mb ? mb.id : 't1'; save(); } return S.missaoRef; }
@@ -355,7 +362,7 @@ function Hoje() {
   const up = bills().filter((b) => !b.pago && b.met !== 'Cartão' && D.diffDays(b.due, diaNow()) <= 7).slice(0, 3);
   const moneyCard = `<div class="card">
       <a class="cardhead" href="#/dinheiro"><span class="row-flex"><span class="muted small">${livreLabel(M)} (em ${M.dias} dias)</span>${I('chevR', 20, 'class="ic right muted"')}</span>
-      <span class="big" style="margin-top:2px">${brl0(M.livre)}</span></a>
+      ${livreBig(M)}</a>
       <div class="kpis"><div class="kpi"><span>Em conta</span><b>${brlK(M.saldo)}</b></div>${fatKpi(M)}<div class="kpi"><span>Reserva</span><b>${n1(D.SAVINGS.reservaMeses)} meses</b></div></div>
     </div>
     <div class="card tight">${up.map((b) => `<button class="row" data-act="bill" data-arg="${b.id}"><span class="badge-ic">${I('receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('')}</div>`;
@@ -562,6 +569,42 @@ function Exames() {
   };
 }
 
+// ---------- Dados reais ----------
+const realDate = () => new Date(D.REAL.geradoEm + 'T12:00');
+let realOk = null;
+const justLoaded = () => { if (realOk === null) { try { realOk = !!sessionStorage.getItem('painel-real-ok'); sessionStorage.removeItem('painel-real-ok'); } catch { realOk = false; } } return realOk; };
+const realLine = () => (D.REAL ? `<p class="small muted" style="margin:0 20px 6px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} Seus dados de ${dShort(realDate())}, só neste aparelho. <a href="#/dinheiro/importar">Atualizar</a></p>` : '');
+function plMes(pl) {
+  if (!D.REAL) return '+1,2% no mês';
+  const ser = D.netWorthSeries(); if (!ser.length) return '';
+  const base = ser[ser.length - 1], dv = pl - base.v;
+  return `${dv >= 0 ? '+' : '−'}${brlK(Math.abs(dv))} desde ${mon(base.d)}`;
+}
+function loadRealFile(f) {
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const R = JSON.parse(String(r.result));
+      D.useReal(R); // valida antes de gravar
+      localStorage.setItem(REALK, JSON.stringify(R));
+      try { sessionStorage.setItem('painel-real-ok', '1'); } catch { /* sem aviso */ }
+      // Os marcadores da demonstração (contas pagas, gastos à mão) não valem para os dados reais.
+      S.paid = {}; S.paidAmt = {}; S.expenses = []; S.card = 0; S.fat = 'aberta'; save();
+      location.reload();
+    } catch (e) {
+      toast(`Não consegui ler ${esc(f.name)}. Use o painel-dados.json gerado no seu computador.`, 'warn', 6000);
+    }
+  };
+  r.onerror = () => toast('Não consegui abrir o arquivo.', 'warn', 5000);
+  r.readAsText(f);
+}
+function pendentesSheet() {
+  const P = (D.REAL && D.REAL.pendentes) || [];
+  openSheet('Para completar o painel', `<p class="small muted" style="margin:0 0 10px">Na ordem do que mais muda os números.</p>
+    <div class="card tight" style="margin:0">${P.map((x, i) => `<div class="row" style="align-items:flex-start"><span class="badge-ic">${i + 1}</span><div class="grow"><div class="ttl" style="white-space:normal">${esc(x.n)}</div><div class="meta" style="white-space:normal">${esc(x.por)}</div><div class="meta" style="white-space:normal"><b>Como:</b> ${esc(x.como)}</div></div></div>`).join('')}</div>
+    ${(D.REAL.aClassificar || []).length ? `<h3 style="margin:16px 0 6px">Pix de terceiros para classificar</h3><div class="card tight" style="margin:0">${D.REAL.aClassificar.slice(0, 8).map((x) => `<div class="row"><div class="grow"><div class="ttl ellip">${esc(x.nome)}</div><div class="meta">${x.n} lançamento${x.n > 1 ? 's' : ''}</div></div><div class="amt num small">${x.entradas ? `+${brl0(x.entradas)}` : ''}${x.entradas && x.saidas ? '<br>' : ''}${x.saidas ? `−${brl0(x.saidas)}` : ''}</div></div>`).join('')}</div>` : ''}`);
+}
+
 function cats() {
   const add = {}; S.expenses.forEach((x) => { add[x.cat] = (add[x.cat] || 0) + x.v; });
   return D.CATS.map((c) => ({ ...c, v: c.v + (add[c.n] || 0) }));
@@ -573,30 +616,31 @@ function Dinheiro() {
   const pl = plTotal();
   return {
     title: 'Dinheiro',
-    html: `${hdr('Dinheiro', `${cap(monLong(diaNow()))} · pessoa física`, `<a class="iconbtn" href="#/dinheiro/importar" aria-label="Importar extratos">${I('upload')}</a>`)}${netbar()}
+    html: `${hdr('Dinheiro', `${cap(monLong(diaNow()))} · pessoa física`, `<a class="iconbtn" href="#/dinheiro/importar" aria-label="Importar extratos">${I('upload')}</a>`)}${netbar()}${realLine()}
       <div class="card">
-        <button class="cardhead" data-act="safe"><span class="row-flex"><span class="muted small">${livreLabel(M)}, dia do pagamento</span>${I('info', 18, 'class="ic right muted"')}</span>
-        <span class="big" style="margin-top:2px">${brl0(M.livre)}</span><span class="sr">Ver a conta.</span></button>
-        <div class="kpis"><div class="kpi"><span>Em conta</span><b>${brlK(M.saldo)}</b></div>${fatKpi(M, `fecha ${rel(D.addDays(diaNow(), D.CARDS[0].fecha))}`)}<div class="kpi"><span>Patrimônio</span><b>${brlK(pl)}</b><small>+1,2% no mês</small></div></div>
+        <button class="cardhead" data-act="safe"><span class="row-flex"><span class="muted small">${livreLabel(M)}${D.REAL ? '' : ', dia do pagamento'}</span>${I('info', 18, 'class="ic right muted"')}</span>
+        ${livreBig(M)}<span class="sr">Ver a conta.</span></button>
+        <div class="kpis"><div class="kpi"><span>Em conta</span><b>${brlK(M.saldo)}</b></div>${fatKpi(M, D.REAL ? 'média de 3 meses' : `fecha ${rel(D.addDays(diaNow(), D.CARDS[0].fecha))}`)}<div class="kpi"><span>Patrimônio</span><b>${brlK(pl)}</b><small>${plMes(pl)}</small></div></div>
       </div>
       ${sec('Próximos 7 dias', '<a href="#/dinheiro/contas">Calendário</a>')}
       <div class="card tight">${up.length ? up.map((b) => `<button class="row" data-act="bill" data-arg="${b.id}"><span class="badge-ic">${I('receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${b.met}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><p>Nada vence nos próximos 7 dias.</p></div>`}</div>
       ${sec('Reserva de emergência')}
-      <div class="card"><div class="row-flex">${I('shieldHalf', 22, 'class="ic" style="color:var(--a-pat)"')}<div class="grow"><b class="num">${n1(D.SAVINGS.reservaMeses)} de ${D.SAVINGS.reservaMeta} meses</b><div class="small muted">de gastos essenciais (${brl0(D.SAVINGS.essenciais)}/mês: moradia, mercado, transporte e saúde)</div></div></div><div style="margin-top:10px">${bar((D.SAVINGS.reservaMeses / D.SAVINGS.reservaMeta) * 100, 'var(--a-pat)', 'lg')}</div>
+      <div class="card"><div class="row-flex">${I('shieldHalf', 22, 'class="ic" style="color:var(--a-pat)"')}<div class="grow"><b class="num">${n1(D.SAVINGS.reservaMeses)} de ${D.SAVINGS.reservaMeta} meses</b><div class="small muted">de gastos essenciais (${brl0(D.SAVINGS.essenciais)}/mês ${D.SAVINGS.essLabel || ': moradia, mercado, transporte e saúde'})</div></div></div><div style="margin-top:10px">${bar((D.SAVINGS.reservaMeses / D.SAVINGS.reservaMeta) * 100, 'var(--a-pat)', 'lg')}</div>
         <p class="small muted" style="margin-top:8px">Escudo da Reserva: cada aporte reforça o escudo e sobe o atributo Patrimônio. Faltam ${brl0((D.SAVINGS.reservaMeta - D.SAVINGS.reservaMeses) * D.SAVINGS.essenciais)} para ${D.SAVINGS.reservaMeta} meses.</p></div>
-      ${sec('Gastos · últimos 30 dias', `<span class="small muted num">poupança ${D.SAVINGS.taxa}% · meta ${D.SAVINGS.meta}%</span>`)}
+      ${sec(D.CATS_TITLE, D.SAVINGS.taxa == null ? '' : `<span class="small muted num">poupança ${D.SAVINGS.taxa}% · meta ${D.SAVINGS.meta}%</span>`)}
       <div class="card">${C.map((c) => `<div style="margin:10px 0"><div class="row-flex small"><span class="grow">${c.n}</span><b class="num">${brl0(c.v)}</b><span class="muted num" style="width:72px;text-align:right">${c.v > c.avg * 1.1 ? `${I('up', 14, 'style="display:inline;vertical-align:-2px"')} ${Math.round((c.v / c.avg - 1) * 100)}%` : 'na média'}</span></div>${bar((c.v / top) * 100, c.v > c.avg * 1.1 ? 'var(--xp-fill)' : 'var(--primary)')}</div>`).join('')}
-        <p class="small muted">Total ${brl0(tot)}. Comparação com a média de 30 dias dos últimos 6 meses.${S.expenses.length ? ` Inclui ${S.expenses.length} gasto${S.expenses.length > 1 ? 's' : ''} registrado${S.expenses.length > 1 ? 's' : ''} à mão.` : ''}</p></div>
+        <p class="small muted">Total ${brl0(tot)}. ${D.REAL ? 'Comparação com a média dos 6 meses anteriores. A fatura aparece numa linha só até as faturas do cartão chegarem.' : 'Comparação com a média de 30 dias dos últimos 6 meses.'}${S.expenses.length ? ` Inclui ${S.expenses.length} gasto${S.expenses.length > 1 ? 's' : ''} registrado${S.expenses.length > 1 ? 's' : ''} à mão.` : ''}</p></div>
       ${S.expenses.length ? `${sec('Registrados à mão', '<span class="small muted">ligados ao extrato quando ele chegar</span>')}<div class="card tight">${S.expenses.slice().reverse().map(expRow).join('')}</div>` : ''}
+      ${D.REAL && (D.REAL.pendentes || []).length ? `${sec('Para completar o painel')}<button class="card cardlink" data-act="pendentes"><span class="badge-ic">${I('target')}</span><div class="grow"><b>Faltam ${D.REAL.pendentes.length} itens</b><div class="small muted">${esc(D.REAL.pendentes.slice(0, 2).map((x) => x.n).join(', '))} e outros</div></div>${I('chevR', 24, 'class="ic chev"')}</button>` : ''}
       ${sec('Mais')}
       <a class="card cardlink" href="#/dinheiro/cartoes"><span class="badge-ic">${I('card')}</span><div class="grow"><b>Cartões e faturas</b><div class="small muted">Fatura aberta, parcelas e melhor dia de compra</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
       <a class="card cardlink" href="#/dinheiro/patrimonio"><span class="badge-ic">${I('pie')}</span><div class="grow"><b>Patrimônio</b><div class="small muted">Balanço, evolução e alocação</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
-      <a class="card cardlink" href="#/dinheiro/importar"><span class="badge-ic">${I('upload')}</span><div class="grow"><b>Importar extratos</b><div class="small muted">Última importação ${S.importAt ? rel(dayAt(S.importAt)) : 'há 9 dias'}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`,
+      <a class="card cardlink" href="#/dinheiro/importar"><span class="badge-ic">${I('upload')}</span><div class="grow"><b>Importar extratos</b><div class="small muted">${D.REAL ? `Seus dados de ${dShort(new Date(D.REAL.geradoEm + 'T12:00'))}` : `Última importação ${S.importAt ? rel(dayAt(S.importAt)) : 'há 9 dias'}`}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`,
   };
 }
 // Depois de paga, a fatura do mês sai de cena: o card mostra a próxima, que recebe os gastos novos no cartão.
 const fatKpi = (M, sub = '') => (M.fb.pago ? `<div class="kpi"><span>Próxima fatura</span><b>${brlK(M.proxima)}</b><small>a aberta já foi paga</small></div>` : `<div class="kpi"><span>Fatura aberta</span><b>${brlK(M.fatura)}</b>${sub ? `<small>${sub}</small>` : ''}</div>`);
-const expRow = (x) => `<div class="row"><span class="badge-ic">${I(x.met === 'Cartão Alfa' ? 'card' : 'wallet', 20)}</span><div class="grow"><div class="ttl">${esc(x.cat)}</div><div class="meta">${dShort(dayAt(x.d))} · ${esc(x.met)}${x.met === 'Cartão Alfa' ? (x.fat === 'proxima' ? ', próxima fatura' : ', fatura aberta') : ''}</div></div><div class="amt num">${brl(x.v)}</div><button class="iconbtn" data-act="delExpense" data-arg="${esc(x.id)}" aria-label="Apagar gasto de ${brl(x.v)} em ${esc(x.cat.toLowerCase())}">${I('x')}</button></div>`;
+const expRow = (x) => `<div class="row"><span class="badge-ic">${I(x.met === 'Cartão Alfa' ? 'card' : 'wallet', 20)}</span><div class="grow"><div class="ttl">${esc(x.cat)}</div><div class="meta">${dShort(dayAt(x.d))} · ${esc(cardName(x.met))}${x.met === 'Cartão Alfa' ? (x.fat === 'proxima' ? ', próxima fatura' : ', fatura aberta') : ''}</div></div><div class="amt num">${brl(x.v)}</div><button class="iconbtn" data-act="delExpense" data-arg="${esc(x.id)}" aria-label="Apagar gasto de ${brl(x.v)} em ${esc(x.cat.toLowerCase())}">${I('x')}</button></div>`;
 function plTotal() { const a = D.BALANCE.ativo.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0); const p = D.BALANCE.passivo.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0); return a - p; }
 
 function Contas() {
@@ -627,12 +671,36 @@ function Contas() {
         <div class="legend" style="margin-top:8px"><span><i class="dot-pago" style="width:8px;height:8px;border-radius:50%"></i>paga</span><span><i class="dot-agendado" style="width:8px;height:8px;border-radius:50%"></i>agendada</span><span><i class="dot-avencer" style="width:8px;height:8px;border-radius:50%"></i>a vencer</span><span><i class="dot-atrasado" style="width:8px;height:8px;border-radius:50%"></i>atrasada</span></div></div>
       <div class="hscroll" role="group" aria-label="Filtrar contas">${F.map(([k, l]) => `<button class="pick" aria-pressed="${S.billFilter === k}" data-act="billf" data-arg="${k}">${l}</button>`).join('')}</div>
       ${S.calSel ? `<div class="sec"><h2>${dShort(new Date(S.calSel + 'T12:00'))}</h2><button class="link" data-act="calsel" data-arg="${S.calSel}">Ver o mês todo</button></div>` : ''}
-      <div class="card tight">${list.length ? list.map((b) => `<button class="row" data-act="bill" data-arg="${b.id}"><span class="badge-ic">${I(b.cat === 'Cartão' ? 'card' : b.cat === 'Transporte' ? 'car' : b.cat === 'Investimento' ? 'trend' : 'receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${b.met === 'Cartão' ? 'no Cartão Alfa, entra na fatura' : b.met}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><span class="badge-ic">${I('receipt')}</span><p>Nenhuma conta com esse filtro.</p></div>`}</div>
+      <div class="card tight">${list.length ? list.map((b) => `<button class="row" data-act="bill" data-arg="${b.id}"><span class="badge-ic">${I(b.cat === 'Cartão' ? 'card' : b.cat === 'Transporte' ? 'car' : b.cat === 'Investimento' ? 'trend' : 'receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${b.met === 'Cartão' ? `no ${D.CARDS[0].n}, entra na fatura` : b.met}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><span class="badge-ic">${I('receipt')}</span><p>Nenhuma conta com esse filtro.</p></div>`}</div>
       <p class="small muted" style="margin:14px 20px">Lembretes 3 dias antes e no dia, dentro do resumo das 07:00. Pagar no prazo dá +15 XP e sobe o Foco. Fontes: contas recorrentes detectadas no extrato, DDA do banco e as que você cadastrar.</p>`,
   };
 }
 
+function CartoesReal() {
+  const i = Math.min(S.card, D.CARDS.length - 1), k = D.CARDS[i].real, now = diaNow();
+  const usado = k.usado || 0, pc = k.limite ? (usado / k.limite) * 100 : 0;
+  let vdate = null;
+  if (k.vence) { vdate = new Date(now.getFullYear(), now.getMonth(), k.vence); if (vdate < D.startOfDay(now)) vdate = new Date(now.getFullYear(), now.getMonth() + 1, k.vence); }
+  const P = k.pagamentos || [], tot = P.reduce((a, p) => a + p.v, 0), med = P.length ? P.slice(-3).reduce((a, p) => a + p.v, 0) / Math.min(3, P.length) : 0;
+  const pd = (p) => new Date(p.d + 'T12:00');
+  const refU = (k.refUsado || '').replace(/^(\d{4})-(\d{2}).*/, (_, y, m) => `${m}/${y.slice(2)}`);
+  const N = D.REAL.notas || {};
+  return {
+    title: 'Cartões e faturas',
+    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Cartões e faturas', esc(N.cartoes || 'Limite e pagamentos pelos seus arquivos'))}${realLine()}
+      <div class="seg" role="group" aria-label="Escolher cartão" style="margin:4px 16px 0">${D.CARDS.map((x, j) => `<button aria-pressed="${i === j}" data-act="card" data-arg="${j}">${esc(x.n.replace('Cartão ', ''))}</button>`).join('')}</div>
+      <div class="card"><div class="row-flex"><span class="small muted grow">Limite usado${refU ? ` em ${refU}` : ''}</span><b class="num">${brl0(usado)} de ${brl0(k.limite)}</b></div><div style="margin-top:8px">${bar(pc, pc > 50 ? 'var(--xp-fill)' : 'var(--primary)', 'lg')}</div>
+        <p class="small muted" style="margin-top:8px">Disponível ${brl0(k.limite - usado)}.${vdate ? ` Vence todo dia ${k.vence}; a próxima em ${dShort(vdate)} (${rel(vdate)}).` : ''}</p></div>
+      ${P.length ? `${sec('Faturas pagas')}<div class="card"><div class="small muted">Última, paga em ${dShort(pd(P[P.length - 1]))}</div><div class="big">${brl(P[P.length - 1].v)}</div>
+        <div class="kpis"><div class="kpi"><span>Média 3 meses</span><b>${brlK(med)}</b></div><div class="kpi"><span>No período</span><b>${brlK(tot)}</b></div><div class="kpi"><span>Maior</span><b>${brlK(Math.max(...P.map((p) => p.v)))}</b></div></div>
+        <div style="margin-top:12px">${barChart(P.slice(-10).map((p) => ({ v: p.v, l: mon(pd(p)), c: 'var(--a-pat)' })), { label: `Faturas pagas por mês, de ${brl0(P[Math.max(0, P.length - 10)].v)} a ${brl0(P[P.length - 1].v)}`, values: (v) => (v ? (v / 1000).toFixed(1).replace('.', ',') + 'k' : '') })}</div></div>` : ''}
+      ${sec('Lançamentos')}
+      <div class="card"><div class="empty"><span class="badge-ic">${I('file', 28)}</span><b>${usado || P.length ? 'Faltam as faturas' : 'Sem uso'}</b><p>${usado || P.length ? `${esc(k.faturas || '')}. Com elas o Painel separa mercado, restaurante, assinaturas e parcelas.` : `Nenhuma compra neste cartão. Limite livre de ${brl0(k.limite)}.`}</p>${usado || P.length ? '<a class="btn" href="#/dinheiro/importar">Como enviar</a>' : ''}</div></div>`,
+  };
+}
+
 function Cartoes() {
+  if (D.REAL) return CartoesReal();
   const c = D.CARDS[S.card], now = diaNow();
   const fecha = D.addDays(now, c.fecha), vence = D.addDays(now, c.vence);
   const extra = S.card === 0 ? cardExtra() : 0, aberta = { v: c.faturas.aberta.v + extra, st: S.card === 0 && S.paid.fatura ? 'Paga' : null };
@@ -678,22 +746,25 @@ function nextTx(c) {
 function Patrimonio() {
   const A = D.BALANCE.ativo, P = D.BALANCE.passivo;
   const ta = A.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0), tp = P.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0), pl = ta - tp;
-  const ser = D.netWorthSeries(); const shift = pl - ser[ser.length - 1].v; ser.forEach((x) => (x.v += shift));
+  const ser = D.netWorthSeries();
+  if (D.REAL) ser.push({ d: realDate(), v: pl }); else { const shift = pl - ser[ser.length - 1].v; ser.forEach((x) => (x.v += shift)); }
+  const L = ser.length - 1, sg = (v) => `${v >= 0 ? '+' : '−'}${brl0(Math.abs(v))}`, N = (D.REAL && D.REAL.notas) || {};
   const colors = ['var(--a-foc)', 'var(--a-pat)', 'var(--a-vig)'];
   const gsum = A.map((g) => g.itens.reduce((s, i) => s + i[1], 0));
   const table = (side, label, tot) => `<table class="bp"><caption class="sr">${label}</caption>${side.map((g) => `<tr><th colspan="2">${g.g}</th></tr>${g.itens.map(([n, v]) => `<tr><td>${n}</td><td>${brl0(v)}</td></tr>`).join('')}`).join('')}<tr class="tot"><td>Total ${label.toLowerCase()}</td><td>${brl0(tot)}</td></tr></table>`;
   return {
     title: 'Patrimônio',
-    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Patrimônio', 'Atualizado no dia 1º de cada mês')}
-      <div class="card"><div class="small muted">Patrimônio líquido</div><div class="big">${brl0(pl)}</div><div class="small muted">+${brl0(ser[11].v - ser[10].v)} no mês · +${brl0(ser[11].v - ser[0].v)} em 12 meses</div>
-        ${lineChart(ser.map((x) => x.v), { area: true, label: `Patrimônio líquido nos últimos 12 meses, de ${brl0(ser[0].v)} para ${brl0(pl)}`, fmt: (v) => Math.round(v / 1000) + 'k', labels: [[0, mon(ser[0].d)], [6, mon(ser[6].d)], [11, mon(ser[11].d)]] })}</div>
+    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Patrimônio', D.REAL ? `Foto de ${dShort(realDate())}, com os seus arquivos` : 'Atualizado no dia 1º de cada mês')}${realLine()}
+      <div class="card"><div class="small muted">Patrimônio líquido</div><div class="big">${brl0(pl)}</div><div class="small muted">${D.REAL ? `${sg(ser[L].v - ser[L - 1].v)} desde o fim de ${mon(ser[L - 1].d)} · ${sg(ser[L].v - ser[0].v)} desde o fim de ${mon(ser[0].d)}` : `+${brl0(ser[11].v - ser[10].v)} no mês · +${brl0(ser[11].v - ser[0].v)} em 12 meses`}</div>
+        ${lineChart(ser.map((x) => x.v), { area: true, label: `Patrimônio líquido ${D.REAL ? `desde o fim de ${mon(ser[0].d)}` : 'nos últimos 12 meses'}, de ${brl0(ser[0].v)} para ${brl0(pl)}`, fmt: (v) => Math.round(v / 1000) + 'k', labels: [[0, mon(ser[0].d)], [Math.round(L / 2), mon(ser[Math.round(L / 2)].d)], [L, D.REAL ? 'hoje' : mon(ser[L].d)]] })}
+        ${N.serie ? `<p class="xs muted" style="margin-top:8px">${esc(N.serie)}</p>` : ''}</div>
       <div class="seg" role="group" aria-label="Formato" style="margin:6px 16px 0"><button aria-pressed="${S.bp === 'resumo'}" data-act="bp" data-arg="resumo">Resumo</button><button aria-pressed="${S.bp === 'balanco'}" data-act="bp" data-arg="balanco">Balanço patrimonial</button></div>
       ${S.bp === 'resumo' ? `<div class="card"><b>Onde está o ativo</b><div class="stack" aria-hidden="true">${gsum.map((v, i) => `<i style="--c:${colors[i]};width:${((v / ta) * 100).toFixed(1)}%"></i>`).join('')}</div>
           ${A.map((g, i) => `<div class="row-flex small" style="margin-top:10px"><span class="k" style="width:10px;height:10px;border-radius:3px;background:${colors[i]}"></span><span class="grow">${g.g}</span><b class="num">${brl0(gsum[i])}</b><span class="muted num" style="width:44px;text-align:right">${Math.round((gsum[i] / ta) * 100)}%</span></div>`).join('')}</div>
         <div class="grid2"><div class="card"><div class="small muted">Ativo</div><div class="mid">${brlK(ta)}</div></div><div class="card"><div class="small muted">Passivo</div><div class="mid">${brlK(tp)}</div></div></div>
-        ${lvl(S.xp).L >= 10 ? `<div class="card soft"><div class="row-flex">${I('trend', 20)}<b>Projeção de independência</b></div><p class="small" style="margin-top:4px">Com poupança de ${D.SAVINGS.taxa}% e retorno real de 4% a.a., o patrimônio cobre seus gastos em cerca de 21 anos.</p></div>` : `<div class="card soft"><div class="row-flex">${I('lock', 20)}<b>Projeção de independência</b><span class="chip right">nível 10</span></div><p class="small" style="margin-top:4px">Em quantos anos o patrimônio cobre seus gastos, com a sua taxa de poupança. Libera no nível 10.</p></div>`}`
+        ${lvl(S.xp).L >= 10 ? `<div class="card soft"><div class="row-flex">${I('trend', 20)}<b>Projeção de independência</b></div><p class="small" style="margin-top:4px">${D.SAVINGS.taxa == null ? 'Precisa da sua renda mensal para calcular a taxa de poupança.' : `Com poupança de ${D.SAVINGS.taxa}% e retorno real de 4% a.a., o patrimônio cobre seus gastos em cerca de 21 anos.`}</p></div>` : `<div class="card soft"><div class="row-flex">${I('lock', 20)}<b>Projeção de independência</b><span class="chip right">nível 10</span></div><p class="small" style="margin-top:4px">Em quantos anos o patrimônio cobre seus gastos, com a sua taxa de poupança. Libera no nível 10.</p></div>`}`
         : `<div class="card">${table(A, 'Ativo', ta)}</div><div class="card">${table(P, 'Passivo', tp)}<table class="bp"><tr class="tot"><td>Patrimônio líquido</td><td>${brl0(pl)}</td></tr></table></div>`}
-      <p class="small muted" style="margin:14px 20px">Veículo pela tabela FIPE, investimentos pela última posição importada, FGTS pelo extrato. Só pessoa física: as empresas ficam fora.</p>`,
+      ${D.REAL ? `<p class="small muted" style="margin:14px 20px">${esc(N.balanco || '')} Só pessoa física: as empresas ficam fora.</p>${(D.REAL.pendentes || []).length ? `<div style="margin:0 16px"><button class="btn line block" data-act="pendentes">Ver o que falta (${D.REAL.pendentes.length})</button></div>` : ''}` : `<p class="small muted" style="margin:14px 20px">Veículo pela tabela FIPE, investimentos pela última posição importada, FGTS pelo extrato. Só pessoa física: as empresas ficam fora.</p>`}`,
   };
 }
 
@@ -703,12 +774,18 @@ function Importar() {
   const line = `<h2 class="sr" id="imp-step" tabindex="-1">Etapa ${st + 1} de 4: ${steps[st]}</h2><div class="stepline" aria-hidden="true">${steps.map((s, i) => `<span class="${i <= st ? 'on' : ''}">${s}</span>`).join('')}</div>`;
   let body = '';
   if (st === 0) {
-    body = `<div class="card"><label class="drop"><input type="file" accept=".ofx,.csv,.xlsx,.pdf" data-in="file"><span class="badge-ic p" style="margin:0 auto 10px;width:56px;height:56px;border-radius:18px">${I('upload', 28)}</span><b>Escolher extrato ou fatura</b><p class="small muted" style="margin-top:4px">OFX é o melhor. Também aceita CSV, XLSX e PDF de fatura. O arquivo é lido no aparelho.</p></label>
+    const realCard = `${sec('Seus dados reais')}<div class="card"><div class="row-flex"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><b>${D.REAL ? 'Carregados neste aparelho' : 'Carregar o arquivo do Painel'}</b><div class="small muted">${D.REAL ? `Arquivo de ${dShort(realDate())}: ${(D.REAL.transacoes || []).length} lançamentos, ${(D.REAL.contas || []).length} contas e ${(D.REAL.cartoes || []).length} cartões.` : 'O painel-dados.json é gerado no seu computador a partir dos seus extratos. Ele é lido aqui e não sai deste aparelho.'}</div></div></div>
+      ${realErr ? '<p class="small" style="color:var(--danger);margin-top:8px">O arquivo salvo neste aparelho não abriu. Carregue de novo.</p>' : ''}
+      ${justLoaded() ? `<p class="small" style="margin-top:8px">${I('check', 16, 'style="display:inline;vertical-align:-3px;color:var(--primary)"')} Pronto. <a href="#/dinheiro">Ver em Dinheiro</a></p>` : ''}
+      <label class="btn ${D.REAL ? 'line ' : ''}block filebtn" style="margin-top:12px"><input type="file" accept=".json,application/json" data-in="realfile">${I('upload', 20)} ${D.REAL ? 'Trocar pelo arquivo novo' : 'Escolher painel-dados.json'}</label>
+      ${D.REAL ? '<button class="btn ghost block" style="margin-top:8px" data-act="realClear">Apagar deste aparelho e voltar ao exemplo</button>' : ''}</div>
+      ${sec('Extrato ou fatura avulsa')}`;
+    body = `${realCard}<div class="card"><label class="drop"><input type="file" accept=".ofx,.csv,.xlsx,.pdf" data-in="file"><span class="badge-ic p" style="margin:0 auto 10px;width:56px;height:56px;border-radius:18px">${I('upload', 28)}</span><b>Escolher extrato ou fatura</b><p class="small muted" style="margin-top:4px">OFX é o melhor. Também aceita CSV, XLSX e PDF de fatura. O arquivo é lido no aparelho.</p></label>
         <button class="btn ghost block" style="margin-top:12px" data-act="importNext">Usar arquivo de exemplo</button></div>
       ${sec('Onde baixar')}
       <div class="card tight">${[['Extrato do banco', 'Internet banking → Extrato → exportar OFX ou CSV'], ['Fatura do cartão', 'App do cartão → Faturas → PDF ou CSV'], ['Investimentos (B3)', 'Área do Investidor → Relatórios → Consolidado'], ['Faturas no e-mail', 'Fase 2: o Painel busca o PDF no Gmail e guarda no Drive']].map(([t, d]) => `<div class="row"><span class="badge-ic">${I('file', 20)}</span><div class="grow"><div class="ttl">${t}</div><div class="meta">${d}</div></div></div>`).join('')}</div>
       ${sec('Conexão automática')}
-      <div class="card"><div class="row-flex"><span class="badge-ic">${I('link')}</span><div class="grow"><b>Open Finance pelo Meu Pluggy</b><div class="small muted">Gratuito para uso pessoal, até 5 bancos, consentimento de 12 meses.</div></div><span class="chip">Fase 2</span></div></div>`;
+      <div class="card"><div class="row-flex"><span class="badge-ic">${I('link')}</span><div class="grow"><b>Open Finance pelo Meu Pluggy</b><div class="small muted">Gratuito para uso pessoal, até 5 bancos, consentimento de 12 meses. Atualiza uma vez por dia.</div></div><span class="chip">Em configuração</span></div></div>`;
   } else if (st === 1) {
     const rows = D.IMPORT_PREVIEW;
     const chip = (r) => `<span class="chip ${r.conf === 'duplicada' ? 'st-atrasado' : r.conf === 'sugerida' && !S.importCat ? 'st-avencer' : ''}" style="min-height:22px;font-size:12px">${r.conf === 'duplicada' ? 'duplicado, será ignorado' : r.conf === 'sugerida' ? `${S.importCat || r.c} · ${S.importCat ? 'escolhida por você' : 'sugerida, toque para mudar'}` : r.c}</span>`;
@@ -791,7 +868,7 @@ function Ajustes() {
   const integ = [
     ['health', 'Apple Health', 'Atalho grátis “PainelSync”: sono, passos, treinos, VFC e frequência de repouso. Roda ao abrir o celular.', 'Conectado · há 2 h', 'pago'],
     ['calendar', 'Google Agenda', 'Leitura pelo endereço privado da agenda (iCal). Só leitura na fase 1.', 'Conectado', 'pago'],
-    ['bank', 'Open Finance (Meu Pluggy)', 'Até 5 bancos, grátis para uso pessoal. Entra depois da importação de arquivos.', 'Fase 2', 'agendado'],
+    ['bank', 'Open Finance (Meu Pluggy)', 'Até 5 bancos, grátis para uso pessoal. Atualiza uma vez por dia e avisa o Painel quando muda.', 'Em configuração', 'agendado'],
     ['file', 'Google Drive', 'Pasta Painel/ com faturas, extratos e exames originais.', 'Conectado', 'pago'],
     ['note', 'Notion', 'Migração única do diário, treinos, medidas e exames atuais.', 'Fase 1', 'agendado'],
     ['pulse', 'Strava', 'Fora do plano: a API exige assinatura. Os treinos chegam pelo Apple Health.', 'Não usar', 'atrasado'],
@@ -815,7 +892,7 @@ function Ajustes() {
         <a class="row" href="#/estados"><span class="badge-ic">${I('eye', 20)}</span><div class="grow"><div class="ttl">Estados vazio, offline e carregando</div></div>${I('chevR', 20, 'class="ic muted"')}</a>
         <button class="row" data-act="restartOnb"><span class="badge-ic">${I('sparkle', 20)}</span><div class="grow"><div class="ttl">Ver as boas-vindas de novo</div></div>${I('chevR', 20, 'class="ic muted"')}</button>
         <button class="row" data-act="resetDemo"><span class="badge-ic">${I('refresh', 20)}</span><div class="grow"><div class="ttl">Zerar a demonstração</div><div class="meta">Volta XP, check-in e marcações ao início</div></div></button></div>
-      <p class="xs muted" style="margin:14px 20px">Wireframe com dados fictícios. Versão ${VERSION}.</p>`,
+      <p class="xs muted" style="margin:14px 20px">${D.REAL ? `Wireframe. Dinheiro usa os seus dados de ${dShort(realDate())}, guardados só neste aparelho; o resto é fictício.` : 'Wireframe com dados fictícios.'} Versão ${VERSION}.</p>`,
   };
 }
 
@@ -1026,11 +1103,11 @@ function demoControls() {
 
 function safeSheet() {
   const M = money();
-  openSheet('Livre para gastar', `<p class="small muted" style="margin:0 0 8px">Até o pagamento em ${dShort(M.payday)} (${rel(M.payday)}).</p>
+  openSheet(M.livre < 0 ? 'Falta para as contas' : 'Livre para gastar', `<p class="small muted" style="margin:0 0 8px">${D.REAL ? `Até o fim do mês, ${dShort(M.payday)} (${rel(M.payday)}). Com os dados reais a conta fecha no último dia do mês.` : `Até o pagamento em ${dShort(M.payday)} (${rel(M.payday)}).`}</p>
     <table class="bp"><tr><td>Saldo em conta</td><td>${brl(M.saldo)}</td></tr>
-    <tr><td>− Contas até ${dShort(M.payday)} (${M.due.length}, com o aporte da reserva)<div class="xs muted">${M.due.map((b) => esc(b.n.split(' · ')[0])).join(', ') || 'nenhuma'}</div></td><td>${brl(-M.contas)}</td></tr>
-    <tr><td>− Fatura do Cartão Alfa${M.faturaAntes ? `, vence ${dShort(M.fb.due)}` : M.fb.pago ? ', já paga' : `: vence ${dShort(M.fb.due)}, depois do pagamento`}</td><td>${brl(-M.faturaAntes)}</td></tr>
-    <tr class="tot"><td>Livre</td><td>${brl(M.livre)}</td></tr></table>
+    <tr><td>− Contas até ${dShort(M.payday)} (${M.due.length}${D.REAL ? '' : ', com o aporte da reserva'})<div class="xs muted">${M.due.map((b) => esc(b.n.split(' · ')[0])).join(', ') || 'nenhuma'}</div></td><td>${brl(-M.contas)}</td></tr>
+    <tr><td>− Fatura do ${D.CARDS[0].n}${M.faturaAntes ? `, vence ${dShort(M.fb.due)}` : M.fb.pago ? ', já paga' : `: vence ${dShort(M.fb.due)}, depois do pagamento`}</td><td>${brl(-M.faturaAntes)}</td></tr>
+    <tr class="tot"><td>${M.livre < 0 ? 'Falta' : 'Livre'}</td><td>${brl(M.livre)}</td></tr></table>
     <p class="small muted" style="margin-top:12px">Pagar uma conta não muda esse número: sai do saldo e da lista ao mesmo tempo. ${M.fb.pago ? 'A fatura aberta já foi paga: compras novas no cartão vão para a próxima, que vence depois do pagamento, e não mexem neste número.' : 'Gastar no cartão reduz, porque aumenta a fatura que vence antes do pagamento.'} Use “Registrar → Gasto” para ver.</p>`);
 }
 function energiaSheet() {
@@ -1051,18 +1128,18 @@ function billSheet(id) {
   const b = bills().find((x) => x.id === id); if (!b) return;
   openSheet(esc(b.n), `<div class="big">${brl(b.v)}</div><div class="row-flex" style="margin-top:6px">${stChip(b.st)}<span class="small muted">${relDue(b)}</span></div>
     <table class="bp" style="margin-top:12px"><tr><td>Forma de pagamento</td><td>${b.met}</td></tr><tr><td>Categoria</td><td>${b.cat}</td></tr><tr><td>Lembretes</td><td>3 dias antes e no dia</td></tr></table>
-    ${b.pago ? `<p class="small muted" style="margin-top:14px">${b.met === 'Cartão' ? 'Cobrada no Cartão Alfa: entra na fatura, que é a conta a pagar.' : 'Paga. O lançamento do extrato é ligado a esta conta automaticamente.'}</p>${S.paid[b.id] ? `<div class="btnrow"><button class="btn line" data-act="unpayBill" data-arg="${b.id}">${I('refresh', 20)} Desfazer pagamento</button></div>` : ''}` : `<div class="btnrow"><button class="btn" data-act="payBill" data-arg="${b.id}" data-autofocus>${I('check', 20)} Marcar como paga</button></div><p class="xs muted" style="margin-top:8px">${b.st === 'atrasado' ? 'Venceu, então não dá os +15 XP de conta em dia. Marcar agora tira a conta da lista e do resumo de amanhã.' : 'Paga até o vencimento: +15 XP e o atributo Foco sobe.'}${b.id === missao() && !S.quests.missao ? ' É a Missão de hoje: +20 XP.' : ''}</p>`}`);
+    ${b.pago ? `<p class="small muted" style="margin-top:14px">${b.met === 'Cartão' ? `Cobrada no ${D.CARDS[0].n}: entra na fatura, que é a conta a pagar.` : 'Paga. O lançamento do extrato é ligado a esta conta automaticamente.'}</p>${S.paid[b.id] ? `<div class="btnrow"><button class="btn line" data-act="unpayBill" data-arg="${b.id}">${I('refresh', 20)} Desfazer pagamento</button></div>` : ''}` : `<div class="btnrow"><button class="btn" data-act="payBill" data-arg="${b.id}" data-autofocus>${I('check', 20)} Marcar como paga</button></div><p class="xs muted" style="margin-top:8px">${b.st === 'atrasado' ? 'Venceu, então não dá os +15 XP de conta em dia. Marcar agora tira a conta da lista e do resumo de amanhã.' : 'Paga até o vencimento: +15 XP e o atributo Foco sobe.'}${b.id === missao() && !S.quests.missao ? ' É a Missão de hoje: +20 XP.' : ''}</p>`}`);
 }
 function quickAdd() {
   const items = [['openCheckin', 'Check-in', 'scale'], ['nav:saude/treino', 'Treino', 'dumbbell'], ['nav:saude/dieta', 'Refeição', 'utensils'], ['expense', 'Gasto', 'wallet'], ['nav:dinheiro/contas', 'Conta a pagar', 'receipt'], ['task', 'Tarefa ou nota', 'note'], ['nav:saude/exames', 'Medidas', 'target'], ['nav:dinheiro/importar', 'Extrato', 'upload']];
   openSheet('Registrar', `<div class="qa">${items.map(([a, l, ic]) => `<button data-act="qa" data-arg="${a}">${I(ic)}<span>${l}</span></button>`).join('')}</div><p class="xs muted" style="margin-top:12px">Também pela Siri e pelo botão de Ação do iPhone, com o Atalho “Anotar no Painel”.</p>`, 'qa');
 }
-const radios = (label, id, opts, sel) => `<div class="field"><span id="${id}">${label}</span><div class="picks" role="radiogroup" aria-labelledby="${id}">${opts.map((c) => `<button type="button" class="pick" role="radio" aria-checked="${c === sel}" tabindex="${c === sel ? 0 : -1}" data-act="radio" data-arg="${esc(c)}" data-val="${esc(c)}">${c}</button>`).join('')}</div></div>`;
+const radios = (label, id, opts, sel, labels = {}) => `<div class="field"><span id="${id}">${label}</span><div class="picks" role="radiogroup" aria-labelledby="${id}">${opts.map((c) => `<button type="button" class="pick" role="radio" aria-checked="${c === sel}" tabindex="${c === sel ? 0 : -1}" data-act="radio" data-arg="${esc(c)}" data-val="${esc(c)}">${esc(labels[c] || c)}</button>`).join('')}</div></div>`;
 function expenseSheet() {
   const cats = ['Mercado', 'Alimentação fora', 'Transporte', 'Saúde', 'Lazer', 'Compras'];
   openSheet('Gasto rápido', `<label class="field"><span>Valor</span><input class="input" id="ex-v" inputmode="decimal" placeholder="R$ 0,00" style="font-size:24px;font-weight:750" data-autofocus value="${esc(S.draftExpense)}"></label>
     ${radios('Categoria', 'ex-cat', cats, 'Mercado')}
-    ${radios('Pago com', 'ex-met', ['Cartão Alfa', 'Pix', 'Dinheiro'], 'Cartão Alfa')}
+    ${radios('Pago com', 'ex-met', ['Cartão Alfa', 'Pix', 'Dinheiro'], 'Cartão Alfa', { 'Cartão Alfa': D.CARDS[0].n })}
     <button class="btn block" style="margin-top:16px" data-act="saveExpense">Salvar gasto</button><p class="xs muted" style="margin-top:8px">${S.paid.fatura ? 'No Cartão Alfa vai para a próxima fatura (a aberta já foi paga) e não muda o “livre para gastar”. Pix e dinheiro saem do saldo na hora.' : 'Entra na hora no “livre para gastar”.'} Quando o extrato chegar, o lançamento é ligado a este gasto e não duplica.</p>`, 'ex');
 }
 function chamaSheet() {
@@ -1252,6 +1329,8 @@ const A = {
   testNotif: () => testNotif(),
   enableNotif: async () => { await testNotif(true); A.onbDone(); },
   restartOnb: () => { S.onbStep = 0; save(); location.hash = '#/onboarding'; },
+  pendentes: () => pendentesSheet(),
+  realClear: () => { if (!confirm('Apagar os seus dados reais deste aparelho? O arquivo no seu computador continua lá.')) return; try { localStorage.removeItem(REALK); } catch { /* nada a apagar */ } S.paid = {}; S.paidAmt = {}; S.expenses = []; save(); location.reload(); },
   resetDemo: () => { const keep = { theme: S.theme, onboarded: true }; S = Object.assign(defaults(), keep, { day: D.iso(diaNow()) }); S.hist = seedHist(S); bossMonth(S); save(); toast('Demonstração zerada'); if (current() !== 'hoje') go('#/hoje', true); else render(false); renderChrome(); },
   onbNext: () => { S.onbStep = Math.min(3, (S.onbStep || 0) + 1); save(); render(false, 'h1'); },
   onbBack: () => { S.onbStep = Math.max(0, (S.onbStep || 0) - 1); save(); render(false, 'h1'); },
@@ -1349,6 +1428,7 @@ document.addEventListener('change', (e) => {
   const el = e.target.closest('[data-in]'); if (!el) return;
   const k = el.dataset.arg;
   if (el.dataset.in === 'setkg' || el.dataset.in === 'setreps') { const st = S.sets[k] || {}; if (el.dataset.in === 'setkg') st.kg = parseFloat(el.value.replace(',', '.')) || 0; else st.reps = parseInt(el.value, 10) || 0; S.sets[k] = st; save(); }
+  if (el.dataset.in === 'realfile' && el.files?.length) { loadRealFile(el.files[0]); el.value = ''; return; }
   if (el.dataset.in === 'file' && el.files?.length) { toast(`${I('file', 18)} ${esc(el.files[0].name)}: no wireframe, a prévia usa o arquivo de exemplo.`, '', 3600); A.importNext(); }
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'inbox') { e.preventDefault(); A.addInbox(); } });
@@ -1408,7 +1488,7 @@ function fitRestbar() {
 window.addEventListener('resize', fitRestbar);
 
 // ---------- Render ----------
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
 const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/campanha': 'Campanha', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Importar', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes', estados: 'Estados' };

@@ -1,0 +1,7 @@
+# Configuração das funções do Painel. O resto do projeto segue o padrão do Supabase.
+[functions.pluggy-sync]
+verify_jwt = true
+
+[functions.pluggy-webhook]
+# A Pluggy não manda JWT do Supabase; a função confere o cabeçalho x-painel-token.
+verify_jwt = false

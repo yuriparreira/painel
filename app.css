@@ -413,3 +413,9 @@ button.kpi .chev { position: absolute; right: 10px; top: 12px; color: var(--mute
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
+
+/* Dados reais */
+.big.neg { color: var(--danger); }
+.filebtn { position: relative; cursor: pointer; }
+.filebtn input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.filebtn:focus-within { outline: 3px solid color-mix(in srgb, var(--primary) 75%, transparent); outline-offset: 2px; }

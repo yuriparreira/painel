@@ -1,4 +1,5 @@
 // Dados FICTÍCIOS para o wireframe. Nada aqui é dado real de saúde ou finanças.
+// Os dados reais nunca entram neste arquivo: useReal() recebe o arquivo que a pessoa carrega no próprio aparelho.
 // As datas são geradas a partir de "hoje" para o protótipo parecer vivo.
 
 export const DAY = 864e5;
@@ -154,16 +155,17 @@ export const EXAMS = {
 };
 
 // ---------- Dinheiro ----------
-export const ACCOUNTS = [
+export let ACCOUNTS = [
   { n: 'Conta principal', inst: 'Banco Alfa', v: 4180.55 },
   { n: 'Conta digital', inst: 'Banco Beta', v: 2050.10 },
 ];
 // Salário cai daqui a 14 dias (data relativa, para a demonstração funcionar em qualquer dia).
 // "Livre para gastar" é calculado no app: saldo − contas até o pagamento − fatura que vence antes dele.
-export const SAFE = { saldo: 6230.65, paydayOff: 14, salario: 9200.00 };
+export let SAFE = { saldo: 6230.65, paydayOff: 14, salario: 9200.00 };
 
 // faturaExtra: gastos no Cartão Alfa registrados na demonstração, que aumentam a fatura aberta.
 export function bills(paid = {}, faturaExtra = 0, t = new Date()) {
+  if (REAL) return realBills(paid, faturaExtra, t);
   const base = [
     { id: 'academia', n: 'Academia', v: 129.90, day: 1, met: 'Cartão', pago: true, cat: 'Saúde' },
     { id: 'stream', n: 'Streaming', v: 55.90, day: 2, met: 'Cartão', pago: true, cat: 'Assinaturas' },
@@ -187,7 +189,7 @@ export function bills(paid = {}, faturaExtra = 0, t = new Date()) {
 }
 export const ST = { pago: 'Pago', agendado: 'Agendado', avencer: 'A vencer', atrasado: 'Atrasado' };
 
-export const CARDS = [
+export let CARDS = [
   { n: 'Cartão Alfa', fim: '4821', limite: 12000, fecha: 6, vence: 13,
     faturas: { fechada: { v: 3120.85, st: 'Paga' }, aberta: { v: 2915.40 }, proxima: { v: 1240.00 } },
     futuro: [1240, 980, 860, 610, 420, 260] },
@@ -196,6 +198,7 @@ export const CARDS = [
     futuro: [0, 0, 0, 0, 0, 0] },
 ];
 export function cardTx(t = new Date()) {
+  if (REAL) return [];
   const L = [
     [0, 'Supermercado Bairro', 'Mercado', 286.42],
     [0, 'Padaria Central', 'Alimentação fora', 23.50],
@@ -211,7 +214,7 @@ export function cardTx(t = new Date()) {
   ];
   return L.map(([o, n, c, v, parc]) => ({ d: addDays(t, o), n, c, v, parc }));
 }
-export const CATS = [
+export let CATS = [
   { n: 'Moradia e contas', v: 1890, avg: 1860 },
   { n: 'Mercado', v: 1120, avg: 1050 },
   { n: 'Alimentação fora', v: 840, avg: 690 },
@@ -222,9 +225,9 @@ export const CATS = [
   { n: 'Assinaturas', v: 190, avg: 190 },
 ];
 const RESERVA = 14300;
-export const SAVINGS = { taxa: 18, meta: 20, reserva: RESERVA, essenciais: 4200, reservaMeses: +(RESERVA / 4200).toFixed(1), reservaMeta: 6 };
+export let SAVINGS = { taxa: 18, meta: 20, reserva: RESERVA, essenciais: 4200, reservaMeses: +(RESERVA / 4200).toFixed(1), reservaMeta: 6 };
 
-export const BALANCE = {
+export let BALANCE = {
   ativo: [
     { g: 'Circulante', itens: [['Caixa e contas', 6230.65], ['Reserva (CDB liquidez diária)', RESERVA], ['Valores a receber', 3000]] },
     { g: 'Investimentos', itens: [['Ações e FIIs', 38900], ['Tesouro IPCA+', 31700], ['Cripto', 2150]] },
@@ -235,7 +238,7 @@ export const BALANCE = {
     { g: 'Longo prazo', itens: [['Financiamento do veículo (saldo devedor)', 61200]] },
   ],
 };
-export function netWorthSeries() { const r = rng(11); let v = 128400; return Array.from({ length: 12 }, (_, i) => { v += 900 + r() * 1300; const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 11 + i); return { d, v: Math.round(v) }; }); }
+export function netWorthSeries() { if (REAL) return (REAL.serieMensal || []).map((x) => ({ d: new Date(+x.mes.slice(0, 4), +x.mes.slice(5, 7) - 1, 1), v: x.pl })); const r = rng(11); let v = 128400; return Array.from({ length: 12 }, (_, i) => { v += 900 + r() * 1300; const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 11 + i); return { d, v: Math.round(v) }; }); }
 
 export const IMPORT_PREVIEW = [
   { d: -2, n: 'PIX ENVIADO JOAO S', v: -150.00, c: 'Transferência', conf: 'regra' },
@@ -264,3 +267,82 @@ export const INBOX = [
   { t: 'Trocar óleo do carro', chips: ['sábado'] },
 ];
 export const BEDTIME = '22:30';
+
+// ---------- Dados reais (opcional) ----------
+// O arquivo painel-dados.json é gerado no computador da pessoa, a partir dos extratos dela, e carregado
+// em Importar. Fica só no armazenamento deste navegador; nada vai para o repositório nem para servidor.
+export let REAL = null;
+export let CATS_TITLE = 'Gastos · últimos 30 dias';
+const ym = (d) => iso(d).slice(0, 7);
+const sum = (a) => a.reduce((s, x) => s + x, 0);
+const r2 = (v) => Math.round(v * 100) / 100;
+const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+const mesCurto = (k) => `${MESES[+k.slice(5, 7) - 1]}/${k.slice(2, 4)}`;
+
+// Dia do "pagamento" no modo real: renda irregular, então a conta vai até o fim do mês.
+export function payday(t) { return REAL ? new Date(t.getFullYear(), t.getMonth() + 1, 0) : addDays(t, SAFE.paydayOff); }
+
+function realBills(paid, faturaExtra, t) {
+  const tx = REAL.transacoes || [], mes = ym(t), hoje = startOfDay(t), corte = REAL.geradoEm;
+  const dim = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  // Cada conta do arquivo diz qual categoria do extrato a quita (txCat); a do cartão principal vem com fatura: true.
+  return (REAL.contasPagar || []).filter((b) => b.v != null && !b.flex).map((b) => {
+    const id = b.fatura ? 'fatura' : b.id;
+    const due = new Date(t.getFullYear(), t.getMonth(), Math.min(b.dia, dim));
+    const hit = b.txCat ? tx.find((x) => x.d.startsWith(mes) && x.cat === b.txCat && x.v < 0) : null;
+    const isPaid = !!hit || !!paid[id];
+    let v = hit ? -hit.v : b.v;
+    if (id === 'fatura' && !hit) v = r2(v + faturaExtra);
+    const auto = /autom/i.test(b.met);
+    const st = isPaid ? 'pago' : due < hoje && iso(due) <= corte ? 'atrasado' : auto ? 'agendado' : 'avencer';
+    let n = b.n + (b.estimado && !hit ? ' · valor médio' : '');
+    const P = b.passivo && (REAL.passivos || []).find((p) => p.id === b.passivo);
+    if (P && P.prazo) { const k = P.pagas + (hit ? 0 : 1) + Math.max(0, (t.getFullYear() - +corte.slice(0, 4)) * 12 + t.getMonth() + 1 - +corte.slice(5, 7)); n = `${b.n} · ${Math.min(k, P.prazo)}/${P.prazo}`; }
+    return { id, n, v: r2(v), due, st, pago: isPaid, met: b.met, cat: b.cat, auto };
+  }).sort((a, b) => a.due - b.due);
+}
+
+export function useReal(R) {
+  if (!R || R.schema !== 'painel-financas/1') throw new Error('arquivo não é do Painel');
+  REAL = R;
+  const cx = (R.contas || []).filter((c) => c.saldo != null);
+  ACCOUNTS = cx.map((c) => ({ n: c.n, inst: c.inst, v: c.saldo }));
+  const saldo = r2(sum(cx.map((c) => c.saldo)));
+  SAFE = { saldo, paydayOff: 0, salario: 0 };
+  const pag = (k) => (k.pagamentos || []).slice().sort((a, b) => (a.d < b.d ? -1 : 1));
+  CARDS = (R.cartoes || []).map((k, i) => {
+    const p = pag(k), last = p[p.length - 1];
+    const aberta = i === 0 && R.faturaEstimada ? R.faturaEstimada : k.usado || 0;
+    return { n: k.n, fim: '', limite: k.limite, fecha: null, vence: k.vence, faturas: { fechada: { v: last ? last.v : 0, st: 'Paga' }, aberta: { v: aberta }, proxima: { v: 0 } }, futuro: [0, 0, 0, 0, 0, 0], real: { ...k, pagamentos: p } };
+  });
+  // Gastos do último mês fechado, com a fatura paga no mês como uma linha só (o detalhe vem das faturas).
+  const meses = Object.keys(R.gastosPorMes || {}).sort(), ref = meses.filter((m) => m < R.geradoEm.slice(0, 7)).pop() || meses[meses.length - 1];
+  // "Moradia: água" e "Moradia: celular" somam em "Moradia"; o arquivo pode mandar grupos próprios em gruposGasto.
+  const G = R.gruposGasto || {}, grupo = (c) => G[c] || c.split(':')[0];
+  const porGrupo = (m) => { const o = {}; Object.entries((R.gastosPorMes || {})[m] || {}).forEach(([c, v]) => { const g = grupo(c); o[g] = (o[g] || 0) + v; }); const f = (R.cartaoPorMes || {})[m]; if (f) o['Fatura do cartão (sem detalhe)'] = f; return o; };
+  const atual = porGrupo(ref), ant = meses.filter((m) => m < ref).slice(-6).map(porGrupo);
+  const nomes = new Set([...Object.keys(atual), ...ant.flatMap((o) => Object.keys(o))]);
+  CATS = [...nomes].map((n) => ({ n, v: r2(atual[n] || 0), avg: r2(ant.length ? sum(ant.map((o) => o[n] || 0)) / ant.length : atual[n] || 0) })).filter((c) => c.v || c.avg).sort((a, b) => b.v - a.v).slice(0, 8);
+  CATS_TITLE = `Gastos de ${mesCurto(ref)} · conta e fatura paga no mês`;
+  const caixinha = R.caixinha ? Math.max(0, r2(R.caixinha.aplicado - R.caixinha.resgatado)) : 0;
+  const ess = R.essenciaisMes || 5000, reserva = r2(saldo + caixinha);
+  SAVINGS = { taxa: R.taxaPoupanca ?? null, meta: 20, reserva, essenciais: ess, reservaMeses: +(reserva / ess).toFixed(1), reservaMeta: 6, essLabel: R.essenciaisLabel || '' };
+  const inv = R.investimentosPorTipo || {}, invRef = R.investimentos ? mesCurto(R.investimentos.data) : '';
+  const insts = [...new Set(cx.map((c) => c.inst))];
+  const circ = [[`Contas (${insts.join(', ')})`, saldo]];
+  if (caixinha) circ.push(['Caixinha', caixinha]);
+  (R.outrosAtivos || []).forEach((x) => circ.push([x.n, x.v]));
+  (R.receber || []).forEach((x) => circ.push([`A receber: ${x.n}`, x.saldo]));
+  const passivo = (R.passivos || []).filter((p) => p.saldoDevedor);
+  BALANCE = {
+    ativo: [
+      { g: 'Circulante', itens: circ },
+      { g: 'Investimentos', itens: [['Ações', inv['Ações'] || 0], ['ETFs', inv.ETF || 0], ['FIIs', inv.FII || 0]].filter((x) => x[1]).map(([n, v]) => [`${n} (B3, ${invRef})`, v]) },
+      { g: 'Não circulante', itens: (R.bens || []).map((b) => [`${b.n} (custo, até a FIPE)`, b.valor]) },
+    ],
+    passivo: [
+      { g: 'Curto prazo', itens: passivo.filter((p) => !p.longo).map((p) => [p.n, p.saldoDevedor]) },
+      { g: 'Longo prazo', itens: passivo.filter((p) => p.longo).map((p) => [p.prazo ? `${p.n}: ${p.restantes} de ${p.prazo} parcelas` : p.n, p.saldoDevedor]) },
+    ],
+  };
+}
