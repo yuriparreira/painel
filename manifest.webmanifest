@@ -1,0 +1,23 @@
+{
+  "name": "Painel",
+  "short_name": "Painel",
+  "description": "Saúde, finanças e agenda num lugar só, com você como personagem principal. Wireframe com dados fictícios.",
+  "lang": "pt-BR",
+  "id": "./",
+  "start_url": "./#/hoje",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F3F4EF",
+  "theme_color": "#2E6A4F",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Check-in", "url": "./#/hoje" },
+    { "name": "Contas a pagar", "url": "./#/dinheiro/contas" },
+    { "name": "Agenda", "url": "./#/agenda" }
+  ]
+}
