@@ -62,5 +62,8 @@ const P = {
 };
 
 export function I(name, size = 24, extra = '') {
-  return `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" ${extra}>${P[name] || ''}</svg>`;
+  // Junta classes extras numa só lista (atributo class duplicado seria ignorado pelo navegador).
+  let cls = 'ic';
+  extra = extra.replace(/class="([^"]*)"/, (_, c) => { cls = c.split(/\s+/).includes('ic') ? c : `ic ${c}`; return ''; });
+  return `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" ${extra.trim()}>${P[name] || ''}</svg>`;
 }

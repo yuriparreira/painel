@@ -17,7 +17,7 @@ export const XP_START = 2650;
 
 export const ATTRS = [
   { k: 'FOR', nome: 'Força', v: 42, d: +3, cor: 'var(--a-for)', mede: 'Cargas estimadas (1RM) dos 4 exercícios-âncora contra as suas metas, mais quantos treinos de força você fez em 28 dias.', subir: ['Bater as séries e subir a carga pela progressão dupla.', '12 treinos de força em 28 dias valem 25% do atributo.'], fonte: 'Registro de treino no app' },
-  { k: 'VIG', nome: 'Vigor', v: 35, d: +5, cor: 'var(--a-vig)', mede: 'Minutos em zona 2 nos últimos 28 dias, VO2máx do relógio e média de passos em 14 dias.', subir: ['2 cardios de 45 min por semana na zona 2.', 'Média de 7 mil passos por dia.'], fonte: 'Apple Health (via Atalho)' },
+  { k: 'VIG', nome: 'Vigor', v: 35, d: +5, cor: 'var(--a-vig)', mede: 'Minutos em zona 2 nos últimos 28 dias, VO2máx do relógio e média de passos em 14 dias.', subir: ['2 cardios de 40 min por semana na zona 2 (80 min).', 'Média de 7 mil passos por dia.'], fonte: 'Apple Health (via Atalho)' },
   { k: 'REC', nome: 'Recuperação', v: 58, d: -2, cor: 'var(--a-rec)', mede: 'Horas de sono na última semana e regularidade do horário de dormir em 14 dias.', subir: ['Deitar no mesmo horário, com variação de até 45 min.', '7 h ou mais de sono.'], fonte: 'Apple Health + check-in' },
   { k: 'NUT', nome: 'Nutrição', v: 71, d: +4, cor: 'var(--a-nut)', mede: 'Dias com proteína na meta e calorias dentro de ±10% do alvo do dia, em 14 dias.', subir: ['Proteína na meta em 6 de 7 dias.', 'Comer abaixo da faixa não conta: a meta é acertar, não comer menos.'], fonte: 'Missão Combustível + cardápio' },
   { k: 'PAT', nome: 'Patrimônio', v: 64, d: +1, cor: 'var(--a-pat)', mede: 'Meses de reserva, taxa de poupança em 3 meses, ausência de rotativo ou cheque especial e crescimento do patrimônio contra a meta do ano.', subir: ['Aporte mensal na reserva até 6 meses de gastos essenciais.', 'Pagar a fatura inteira, sempre.'], fonte: 'Extratos importados' },
@@ -31,17 +31,21 @@ export const ACHIEVEMENTS = [
   { n: 'Contador de si', d: 'Primeira importação de extrato', ok: true, ic: 'upload' },
   { n: 'Dez sessões', d: '10 treinos registrados', ok: false, p: '7/10', ic: 'dumbbell' },
   { n: 'Escudo de 3 meses', d: 'Reserva cobre 3 meses', ok: true, ic: 'shieldHalf' },
-  { n: 'Cerco aeróbico', d: '300 min de zona 2 em 28 dias', ok: false, p: '185/300', ic: 'pulse' },
+  { n: 'Pulmão de aço', d: '300 min de zona 2 em 28 dias', ok: false, p: '185/300', ic: 'pulse' },
   { n: 'Pronto para o tatame', d: 'Libera o BJJ: critérios de condicionamento', ok: false, p: 'Ato IV', ic: 'lock' },
 ];
 
+// Missões da semana. O progresso (p) é calculado no app a partir do plano e do que foi feito hoje.
+export const Z2_WEEK_MIN = 80; // 2 cardios de 40 min por semana no Ato I
 export const WEEKLY = [
-  { t: 'Semana no Plano', d: '4 de 5 sessões, com 2 de força', p: 2, of: 4, xp: 150 },
-  { t: 'Cerco aeróbico', d: 'Zona 2 por 100 min (seu atributo mais baixo)', p: 40, of: 100, xp: 100, un: 'min' },
-  { t: 'Revisão de domingo', d: 'Contas, Top 3 e categorias em 10 min', p: 0, of: 1, xp: 100 },
+  { id: 'plano', t: 'Semana no Plano', d: '4 das 5 sessões da semana, com 2 de força', of: 4, xp: 150 },
+  { id: 'cerco', t: 'Cerco aeróbico', d: `Zona 2 por ${Z2_WEEK_MIN} min na semana (2 × 40)`, of: Z2_WEEK_MIN, xp: 100, un: 'min' },
+  { id: 'revisao', t: 'Revisão de domingo', d: 'Contas, Top 3 e categorias em 10 min', of: 1, xp: 100 },
 ];
+export const WEEKLY_BONUS = 50;
 
-export const BOSS = { nome: 'Senhor da Madrugada', regra: 'Uma noite com 7 h ou mais de sono e deitar até 45 min do seu horário-alvo conta como um golpe.', hp: 14, max: 20, alt: 'Dragão da Fatura' };
+// Chefe do mês: 20 golpes de vida; começa com 18 (90%), e cada noite boa é um golpe.
+export const BOSS = { nome: 'Senhor da Madrugada', regra: 'Uma noite com 7 h ou mais de sono e deitar até 45 min do seu horário-alvo conta como um golpe.', start: 18, max: 20, alt: 'Dragão da Fatura' };
 
 // ---------- Plano de 24 semanas ----------
 export const ANCHOR = new Date(2026, 9, 26); // segunda, 26/10/2026
@@ -154,10 +158,12 @@ export const ACCOUNTS = [
   { n: 'Conta principal', inst: 'Banco Alfa', v: 4180.55 },
   { n: 'Conta digital', inst: 'Banco Beta', v: 2050.10 },
 ];
-export const SAFE = { saldo: 6230.65, contas: 1475.25, fatura: 2915.40, paydayDay: 5 };
+// Salário cai daqui a 14 dias (data relativa, para a demonstração funcionar em qualquer dia).
+// "Livre para gastar" é calculado no app: saldo − contas até o pagamento − fatura que vence antes dele.
+export const SAFE = { saldo: 6230.65, paydayOff: 14, salario: 9200.00 };
 
-export function bills(paid = {}) {
-  const t = new Date();
+// faturaExtra: gastos no Cartão Alfa registrados na demonstração, que aumentam a fatura aberta.
+export function bills(paid = {}, faturaExtra = 0, t = new Date()) {
   const base = [
     { id: 'academia', n: 'Academia', v: 129.90, day: 1, met: 'Cartão', pago: true, cat: 'Saúde' },
     { id: 'stream', n: 'Streaming', v: 55.90, day: 2, met: 'Cartão', pago: true, cat: 'Assinaturas' },
@@ -175,7 +181,8 @@ export function bills(paid = {}) {
     const due = b.day ? new Date(t.getFullYear(), t.getMonth(), Math.min(b.day, t.getDate())) : addDays(t, b.off);
     const isPaid = b.pago || !!paid[b.id];
     const st = isPaid ? 'pago' : b.off < 0 ? 'atrasado' : b.auto ? 'agendado' : 'avencer';
-    return { ...b, due, st, pago: isPaid };
+    const v = b.id === 'fatura' ? Math.round((b.v + faturaExtra) * 100) / 100 : b.v;
+    return { ...b, v, due, st, pago: isPaid };
   }).sort((a, b) => a.due - b.due);
 }
 export const ST = { pago: 'Pago', agendado: 'Agendado', avencer: 'A vencer', atrasado: 'Atrasado' };
@@ -188,8 +195,7 @@ export const CARDS = [
     faturas: { fechada: { v: 412.30, st: 'Paga' }, aberta: { v: 286.70 }, proxima: { v: 0 } },
     futuro: [0, 0, 0, 0, 0, 0] },
 ];
-export function cardTx() {
-  const t = new Date();
+export function cardTx(t = new Date()) {
   const L = [
     [0, 'Supermercado Bairro', 'Mercado', 286.42],
     [0, 'Padaria Central', 'Alimentação fora', 23.50],
@@ -215,12 +221,13 @@ export const CATS = [
   { n: 'Lazer', v: 380, avg: 450 },
   { n: 'Assinaturas', v: 190, avg: 190 },
 ];
-export const SAVINGS = { taxa: 18, meta: 20, reservaMeses: 3.4, reservaMeta: 6, essenciais: 6300 };
+const RESERVA = 14300;
+export const SAVINGS = { taxa: 18, meta: 20, reserva: RESERVA, essenciais: 4200, reservaMeses: +(RESERVA / 4200).toFixed(1), reservaMeta: 6 };
 
 export const BALANCE = {
   ativo: [
-    { g: 'Circulante', itens: [['Caixa e contas', 6230.65], ['Reserva (CDB liquidez diária)', 21400], ['Valores a receber', 3000]] },
-    { g: 'Investimentos', itens: [['Ações e FIIs', 38900], ['Tesouro IPCA+', 24600], ['Cripto', 2150]] },
+    { g: 'Circulante', itens: [['Caixa e contas', 6230.65], ['Reserva (CDB liquidez diária)', RESERVA], ['Valores a receber', 3000]] },
+    { g: 'Investimentos', itens: [['Ações e FIIs', 38900], ['Tesouro IPCA+', 31700], ['Cripto', 2150]] },
     { g: 'Não circulante', itens: [['FGTS', 18300], ['Veículo (tabela FIPE)', 98000]] },
   ],
   passivo: [
@@ -235,8 +242,8 @@ export const IMPORT_PREVIEW = [
   { d: -2, n: 'COMPRA CARTAO SUPERMERC BAIRRO', v: -286.42, c: 'Mercado', conf: 'regra' },
   { d: -3, n: 'RENDIMENTOS CDB', v: 41.87, c: 'Rendimentos', conf: 'regra' },
   { d: -4, n: 'PAGTO ELETRON TRIBUTO', v: -96.10, c: 'Moradia', conf: 'sugerida' },
-  { d: -5, n: 'TED RECEBIDA SALARIO', v: 9200.00, c: 'Salário', conf: 'regra' },
   { d: -5, n: 'COMPRA CARTAO POSTO AV', v: -210.00, c: 'Transporte', conf: 'duplicada' },
+  { d: -16, n: 'TED RECEBIDA SALARIO', v: 9200.00, c: 'Salário', conf: 'regra' },
 ];
 
 // ---------- Agenda ----------
