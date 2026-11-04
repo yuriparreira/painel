@@ -269,10 +269,11 @@ export const INBOX = [
 export const BEDTIME = '22:30';
 
 // ---------- Dados reais (opcional) ----------
-// O arquivo painel-dados.json é gerado no computador da pessoa, a partir dos extratos dela, e carregado
-// em Importar. Fica só no armazenamento deste navegador; nada vai para o repositório nem para servidor.
+// Formato painel-financas/1: vem da função fin_painel do Supabase (depois do login) ou do painel-dados.json
+// gerado no computador e carregado em Importar. A cópia fica só neste navegador; nada vai para o repositório.
 export let REAL = null;
 export let CATS_TITLE = 'Gastos · últimos 30 dias';
+export let CATS_REST = 0; // parte do total do mês que não está nas 8 linhas (outras categorias e estornos)
 const ym = (d) => iso(d).slice(0, 7);
 const sum = (a) => a.reduce((s, x) => s + x, 0);
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -282,62 +283,76 @@ const mesCurto = (k) => `${MESES[+k.slice(5, 7) - 1]}/${k.slice(2, 4)}`;
 // Dia do "pagamento" no modo real: renda irregular, então a conta vai até o fim do mês.
 export function payday(t) { return REAL ? new Date(t.getFullYear(), t.getMonth() + 1, 0) : addDays(t, SAFE.paydayOff); }
 
+const dayOf = (s) => new Date(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10));
 function realBills(paid, faturaExtra, t) {
   const tx = REAL.transacoes || [], mes = ym(t), hoje = startOfDay(t), corte = REAL.geradoEm;
   const dim = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
   // Cada conta do arquivo diz qual categoria do extrato a quita (txCat); a do cartão principal vem com fatura: true.
   return (REAL.contasPagar || []).filter((b) => b.v != null && !b.flex).map((b) => {
     const id = b.fatura ? 'fatura' : b.id;
-    const due = new Date(t.getFullYear(), t.getMonth(), Math.min(b.dia, dim));
-    const hit = b.txCat ? tx.find((x) => x.d.startsWith(mes) && x.cat === b.txCat && x.v < 0) : null;
-    const isPaid = !!hit || !!paid[id];
+    // Fatura do Open Finance: vem com o vencimento exato (venceEm) e, se o pagamento já apareceu, com a data dele (pagoEm).
+    const due = b.venceEm ? dayOf(b.venceEm) : new Date(t.getFullYear(), t.getMonth(), Math.min(b.dia, dim));
+    // txValor: a fatura só conta como paga quando o pagamento bate o valor (dois cartões pagos no mesmo mês).
+    // Fatura do Open Finance (venceEm): quem acha o pagamento é o banco de dados (pagoEm), para Contas e Cartões concordarem.
+    const hit = b.pagoEm || b.venceEm ? null : b.txCat ? tx.find((x) => x.d.startsWith(mes) && x.cat === b.txCat && x.v < 0 && (b.txValor == null || Math.abs(-x.v - b.txValor) < 1)) : null;
+    const porExtrato = !!hit || !!b.pagoEm;
+    const isPaid = porExtrato || !!paid[id];
     let v = hit ? -hit.v : b.v;
-    if (id === 'fatura' && !hit) v = r2(v + faturaExtra);
+    if (id === 'fatura' && !porExtrato) v = r2(v + faturaExtra);
     const auto = /autom/i.test(b.met);
     const st = isPaid ? 'pago' : due < hoje && iso(due) <= corte ? 'atrasado' : auto ? 'agendado' : 'avencer';
     let n = b.n + (b.estimado && !hit ? ' · valor médio' : '');
     const P = b.passivo && (REAL.passivos || []).find((p) => p.id === b.passivo);
     if (P && P.prazo) { const k = P.pagas + (hit ? 0 : 1) + Math.max(0, (t.getFullYear() - +corte.slice(0, 4)) * 12 + t.getMonth() + 1 - +corte.slice(5, 7)); n = `${b.n} · ${Math.min(k, P.prazo)}/${P.prazo}`; }
-    return { id, n, v: r2(v), due, st, pago: isPaid, met: b.met, cat: b.cat, auto };
+    return { id, n, v: r2(v), due, st, pago: isPaid, porExtrato, met: b.met, cat: b.cat, auto, hitTx: hit || null };
   }).sort((a, b) => a.due - b.due);
 }
 
+// Valida e calcula tudo antes de trocar: um arquivo ou leitura com defeito não deixa a tela meio real, meio exemplo.
 export function useReal(R) {
   if (!R || R.schema !== 'painel-financas/1') throw new Error('arquivo não é do Painel');
-  REAL = R;
+  if (typeof R.geradoEm !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(R.geradoEm)) throw new Error('arquivo sem data');
   const cx = (R.contas || []).filter((c) => c.saldo != null);
-  ACCOUNTS = cx.map((c) => ({ n: c.n, inst: c.inst, v: c.saldo }));
+  const accounts = cx.map((c) => ({ n: c.n, inst: c.inst, v: c.saldo }));
   const saldo = r2(sum(cx.map((c) => c.saldo)));
-  SAFE = { saldo, paydayOff: 0, salario: 0 };
+  const safe = { saldo, paydayOff: 0, salario: 0 };
   const pag = (k) => (k.pagamentos || []).slice().sort((a, b) => (a.d < b.d ? -1 : 1));
-  CARDS = (R.cartoes || []).map((k, i) => {
-    const p = pag(k), last = p[p.length - 1];
-    const aberta = i === 0 && R.faturaEstimada ? R.faturaEstimada : k.usado || 0;
-    return { n: k.n, fim: '', limite: k.limite, fecha: null, vence: k.vence, faturas: { fechada: { v: last ? last.v : 0, st: 'Paga' }, aberta: { v: aberta }, proxima: { v: 0 } }, futuro: [0, 0, 0, 0, 0, 0], real: { ...k, pagamentos: p } };
+  const cards = (R.cartoes || []).map((k, i) => {
+    const p = pag(k), last = p[p.length - 1], fa = k.faturaAtual, fm = k.faturaMes;
+    const aberta = fa && fa.v != null ? fa.v : i === 0 && R.faturaEstimada ? R.faturaEstimada : k.usado || 0;
+    // Depois de paga a fatura do mês: a próxima já fechada, se o banco mandou e ela ainda não foi paga; senão o uso atual do cartão.
+    const prox = fa && fm && fa.vence > fm.vence && fa.v != null && !fa.pagoEm ? { v: fa.v } : { v: k.usado || 0, deUso: true };
+    return { n: k.n, fim: '', limite: k.limite, fecha: null, vence: k.vence, faturas: { fechada: { v: last ? last.v : 0, st: 'Paga' }, aberta: { v: aberta }, proxima: prox }, futuro: [0, 0, 0, 0, 0, 0], real: { ...k, pagamentos: p } };
   });
   // Gastos do último mês fechado, com a fatura paga no mês como uma linha só (o detalhe vem das faturas).
   const meses = Object.keys(R.gastosPorMes || {}).sort(), ref = meses.filter((m) => m < R.geradoEm.slice(0, 7)).pop() || meses[meses.length - 1];
   // "Moradia: água" e "Moradia: celular" somam em "Moradia"; o arquivo pode mandar grupos próprios em gruposGasto.
+  // Estornos entram negativos e descontam no total do mês.
   const G = R.gruposGasto || {}, grupo = (c) => G[c] || c.split(':')[0];
-  const porGrupo = (m) => { const o = {}; Object.entries((R.gastosPorMes || {})[m] || {}).forEach(([c, v]) => { const g = grupo(c); o[g] = (o[g] || 0) + v; }); const f = (R.cartaoPorMes || {})[m]; if (f) o['Fatura do cartão (sem detalhe)'] = f; return o; };
-  const atual = porGrupo(ref), ant = meses.filter((m) => m < ref).slice(-6).map(porGrupo);
-  const nomes = new Set([...Object.keys(atual), ...ant.flatMap((o) => Object.keys(o))]);
-  CATS = [...nomes].map((n) => ({ n, v: r2(atual[n] || 0), avg: r2(ant.length ? sum(ant.map((o) => o[n] || 0)) / ant.length : atual[n] || 0) })).filter((c) => c.v || c.avg).sort((a, b) => b.v - a.v).slice(0, 8);
-  CATS_TITLE = `Gastos de ${mesCurto(ref)} · conta e fatura paga no mês`;
+  const porGrupo = (m) => { const o = {}; Object.entries((R.gastosPorMes || {})[m] || {}).forEach(([c, v]) => { const g = grupo(c); o[g] = (o[g] || 0) + (Number(v) || 0); }); const f = (R.cartaoPorMes || {})[m]; if (f) o['Fatura do cartão (sem detalhe)'] = f; return o; };
+  let cats = [], catsTitle = 'Gastos · ainda sem lançamentos', catsRest = 0;
+  if (ref) {
+    const atual = porGrupo(ref), ant = meses.filter((m) => m < ref).slice(-6).map(porGrupo);
+    const nomes = new Set([...Object.keys(atual), ...ant.flatMap((o) => Object.keys(o))]);
+    const all = [...nomes].map((n) => ({ n, v: r2(atual[n] || 0), avg: r2(ant.length ? sum(ant.map((o) => o[n] || 0)) / ant.length : atual[n] || 0) }));
+    cats = all.filter((c) => c.v >= 0 && (c.v > 0.004 || c.avg > 0.004)).sort((a, b) => b.v - a.v).slice(0, 8);
+    catsRest = r2(sum(Object.values(atual)) - sum(cats.map((c) => c.v)));
+    catsTitle = R.cartaoDetalhado ? `Gastos de ${mesCurto(ref)} · conta e fatura que vence no mês` : `Gastos de ${mesCurto(ref)} · conta e fatura paga no mês`;
+  }
   const caixinha = R.caixinha ? Math.max(0, r2(R.caixinha.aplicado - R.caixinha.resgatado)) : 0;
   const ess = R.essenciaisMes || 5000, reserva = r2(saldo + caixinha);
-  SAVINGS = { taxa: R.taxaPoupanca ?? null, meta: 20, reserva, essenciais: ess, reservaMeses: +(reserva / ess).toFixed(1), reservaMeta: 6, essLabel: R.essenciaisLabel || '' };
-  const inv = R.investimentosPorTipo || {}, invRef = R.investimentos ? mesCurto(R.investimentos.data) : '';
+  const savings = { taxa: R.taxaPoupanca ?? null, meta: 20, reserva, essenciais: ess, reservaMeses: +(reserva / ess).toFixed(1), reservaMeta: 6, essLabel: R.essenciaisLabel || '' };
+  const inv = R.investimentosPorTipo || {}, invRef = R.investimentos && R.investimentos.data ? mesCurto(R.investimentos.data) : '';
   const insts = [...new Set(cx.map((c) => c.inst))];
-  const circ = [[`Contas (${insts.join(', ')})`, saldo]];
+  const circ = [[insts.length ? `Contas (${insts.join(', ')})` : 'Contas', saldo]];
   if (caixinha) circ.push(['Caixinha', caixinha]);
   (R.outrosAtivos || []).forEach((x) => circ.push([x.n, x.v]));
   (R.receber || []).forEach((x) => circ.push([`A receber: ${x.n}`, x.saldo]));
   const passivo = (R.passivos || []).filter((p) => p.saldoDevedor);
-  BALANCE = {
+  const balance = {
     ativo: [
       { g: 'Circulante', itens: circ },
-      { g: 'Investimentos', itens: [['Ações', inv['Ações'] || 0], ['ETFs', inv.ETF || 0], ['FIIs', inv.FII || 0]].filter((x) => x[1]).map(([n, v]) => [`${n} (B3, ${invRef})`, v]) },
+      { g: 'Investimentos', itens: [['Ações', inv['Ações'] || 0], ['ETFs', inv.ETF || 0], ['FIIs', inv.FII || 0]].filter((x) => x[1]).map(([n, v]) => [invRef ? `${n} (B3, ${invRef})` : `${n} (B3)`, v]) },
       { g: 'Não circulante', itens: [...(R.participacoes || []).map((p) => [`Participação: ${p.n} (${String(p.pct).replace('.', ',')}%)`, p.v]), ...(R.bens || []).map((b) => [`${b.n} (custo, até a FIPE)`, b.valor])] },
     ],
     passivo: [
@@ -345,4 +360,5 @@ export function useReal(R) {
       { g: 'Longo prazo', itens: passivo.filter((p) => p.longo).map((p) => [p.prazo ? `${p.n}: ${p.restantes} de ${p.prazo} parcelas` : p.n, p.saldoDevedor]) },
     ],
   };
+  REAL = R; ACCOUNTS = accounts; SAFE = safe; CARDS = cards; CATS = cats; CATS_TITLE = catsTitle; CATS_REST = catsRest; SAVINGS = savings; BALANCE = balance;
 }

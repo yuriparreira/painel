@@ -1,6 +1,6 @@
 // Service worker do wireframe: guarda o app no aparelho para abrir sem internet.
-const VERSION = 'painel-wf-0.3.1';
-const SHELL = ['./', './index.html', './app.css', './app.js', './data.js', './icons.js', './manifest.webmanifest',
+const VERSION = 'painel-wf-0.4.0';
+const SHELL = ['./', './index.html', './app.css', './app.js', './data.js', './sync.js', './icons.js', './manifest.webmanifest',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 
 // Instala com cópias novas (ignora o cache HTTP de 10 min do GitHub Pages), para não guardar a versão anterior.
@@ -15,19 +15,22 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   if (req.mode === 'navigate') {
-    // Página: rede primeiro (até 3 s), senão a cópia do aparelho. Assim um deploy novo chega na próxima abertura.
+    // Página: a da versão instalada, igual aos arquivos dela (uma página nova com o app.js antigo podia quebrar).
+    // Um deploy novo chega inteiro: o navegador confere o sw.js ao abrir, instala a versão nova e o app oferece recarregar.
     e.respondWith(caches.open(VERSION).then(async (cache) => {
-      try { const res = await Promise.race([fetch(req, { cache: 'no-cache' }), timeout(3000)]); if (res.ok) cache.put('./index.html', res.clone()); return res; }
-      catch { return (await cache.match('./index.html')) || (await cache.match('./')) || Response.error(); }
+      const hit = (await cache.match('./index.html')) || (await cache.match('./'));
+      if (hit) return hit;
+      try { return await Promise.race([fetch(req), timeout(8000)]); } catch { return Response.error(); }
     }));
     return;
   }
-  // Arquivos: o que está guardado abre na hora; a versão nova é buscada em segundo plano, até o fim.
+  // Arquivos: só os da versão instalada, sem troca um a um em segundo plano. Assim o app nunca mistura arquivos de
+  // versões diferentes (um app.js novo com um sync.js que não está no aparelho deixava a tela em branco sem internet).
+  // A versão nova chega inteira quando este arquivo muda: todo deploy sobe o VERSION lá em cima.
   e.respondWith(caches.open(VERSION).then(async (cache) => {
     const hit = await cache.match(req, { ignoreSearch: true });
-    const net = fetch(req, { cache: 'no-cache' }).then((res) => { if (res.ok) cache.put(req, res.clone()); return res; });
-    if (hit) { e.waitUntil(net.catch(() => {})); return hit; }
-    return net.catch(() => Response.error());
+    if (hit) return hit;
+    try { const res = await fetch(req); if (res.ok) cache.put(req, res.clone()); return res; } catch { return Response.error(); }
   }));
 });
 // Lembretes reais virão do servidor (Web Push). Este manipulador já está pronto para eles.

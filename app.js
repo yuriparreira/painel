@@ -2,12 +2,26 @@
 // Todos os números são fictícios (ver data.js). O estado da demonstração fica só neste navegador.
 import { I } from './icons.js';
 import * as D from './data.js';
+// sync.js chegou na versão 0.4.0. Se o aparelho ainda guarda só os arquivos da versão anterior (sem internet,
+// antes da atualização terminar), o app abre sem o login em vez de ficar em branco.
+const sbOff = async () => { const e = new Error('offline'); e.code = 'offline'; throw e; };
+const SB_OFF = { consumeHash: () => null, session: () => null, email: () => null, pending: () => null, clearPending() {}, currentEpoch: () => 0, onChange() {}, sendCode: sbOff, verifyCode: sbOff, fetchPainel: sbOff, signOut: async () => 'ok' };
+// Antes da espera abaixo: o navegador pode oferecer a instalação enquanto o sync.js ainda chega.
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; try { if (current() === 'onboarding') render(true); } catch { /* ainda abrindo */ } });
+const SB = await import('./sync.js').catch(() => SB_OFF);
 
-// Dados reais: o arquivo carregado em Importar fica só neste navegador.
+// Volta do link mágico do e-mail: a sessão sai do endereço antes do roteador ler o hash.
+const hashLogin = SB.consumeHash();
+
+// Dados reais: vêm do Open Finance (Supabase, depois do login) ou do arquivo carregado em Importar.
+// A última cópia fica só neste navegador, para abrir sem internet.
 const REALK = 'painel-real-v1';
 let realErr = null;
 try { const t = localStorage.getItem(REALK); if (t) D.useReal(JSON.parse(t)); } catch (e) { realErr = e; }
-const cardName = (m) => (m === 'Cartão Alfa' ? D.CARDS[0].n : m);
+const card0 = () => (D.CARDS[0] ? D.CARDS[0].n : 'cartão');
+const semCartao = () => !!D.REAL && !D.CARDS.length; // dados reais sem nenhum cartão: nada de fatura nas telas
+const cardName = (m) => (m === 'Cartão Alfa' ? card0() : m);
 
 const app = document.getElementById('app');
 const main = document.getElementById('main');
@@ -55,7 +69,7 @@ function defaults() {
     notif: { briefing: true, treino: true, dormir: true, contas: true }, card: 0, fat: 'aberta', calSel: null, calOff: 0,
     billFilter: 'todas', importStep: 0, importXp: false, importCat: null, importRule: true, bp: 'resumo', dayType: null, agView: 'hoje', devices: {},
     draftExpense: '', inboxDraft: '', missaoRef: null, corpoKey: null, combByMeals: false, expenses: [], mealXp: {}, inboxXp: 0, prToday: false, best1rm: {}, brasaAt: null, hist: null,
-    paidAmt: {}, good: {}, bossSeed: null, bossMonth: null, importAt: null, bossWon: null,
+    paidAmt: {}, paidAt: {}, txUsados: [], good: {}, bossSeed: null, bossMonth: null, importAt: null, bossWon: null,
   };
 }
 const dayAt = (isoStr) => new Date(isoStr + 'T12:00');
@@ -125,7 +139,7 @@ let S = load();
 // O app instalado no iPhone volta da memória sem recarregar: confere a virada do dia ao voltar.
 function checkDay() {
   const t = D.iso(diaNow()); if (S.day === t) return false;
-  rollover(S, t); S.day = t; bossMonth(S); save(); setTimeout(checkBoss, 1200); closeSheet(true, false); toast(`${I('sun', 18)} Novo dia. Missões zeradas.`); render(false); return true;
+  rollover(S, t); S.day = t; bossMonth(S); pruneReal(); save(); setTimeout(checkBoss, 1200); closeSheet(true, false); toast(`${I('sun', 18)} Novo dia. Missões zeradas.`); render(false); return true;
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { /* modo privado: segue sem salvar */ } }
 function touch() { if (S.offline || !navigator.onLine) S.pending += 1; save(); }
@@ -165,17 +179,96 @@ const cardExtra = () => cardOf('aberta');
 const cardNext = () => cardOf('proxima');
 // Conta paga mostra o valor que foi pago (o mesmo que saiu do saldo), em qualquer tela.
 const bills = () => D.bills(S.paid, cardExtra(), diaNow()).map((b) => (b.pago && S.paidAmt[b.id] != null ? { ...b, v: S.paidAmt[b.id] } : b));
+const bankIds = () => new Set(((D.REAL && D.REAL.contas) || []).map((c) => c.id).filter(Boolean));
+const tsOf = (s) => { const t = Date.parse(s || ''); return isNaN(t) ? 0 : t; };
+// Chave de um lançamento que vale entre leituras (o app não recebe o id): dia, valor, conta e descrição, com um
+// número quando dois são iguais.
+let txKeysOf = null, txKeysMap = new Map();
+function txKeys() {
+  const T = (D.REAL && D.REAL.transacoes) || [];
+  if (txKeysOf !== T) { const n = {}; txKeysMap = new Map(T.map((y) => { const b = `${y.d}|${y.v}|${y.conta || ''}|${y.desc || ''}`; n[b] = (n[b] || 0) + 1; return [y, `${b}#${n[b]}`]; })); txKeysOf = T; }
+  return txKeysMap;
+}
+// Contas marcadas à mão que o banco já mostra; até lá elas saem do saldo. Com o Open Finance o banco mostra quando o
+// extrato de uma conta traz um débito do mesmo valor feito a partir da véspera da marcação (nunca mais de 28 dias
+// antes do vencimento), fora da categoria de outra conta e sem já explicar outra coisa; ou quando todos os bancos
+// atualizaram depois da marcação e depois do dia do vencimento (um pagamento agendado só sai no dia). Na dúvida,
+// continua descontando: o "livre para gastar" nunca fica maior do que é. Devolve as contas e os débitos usados.
+function reflected(B) {
+  const ids = new Set(), tx = new Set();
+  if (!fromSB()) return { ids, tx };
+  const R = D.REAL, bank = bankIds(), K = txKeys(), cps = R.contasPagar || [], u = tsOf(R.atualizadoEm), usados = new Set(S.txUsados);
+  B.forEach((b) => { if (b.hitTx) tx.add(b.hitTx); });
+  B.filter((b) => S.paid[b.id] && !b.porExtrato && S.paidAt[b.id]).sort((a, b) => a.due - b.due).forEach((b) => {
+    const at = S.paidAt[b.id], v = S.paidAmt[b.id] ?? b.v;
+    const own = cps.find((c) => (c.fatura ? 'fatura' : c.id) === b.id), oc = own && own.txCat;
+    const outras = new Set(cps.filter((c) => c !== own && c.txCat && c.txCat !== oc).map((c) => c.txCat));
+    const d0 = [D.iso(D.addDays(new Date(tsOf(at.t) || Date.now()), -1)), D.iso(D.addDays(b.due, -28))].sort()[1];
+    const hit = v >= 1 && (R.transacoes || []).find((x) => !tx.has(x) && !usados.has(K.get(x)) && bank.has(x.conta) && x.v < 0 && Math.abs(-x.v - v) < 1 && x.d >= d0 && !outras.has(x.cat));
+    if (hit) { tx.add(hit); ids.add(b.id); return; }
+    const depois = new Date(b.due.getFullYear(), b.due.getMonth(), b.due.getDate() + 1).getTime();
+    if (u && u > Math.max(tsOf(at.t), depois)) ids.add(b.id);
+  });
+  return { ids, tx };
+}
 function money() {
-  const now = diaNow(), payday = D.payday(now), B = bills();
-  const pagas = B.filter((b) => S.paid[b.id]).reduce((a, b) => a + (S.paidAmt[b.id] ?? b.v), 0); // sai do saldo o valor pago, não o atual
+  const now = diaNow(), payday = D.payday(now), B = bills(), RF = reflected(B);
+  const pagas = B.filter((b) => S.paid[b.id] && !b.porExtrato && !RF.ids.has(b.id)).reduce((a, b) => a + (S.paidAmt[b.id] ?? b.v), 0); // sai do saldo o valor pago, não o atual
   const avista = S.expenses.filter((x) => x.met !== 'Cartão Alfa').reduce((a, x) => a + x.v, 0);
   const saldo = D.SAFE.saldo - pagas - avista;
   const due = B.filter((b) => !b.pago && b.id !== 'fatura' && b.met !== 'Cartão' && b.due <= payday);
   const contas = due.reduce((a, b) => a + b.v, 0);
-  const fb = B.find((b) => b.id === 'fatura'), faturaAntes = !fb.pago && fb.due <= payday ? fb.v : 0;
-  const proxima = D.CARDS[0].faturas.proxima.v + cardNext();
+  const fb = B.find((b) => b.id === 'fatura') || { id: 'fatura', pago: true, v: 0, due: payday }, faturaAntes = !fb.pago && fb.due <= payday ? fb.v : 0;
+  const c0 = D.CARDS[0];
+  let proxima = (c0 ? c0.faturas.proxima.v : 0) + cardNext();
+  // A próxima vem do uso atual do cartão, que ainda inclui a fatura paga à mão até o banco registrar o pagamento
+  // (a mesma regra do saldo, para os dois números nunca discordarem).
+  if (c0 && c0.faturas.proxima.deUso && fb.pago && !fb.porExtrato && S.paid.fatura && !RF.ids.has('fatura')) proxima = Math.max(0, proxima - fb.v);
   return { saldo, contas, due, fb, fatura: fb.v, faturaAntes, proxima, payday, dias: D.diffDays(payday, now), livre: saldo - contas - faturaAntes };
 }
+// Contas marcadas à mão nos dados reais: valem no mês em que foram marcadas, só para a mesma conta (mesmo nome e
+// vencimento: a fatura do cartão principal pode passar a ser de outro cartão), e saem quando o extrato mostra o pagamento.
+const billName = (b) => String(b.n || '').split(' · ')[0];
+function prunePaid() {
+  if (!D.REAL) return false;
+  const m = D.iso(diaNow()).slice(0, 7), B = bills(); let ch = false;
+  Object.keys(S.paid).forEach((id) => {
+    let at = S.paidAt[id];
+    if (!at || typeof at !== 'object') { at = S.paidAt[id] = { m, t: new Date().toISOString() }; ch = true; } // marcação de antes desta versão
+    const b = B.find((x) => x.id === id);
+    if (b && !at.due) { at.due = D.iso(b.due); at.n = billName(b); ch = true; }
+    const outra = b && (at.due !== D.iso(b.due) || (at.n && at.n !== billName(b)));
+    if (at.m !== m || (b && b.porExtrato) || outra) { delete S.paid[id]; delete S.paidAmt[id]; delete S.paidAt[id]; ch = true; }
+  });
+  return ch;
+}
+// Gastos registrados à mão, com o Open Finance: saem quando o extrato traz um lançamento do mesmo valor (do dia
+// anterior a 5 dias depois; no cartão para gasto no cartão, numa conta para Pix; dinheiro não aparece no extrato)
+// que não estava lá quando o gasto foi registrado e não explica outra coisa, ou quando todos os bancos atualizaram
+// depois do registro. Cada lançamento vale para um gasto só, também entre uma abertura do app e outra.
+const sameDebits = (v, d) => { if (!fromSB()) return []; const K = txKeys(), d0 = D.iso(D.addDays(dayAt(d), -1)); return (D.REAL.transacoes || []).filter((y) => y.v < 0 && y.d >= d0 && Math.abs(-y.v - v) < 0.5).map((y) => K.get(y)); };
+function pruneExpenses() {
+  if (!fromSB()) return false;
+  const R = D.REAL, bank = bankIds(), card = new Set((R.cartoes || []).map((c) => c.id).filter(Boolean)), K = txKeys();
+  const busy = S.expenses.length ? reflected(bills()).tx : new Set(), usados = new Set(S.txUsados), u = tsOf(R.atualizadoEm);
+  let ch = false;
+  const keep = S.expenses.filter((x) => {
+    if (!x.t) { x.t = new Date().toISOString(); ch = true; } // registrado antes desta versão
+    const ok = x.met === 'Cartão Alfa' ? card : x.met === 'Pix' ? bank : null;
+    if (ok) {
+      const d0 = D.iso(D.addDays(dayAt(x.d), -1)), d1 = D.iso(D.addDays(dayAt(x.d), 5)), ja = new Set(x.ja || []);
+      const hit = (R.transacoes || []).find((y) => { const k = K.get(y); return y.v < 0 && ok.has(y.conta) && !busy.has(y) && !usados.has(k) && !ja.has(k) && Math.abs(-y.v - x.v) < 0.5 && y.d >= d0 && y.d <= d1; });
+      if (hit) { const k = K.get(hit); usados.add(k); S.txUsados.push(k); return false; }
+    }
+    return !(u && u > tsOf(x.t));
+  });
+  if (keep.length !== S.expenses.length) { S.expenses = keep; ch = true; }
+  // Uma chave só importa enquanto o lançamento pode casar com um gasto ainda na lista.
+  const lim = D.iso(D.addDays(diaNow(), -10)), n0 = S.txUsados.length;
+  S.txUsados = S.txUsados.filter((k) => k.slice(0, 10) >= lim);
+  return ch || S.txUsados.length !== n0;
+}
+const pruneReal = () => { const a = prunePaid(), b = pruneExpenses(); return a || b; };
 const livreLabel = (m) => (m.livre < 0 ? `Falta para as contas até ${dShort(m.payday)}` : `Livre para gastar até ${dShort(m.payday)}`);
 const livreBig = (m) => `<span class="big${m.livre < 0 ? ' neg' : ''}" style="margin-top:2px">${brl0(Math.abs(m.livre))}</span>`;
 function missionBill() { return bills().find((b) => !b.pago && !b.auto && D.diffDays(b.due, diaNow()) <= 1); }
@@ -573,7 +666,13 @@ function Exames() {
 const realDate = () => new Date(D.REAL.geradoEm + 'T12:00');
 let realOk = null;
 const justLoaded = () => { if (realOk === null) { try { realOk = !!sessionStorage.getItem('painel-real-ok'); sessionStorage.removeItem('painel-real-ok'); } catch { realOk = false; } } return realOk; };
-const realLine = () => (D.REAL ? `<p class="small muted" style="margin:0 20px 6px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} Seus dados de ${dShort(realDate())}, só neste aparelho. <a href="#/dinheiro/importar">Atualizar</a></p>` : '');
+const fromSB = () => !!(D.REAL && D.REAL.origem === 'supabase');
+const hhmm = (d) => d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+const syncDate = () => (D.REAL && D.REAL.sincronizadoEm ? new Date(D.REAL.sincronizadoEm) : null);
+const fmtSync = () => { const t = syncDate(); return t && !isNaN(t) ? `${dShort(t)} às ${hhmm(t)}` : dShort(realDate()); };
+const realLine = () => (!D.REAL ? '' : fromSB()
+  ? `<p class="small muted" style="margin:0 20px 6px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} Open Finance de ${fmtSync()}, com cópia neste aparelho. <a href="#/dinheiro/sincronizar">${syncBusy ? 'Atualizando…' : 'Ver conexão'}</a></p>`
+  : `<p class="small muted" style="margin:0 20px 6px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} Seus dados de ${dShort(realDate())}, só neste aparelho. <a href="#/dinheiro/importar">Atualizar</a></p>`);
 function plMes(pl) {
   if (!D.REAL) return '+1,2% no mês';
   const ser = D.netWorthSeries(); if (!ser.length) return '';
@@ -589,7 +688,7 @@ function loadRealFile(f) {
       localStorage.setItem(REALK, JSON.stringify(R));
       try { sessionStorage.setItem('painel-real-ok', '1'); } catch { /* sem aviso */ }
       // Os marcadores da demonstração (contas pagas, gastos à mão) não valem para os dados reais.
-      S.paid = {}; S.paidAmt = {}; S.expenses = []; S.card = 0; S.fat = 'aberta'; save();
+      S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.expenses = []; S.card = 0; S.fat = 'aberta'; save();
       location.reload();
     } catch (e) {
       toast(`Não consegui ler ${esc(f.name)}. Use o painel-dados.json gerado no seu computador.`, 'warn', 6000);
@@ -612,7 +711,7 @@ function cats() {
 function Dinheiro() {
   const M = money();
   const up = bills().filter((b) => !b.pago && b.met !== 'Cartão' && D.diffDays(b.due, diaNow()) <= 7);
-  const C = cats(), tot = C.reduce((a, c) => a + c.v, 0), top = Math.max(...C.map((c) => c.v));
+  const C = cats(), rest = D.REAL ? D.CATS_REST : 0, tot = C.reduce((a, c) => a + c.v, 0) + rest, top = Math.max(1, ...C.map((c) => c.v));
   const pl = plTotal();
   return {
     title: 'Dinheiro',
@@ -628,18 +727,19 @@ function Dinheiro() {
       <div class="card"><div class="row-flex">${I('shieldHalf', 22, 'class="ic" style="color:var(--a-pat)"')}<div class="grow"><b class="num">${n1(D.SAVINGS.reservaMeses)} de ${D.SAVINGS.reservaMeta} meses</b><div class="small muted">de gastos essenciais (${brl0(D.SAVINGS.essenciais)}/mês ${D.SAVINGS.essLabel || ': moradia, mercado, transporte e saúde'})</div></div></div><div style="margin-top:10px">${bar((D.SAVINGS.reservaMeses / D.SAVINGS.reservaMeta) * 100, 'var(--a-pat)', 'lg')}</div>
         <p class="small muted" style="margin-top:8px">Escudo da Reserva: cada aporte reforça o escudo e sobe o atributo Patrimônio. Faltam ${brl0((D.SAVINGS.reservaMeta - D.SAVINGS.reservaMeses) * D.SAVINGS.essenciais)} para ${D.SAVINGS.reservaMeta} meses.</p></div>
       ${sec(D.CATS_TITLE, D.SAVINGS.taxa == null ? '' : `<span class="small muted num">poupança ${D.SAVINGS.taxa}% · meta ${D.SAVINGS.meta}%</span>`)}
-      <div class="card">${C.map((c) => `<div style="margin:10px 0"><div class="row-flex small"><span class="grow">${c.n}</span><b class="num">${brl0(c.v)}</b><span class="muted num" style="width:72px;text-align:right">${c.v > c.avg * 1.1 ? `${I('up', 14, 'style="display:inline;vertical-align:-2px"')} ${Math.round((c.v / c.avg - 1) * 100)}%` : 'na média'}</span></div>${bar((c.v / top) * 100, c.v > c.avg * 1.1 ? 'var(--xp-fill)' : 'var(--primary)')}</div>`).join('')}
-        <p class="small muted">Total ${brl0(tot)}. ${D.REAL ? 'Comparação com a média dos 6 meses anteriores. A fatura aparece numa linha só até as faturas do cartão chegarem.' : 'Comparação com a média de 30 dias dos últimos 6 meses.'}${S.expenses.length ? ` Inclui ${S.expenses.length} gasto${S.expenses.length > 1 ? 's' : ''} registrado${S.expenses.length > 1 ? 's' : ''} à mão.` : ''}</p></div>
+      <div class="card">${C.map((c) => `<div style="margin:10px 0"><div class="row-flex small"><span class="grow">${esc(c.n)}</span><b class="num">${brl0(c.v)}</b><span class="muted num" style="width:72px;text-align:right">${c.v > c.avg * 1.1 ? `${I('up', 14, 'style="display:inline;vertical-align:-2px"')} ${Math.round((c.v / c.avg - 1) * 100)}%` : 'na média'}</span></div>${bar((c.v / top) * 100, c.v > c.avg * 1.1 ? 'var(--xp-fill)' : 'var(--primary)')}</div>`).join('')}
+        ${C.length ? '' : '<div class="empty"><p>Ainda sem gastos no Open Finance.</p></div>'}
+        <p class="small muted">Total ${brl0(tot)}${Math.abs(rest) >= 1 ? `, com ${rest > 0 ? '' : '−'}${brl0(Math.abs(rest))} de outras categorias e estornos` : ''}. ${D.REAL ? `Comparação com a média dos 6 meses anteriores. ${D.REAL.cartaoDetalhado ? 'As compras do cartão entram no mês em que a fatura vence.' : 'A fatura aparece numa linha só até as faturas do cartão chegarem.'}` : 'Comparação com a média de 30 dias dos últimos 6 meses.'}${S.expenses.length ? ` Inclui ${S.expenses.length} gasto${S.expenses.length > 1 ? 's' : ''} registrado${S.expenses.length > 1 ? 's' : ''} à mão.` : ''}</p></div>
       ${S.expenses.length ? `${sec('Registrados à mão', '<span class="small muted">ligados ao extrato quando ele chegar</span>')}<div class="card tight">${S.expenses.slice().reverse().map(expRow).join('')}</div>` : ''}
       ${D.REAL && (D.REAL.pendentes || []).length ? `${sec('Para completar o painel')}<button class="card cardlink" data-act="pendentes"><span class="badge-ic">${I('target')}</span><div class="grow"><b>Faltam ${D.REAL.pendentes.length} itens</b><div class="small muted">${esc(D.REAL.pendentes.slice(0, 2).map((x) => x.n).join(', '))} e outros</div></div>${I('chevR', 24, 'class="ic chev"')}</button>` : ''}
       ${sec('Mais')}
       <a class="card cardlink" href="#/dinheiro/cartoes"><span class="badge-ic">${I('card')}</span><div class="grow"><b>Cartões e faturas</b><div class="small muted">Fatura aberta, parcelas e melhor dia de compra</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
       <a class="card cardlink" href="#/dinheiro/patrimonio"><span class="badge-ic">${I('pie')}</span><div class="grow"><b>Patrimônio</b><div class="small muted">Balanço, evolução e alocação</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
-      <a class="card cardlink" href="#/dinheiro/importar"><span class="badge-ic">${I('upload')}</span><div class="grow"><b>Importar extratos</b><div class="small muted">${D.REAL ? `Seus dados de ${dShort(new Date(D.REAL.geradoEm + 'T12:00'))}` : `Última importação ${S.importAt ? rel(dayAt(S.importAt)) : 'há 9 dias'}`}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`,
+      <a class="card cardlink" href="#/dinheiro/importar"><span class="badge-ic">${I('upload')}</span><div class="grow"><b>Open Finance e extratos</b><div class="small muted">${fromSB() ? `Open Finance de ${fmtSync()}` : D.REAL ? `Seus dados de ${dShort(new Date(D.REAL.geradoEm + 'T12:00'))}` : `Última importação ${S.importAt ? rel(dayAt(S.importAt)) : 'há 9 dias'}`}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`,
   };
 }
 // Depois de paga, a fatura do mês sai de cena: o card mostra a próxima, que recebe os gastos novos no cartão.
-const fatKpi = (M, sub = '') => (M.fb.pago ? `<div class="kpi"><span>Próxima fatura</span><b>${brlK(M.proxima)}</b><small>a aberta já foi paga</small></div>` : `<div class="kpi"><span>Fatura aberta</span><b>${brlK(M.fatura)}</b>${sub ? `<small>${sub}</small>` : ''}</div>`);
+const fatKpi = (M, sub = '') => (semCartao() ? '<div class="kpi"><span>Cartão</span><b>—</b><small>nenhum no Open Finance</small></div>' : M.fb.pago ? `<div class="kpi"><span>Próxima fatura</span><b>${brlK(M.proxima)}</b><small>a aberta já foi paga</small></div>` : `<div class="kpi"><span>Fatura aberta</span><b>${brlK(M.fatura)}</b>${sub ? `<small>${sub}</small>` : ''}</div>`);
 const expRow = (x) => `<div class="row"><span class="badge-ic">${I(x.met === 'Cartão Alfa' ? 'card' : 'wallet', 20)}</span><div class="grow"><div class="ttl">${esc(x.cat)}</div><div class="meta">${dShort(dayAt(x.d))} · ${esc(cardName(x.met))}${x.met === 'Cartão Alfa' ? (x.fat === 'proxima' ? ', próxima fatura' : ', fatura aberta') : ''}</div></div><div class="amt num">${brl(x.v)}</div><button class="iconbtn" data-act="delExpense" data-arg="${esc(x.id)}" aria-label="Apagar gasto de ${brl(x.v)} em ${esc(x.cat.toLowerCase())}">${I('x')}</button></div>`;
 function plTotal() { const a = D.BALANCE.ativo.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0); const p = D.BALANCE.passivo.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0); return a - p; }
 
@@ -671,31 +771,37 @@ function Contas() {
         <div class="legend" style="margin-top:8px"><span><i class="dot-pago" style="width:8px;height:8px;border-radius:50%"></i>paga</span><span><i class="dot-agendado" style="width:8px;height:8px;border-radius:50%"></i>agendada</span><span><i class="dot-avencer" style="width:8px;height:8px;border-radius:50%"></i>a vencer</span><span><i class="dot-atrasado" style="width:8px;height:8px;border-radius:50%"></i>atrasada</span></div></div>
       <div class="hscroll" role="group" aria-label="Filtrar contas">${F.map(([k, l]) => `<button class="pick" aria-pressed="${S.billFilter === k}" data-act="billf" data-arg="${k}">${l}</button>`).join('')}</div>
       ${S.calSel ? `<div class="sec"><h2>${dShort(new Date(S.calSel + 'T12:00'))}</h2><button class="link" data-act="calsel" data-arg="${S.calSel}">Ver o mês todo</button></div>` : ''}
-      <div class="card tight">${list.length ? list.map((b) => `<button class="row" data-act="bill" data-arg="${b.id}"><span class="badge-ic">${I(b.cat === 'Cartão' ? 'card' : b.cat === 'Transporte' ? 'car' : b.cat === 'Investimento' ? 'trend' : 'receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${b.met === 'Cartão' ? `no ${D.CARDS[0].n}, entra na fatura` : b.met}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><span class="badge-ic">${I('receipt')}</span><p>Nenhuma conta com esse filtro.</p></div>`}</div>
+      <div class="card tight">${list.length ? list.map((b) => `<button class="row" data-act="bill" data-arg="${b.id}"><span class="badge-ic">${I(b.cat === 'Cartão' ? 'card' : b.cat === 'Transporte' ? 'car' : b.cat === 'Investimento' ? 'trend' : 'receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${b.met === 'Cartão' ? `no ${esc(card0())}, entra na fatura` : b.met}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><span class="badge-ic">${I('receipt')}</span><p>Nenhuma conta com esse filtro.</p></div>`}</div>
       <p class="small muted" style="margin:14px 20px">Lembretes 3 dias antes e no dia, dentro do resumo das 07:00. Pagar no prazo dá +15 XP e sobe o Foco. Fontes: contas recorrentes detectadas no extrato, DDA do banco e as que você cadastrar.</p>`,
   };
 }
 
 function CartoesReal() {
+  if (!D.CARDS.length) return { title: 'Cartões e faturas', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Cartões e faturas', esc((D.REAL.notas || {}).cartoes || ''))}${realLine()}<div class="card"><div class="empty"><span class="badge-ic">${I('card', 28)}</span><b>Nenhum cartão ${fromSB() ? 'no Open Finance' : 'nos seus dados'}</b><p>${fromSB() ? 'Quando um cartão for conectado no Meu Pluggy, ele aparece aqui depois da próxima sincronização.' : 'O arquivo carregado não traz cartões.'}</p></div></div>` };
   const i = Math.min(S.card, D.CARDS.length - 1), k = D.CARDS[i].real, now = diaNow();
-  const usado = k.usado || 0, pc = k.limite ? (usado / k.limite) * 100 : 0;
+  const usado = k.usado || 0, lim = Number(k.limite) || 0, pc = lim ? (usado / lim) * 100 : 0;
   let vdate = null;
   if (k.vence) { vdate = new Date(now.getFullYear(), now.getMonth(), k.vence); if (vdate < D.startOfDay(now)) vdate = new Date(now.getFullYear(), now.getMonth() + 1, k.vence); }
   const P = k.pagamentos || [], tot = P.reduce((a, p) => a + p.v, 0), med = P.length ? P.slice(-3).reduce((a, p) => a + p.v, 0) / Math.min(3, P.length) : 0;
   const pd = (p) => new Date(p.d + 'T12:00');
+  // Open Finance: cada fatura vencida vem com a data do pagamento quando ele aparece no extrato (pagoEm).
+  const lastPaid = (p) => (!p.vence ? `Última, paga em ${dShort(pd(p))}` : p.pagoEm ? `Última, venceu em ${dShort(pd(p))} e foi paga em ${dShort(new Date(p.pagoEm + 'T12:00'))}` : `Última, venceu em ${dShort(pd(p))}. O pagamento ainda não apareceu no extrato.`);
   const refU = (k.refUsado || '').replace(/^(\d{4})-(\d{2}).*/, (_, y, m) => `${m}/${y.slice(2)}`);
   const N = D.REAL.notas || {};
+  // Open Finance: compras do cartão (sem os pagamentos da fatura), da mais nova para a mais antiga.
+  const LA = (D.REAL.transacoes || []).filter((x) => x.conta && x.conta === k.id && x.tipo !== 'transferencia');
+  const nL = LA.length, L = LA.slice(-25).reverse();
   return {
     title: 'Cartões e faturas',
     html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Cartões e faturas', esc(N.cartoes || 'Limite e pagamentos pelos seus arquivos'))}${realLine()}
       <div class="seg" role="group" aria-label="Escolher cartão" style="margin:4px 16px 0">${D.CARDS.map((x, j) => `<button aria-pressed="${i === j}" data-act="card" data-arg="${j}">${esc(x.n.replace('Cartão ', ''))}</button>`).join('')}</div>
-      <div class="card"><div class="row-flex"><span class="small muted grow">Limite usado${refU ? ` em ${refU}` : ''}</span><b class="num">${brl0(usado)} de ${brl0(k.limite)}</b></div><div style="margin-top:8px">${bar(pc, pc > 50 ? 'var(--xp-fill)' : 'var(--primary)', 'lg')}</div>
-        <p class="small muted" style="margin-top:8px">Disponível ${brl0(k.limite - usado)}.${vdate ? ` Vence todo dia ${k.vence}; a próxima em ${dShort(vdate)} (${rel(vdate)}).` : ''}</p></div>
-      ${P.length ? `${sec('Faturas pagas')}<div class="card"><div class="small muted">Última, paga em ${dShort(pd(P[P.length - 1]))}</div><div class="big">${brl(P[P.length - 1].v)}</div>
+      <div class="card"><div class="row-flex"><span class="small muted grow">Limite usado${refU ? ` em ${refU}` : ''}</span><b class="num">${lim ? `${brl0(usado)} de ${brl0(lim)}` : brl0(usado)}</b></div><div style="margin-top:8px">${bar(pc, pc > 50 ? 'var(--xp-fill)' : 'var(--primary)', 'lg')}</div>
+        <p class="small muted" style="margin-top:8px">${lim ? `Disponível ${brl0(lim - usado)}.` : 'O banco não informa o limite.'}${k.faturaAtual && k.faturaAtual.v != null ? ` Fatura que vence em ${dShort(new Date(k.faturaAtual.vence + 'T12:00'))}: ${brl(k.faturaAtual.v)}.` : vdate ? ` Vence todo dia ${k.vence}; a próxima em ${dShort(vdate)} (${rel(vdate)}).` : ''}</p></div>
+      ${P.length ? `${sec(P.some((p) => p.vence && !p.pagoEm) ? 'Faturas anteriores' : 'Faturas pagas')}<div class="card"><div class="small muted">${lastPaid(P[P.length - 1])}</div><div class="big">${brl(P[P.length - 1].v)}</div>
         <div class="kpis"><div class="kpi"><span>Média 3 meses</span><b>${brlK(med)}</b></div><div class="kpi"><span>No período</span><b>${brlK(tot)}</b></div><div class="kpi"><span>Maior</span><b>${brlK(Math.max(...P.map((p) => p.v)))}</b></div></div>
-        <div style="margin-top:12px">${barChart(P.slice(-10).map((p) => ({ v: p.v, l: mon(pd(p)), c: 'var(--a-pat)' })), { label: `Faturas pagas por mês, de ${brl0(P[Math.max(0, P.length - 10)].v)} a ${brl0(P[P.length - 1].v)}`, values: (v) => (v ? (v / 1000).toFixed(1).replace('.', ',') + 'k' : '') })}</div></div>` : ''}
-      ${sec('Lançamentos')}
-      <div class="card"><div class="empty"><span class="badge-ic">${I('file', 28)}</span><b>${usado || P.length ? 'Faltam as faturas' : 'Sem uso'}</b><p>${usado || P.length ? `${esc(k.faturas || '')}. Com elas o Painel separa mercado, restaurante, assinaturas e parcelas.` : `Nenhuma compra neste cartão. Limite livre de ${brl0(k.limite)}.`}</p>${usado || P.length ? '<a class="btn" href="#/dinheiro/importar">Como enviar</a>' : ''}</div></div>`,
+        <div style="margin-top:12px">${barChart(P.slice(-10).map((p) => ({ v: p.v, l: mon(pd(p)), c: 'var(--a-pat)' })), { label: `Faturas por mês, de ${brl0(P[Math.max(0, P.length - 10)].v)} a ${brl0(P[P.length - 1].v)}`, values: (v) => (v ? (v / 1000).toFixed(1).replace('.', ',') + 'k' : '') })}</div></div>` : ''}
+      ${sec(L.length ? 'Últimos lançamentos' : 'Lançamentos', L.length ? `<span class="small muted">${L.length} de ${nL}</span>` : '')}
+      ${L.length ? `<div class="card tight">${L.map((x) => `<div class="row"><div class="grow"><div class="ttl ellip">${esc(x.desc || 'Lançamento')}</div><div class="meta">${dShort(new Date(x.d + 'T12:00'))} · ${esc(x.cat || '')}${x.fat ? ` · fatura de ${mon(new Date(x.fat + 'T12:00'))}` : ''}</div></div><div class="amt num">${x.v > 0 ? `+${brl(x.v)}` : brl(-x.v)}</div></div>`).join('')}</div>` : `<div class="card"><div class="empty"><span class="badge-ic">${I('file', 28)}</span><b>${usado || P.length ? 'Faltam as faturas' : 'Sem uso'}</b><p>${usado || P.length ? `${esc(k.faturas || '')}. Com elas o Painel separa mercado, restaurante, assinaturas e parcelas.` : `Nenhuma compra neste cartão. Limite livre de ${brl0(k.limite)}.`}</p>${usado || P.length ? '<a class="btn" href="#/dinheiro/importar">Como enviar</a>' : ''}</div></div>`}`,
   };
 }
 
@@ -748,19 +854,21 @@ function Patrimonio() {
   const ta = A.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0), tp = P.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0), pl = ta - tp;
   const ser = D.netWorthSeries();
   if (D.REAL) ser.push({ d: realDate(), v: pl }); else { const shift = pl - ser[ser.length - 1].v; ser.forEach((x) => (x.v += shift)); }
-  const L = ser.length - 1, sg = (v) => `${v >= 0 ? '+' : '−'}${brl0(Math.abs(v))}`, N = (D.REAL && D.REAL.notas) || {};
+  const L = ser.length - 1, hasSer = L >= 1, sg = (v) => `${v >= 0 ? '+' : '−'}${brl0(Math.abs(v))}`, N = (D.REAL && D.REAL.notas) || {};
   const colors = ['var(--a-foc)', 'var(--a-pat)', 'var(--a-vig)'];
   const gsum = A.map((g) => g.itens.reduce((s, i) => s + i[1], 0));
-  const table = (side, label, tot) => `<table class="bp"><caption class="sr">${label}</caption>${side.map((g) => `<tr><th colspan="2">${g.g}</th></tr>${g.itens.map(([n, v]) => `<tr><td>${n}</td><td>${brl0(v)}</td></tr>`).join('')}`).join('')}<tr class="tot"><td>Total ${label.toLowerCase()}</td><td>${brl0(tot)}</td></tr></table>`;
+  // Fatias só das partes positivas (um saldo negativo na conta não vira fatia negativa nem passa de 100%).
+  const gpos = gsum.map((v) => Math.max(0, v)), tpos = gpos.reduce((a, b) => a + b, 0), share = (i) => (tpos > 0 ? (gpos[i] / tpos) * 100 : 0);
+  const table = (side, label, tot) => `<table class="bp"><caption class="sr">${label}</caption>${side.map((g) => `<tr><th colspan="2">${g.g}</th></tr>${g.itens.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${brl0(v)}</td></tr>`).join('')}`).join('')}<tr class="tot"><td>Total ${label.toLowerCase()}</td><td>${brl0(tot)}</td></tr></table>`;
   return {
     title: 'Patrimônio',
-    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Patrimônio', D.REAL ? `Foto de ${dShort(realDate())}, com os seus arquivos` : 'Atualizado no dia 1º de cada mês')}${realLine()}
-      <div class="card"><div class="small muted">Patrimônio líquido</div><div class="big">${brl0(pl)}</div><div class="small muted">${D.REAL ? `${sg(ser[L].v - ser[L - 1].v)} desde o fim de ${mon(ser[L - 1].d)} · ${sg(ser[L].v - ser[0].v)} desde o fim de ${mon(ser[0].d)}` : `+${brl0(ser[11].v - ser[10].v)} no mês · +${brl0(ser[11].v - ser[0].v)} em 12 meses`}</div>
-        ${lineChart(ser.map((x) => x.v), { area: true, label: `Patrimônio líquido ${D.REAL ? `desde o fim de ${mon(ser[0].d)}` : 'nos últimos 12 meses'}, de ${brl0(ser[0].v)} para ${brl0(pl)}`, fmt: (v) => Math.round(v / 1000) + 'k', labels: [[0, mon(ser[0].d)], [Math.round(L / 2), mon(ser[Math.round(L / 2)].d)], [L, D.REAL ? 'hoje' : mon(ser[L].d)]] })}
+    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Patrimônio', fromSB() ? `Open Finance de ${dShort(realDate())}, mais a foto manual` : D.REAL ? `Foto de ${dShort(realDate())}, com os seus arquivos` : 'Atualizado no dia 1º de cada mês')}${realLine()}
+      <div class="card"><div class="small muted">Patrimônio líquido</div><div class="big">${brl0(pl)}</div><div class="small muted">${D.REAL ? (hasSer ? `${sg(ser[L].v - ser[L - 1].v)} desde o fim de ${mon(ser[L - 1].d)}${L >= 2 ? ` · ${sg(ser[L].v - ser[0].v)} desde o fim de ${mon(ser[0].d)}` : ''}` : 'Ainda sem a série mensal: a evolução aparece depois da primeira foto manual.') : `+${brl0(ser[11].v - ser[10].v)} no mês · +${brl0(ser[11].v - ser[0].v)} em 12 meses`}</div>
+        ${!hasSer ? '' : lineChart(ser.map((x) => x.v), { area: true, label: `Patrimônio líquido ${D.REAL ? `desde o fim de ${mon(ser[0].d)}` : 'nos últimos 12 meses'}, de ${brl0(ser[0].v)} para ${brl0(pl)}`, fmt: (v) => Math.round(v / 1000) + 'k', labels: [[0, mon(ser[0].d)], ...(L >= 2 ? [[Math.round(L / 2), mon(ser[Math.round(L / 2)].d)]] : []), [L, D.REAL ? 'hoje' : mon(ser[L].d)]] })}
         ${N.serie ? `<p class="xs muted" style="margin-top:8px">${esc(N.serie)}</p>` : ''}</div>
       <div class="seg" role="group" aria-label="Formato" style="margin:6px 16px 0"><button aria-pressed="${S.bp === 'resumo'}" data-act="bp" data-arg="resumo">Resumo</button><button aria-pressed="${S.bp === 'balanco'}" data-act="bp" data-arg="balanco">Balanço patrimonial</button></div>
-      ${S.bp === 'resumo' ? `<div class="card"><b>Onde está o ativo</b><div class="stack" aria-hidden="true">${gsum.map((v, i) => `<i style="--c:${colors[i]};width:${((v / ta) * 100).toFixed(1)}%"></i>`).join('')}</div>
-          ${A.map((g, i) => `<div class="row-flex small" style="margin-top:10px"><span class="k" style="width:10px;height:10px;border-radius:3px;background:${colors[i]}"></span><span class="grow">${g.g}</span><b class="num">${brl0(gsum[i])}</b><span class="muted num" style="width:44px;text-align:right">${Math.round((gsum[i] / ta) * 100)}%</span></div>`).join('')}</div>
+      ${S.bp === 'resumo' ? `<div class="card"><b>Onde está o ativo</b><div class="stack" aria-hidden="true">${gsum.map((v, i) => `<i style="--c:${colors[i]};width:${share(i).toFixed(1)}%"></i>`).join('')}</div>
+          ${A.map((g, i) => `<div class="row-flex small" style="margin-top:10px"><span class="k" style="width:10px;height:10px;border-radius:3px;background:${colors[i]}"></span><span class="grow">${g.g}</span><b class="num">${brl0(gsum[i])}</b><span class="muted num" style="width:44px;text-align:right">${gsum[i] < 0 ? '—' : `${Math.round(share(i))}%`}</span></div>`).join('')}</div>
         <div class="grid2"><div class="card"><div class="small muted">Ativo</div><div class="mid">${brlK(ta)}</div></div><div class="card"><div class="small muted">Passivo</div><div class="mid">${brlK(tp)}</div></div></div>
         ${lvl(S.xp).L >= 10 ? `<div class="card soft"><div class="row-flex">${I('trend', 20)}<b>Projeção de independência</b></div><p class="small" style="margin-top:4px">${D.SAVINGS.taxa == null ? 'Precisa da sua renda mensal para calcular a taxa de poupança.' : `Com poupança de ${D.SAVINGS.taxa}% e retorno real de 4% a.a., o patrimônio cobre seus gastos em cerca de 21 anos.`}</p></div>` : `<div class="card soft"><div class="row-flex">${I('lock', 20)}<b>Projeção de independência</b><span class="chip right">nível 10</span></div><p class="small" style="margin-top:4px">Em quantos anos o patrimônio cobre seus gastos, com a sua taxa de poupança. Libera no nível 10.</p></div>`}`
         : `<div class="card">${table(A, 'Ativo', ta)}</div><div class="card">${table(P, 'Passivo', tp)}<table class="bp"><tr class="tot"><td>Patrimônio líquido</td><td>${brl0(pl)}</td></tr></table></div>`}
@@ -774,18 +882,21 @@ function Importar() {
   const line = `<h2 class="sr" id="imp-step" tabindex="-1">Etapa ${st + 1} de 4: ${steps[st]}</h2><div class="stepline" aria-hidden="true">${steps.map((s, i) => `<span class="${i <= st ? 'on' : ''}">${s}</span>`).join('')}</div>`;
   let body = '';
   if (st === 0) {
-    const realCard = `${sec('Seus dados reais')}<div class="card"><div class="row-flex"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><b>${D.REAL ? 'Carregados neste aparelho' : 'Carregar o arquivo do Painel'}</b><div class="small muted">${D.REAL ? `Arquivo de ${dShort(realDate())}: ${(D.REAL.transacoes || []).length} lançamentos, ${(D.REAL.contas || []).length} contas e ${(D.REAL.cartoes || []).length} cartões.` : 'O painel-dados.json é gerado no seu computador a partir dos seus extratos. Ele é lido aqui e não sai deste aparelho.'}</div></div></div>
+    const sbSub = SB.session() ? (fromSB() ? `Bancos e cartões de ${fmtSync()}. Não precisa mais do arquivo.` : syncBusy ? 'Buscando os dados…' : syncErr ? sbMsg(syncErr) : 'Ainda sem dados neste aparelho. Toque para buscar.') : 'Bancos e cartões chegam sozinhos, sem arquivo. Login com código no e-mail.';
+    const ofCard = `${sec('Open Finance')}<a class="card cardlink" href="#/dinheiro/sincronizar"><span class="badge-ic">${I('link')}</span><div class="grow"><b>${SB.session() ? (fromSB() ? 'Conectado pelo Supabase' : 'Entrou no Supabase') : 'Entrar para sincronizar'}</b><div class="small muted">${sbSub}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`;
+    // O arquivo continua disponível até os dados do Open Finance chegarem de fato.
+    const realCard = fromSB() ? `${ofCard}${sec('Extrato ou fatura avulsa')}` : `${ofCard}${sec('Arquivo do computador')}<div class="card"><div class="row-flex"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><b>${D.REAL ? 'Carregados neste aparelho' : 'Carregar o arquivo do Painel'}</b><div class="small muted">${D.REAL ? `Arquivo de ${dShort(realDate())}: ${(D.REAL.transacoes || []).length} lançamentos, ${(D.REAL.contas || []).length} contas e ${(D.REAL.cartoes || []).length} cartões.` : 'O painel-dados.json é gerado no seu computador a partir dos seus extratos. Ele é lido aqui e não sai deste aparelho.'}</div></div></div>
       ${realErr ? '<p class="small" style="color:var(--danger);margin-top:8px">O arquivo salvo neste aparelho não abriu. Carregue de novo.</p>' : ''}
       ${justLoaded() ? `<p class="small" style="margin-top:8px">${I('check', 16, 'style="display:inline;vertical-align:-3px;color:var(--primary)"')} Pronto. <a href="#/dinheiro">Ver em Dinheiro</a></p>` : ''}
       <label class="btn ${D.REAL ? 'line ' : ''}block filebtn" style="margin-top:12px"><input type="file" accept=".json,application/json" data-in="realfile">${I('upload', 20)} ${D.REAL ? 'Trocar pelo arquivo novo' : 'Escolher painel-dados.json'}</label>
-      ${D.REAL ? '<button class="btn ghost block" style="margin-top:8px" data-act="realClear">Apagar deste aparelho e voltar ao exemplo</button>' : ''}</div>
+      ${D.REAL ? '<button class="btn ghost block" style="margin-top:8px" data-act="realClear">Apagar deste aparelho e voltar ao exemplo</button>' : ''}
+      ${SB.session() ? '<p class="xs muted" style="margin-top:8px">Com o login, a próxima leitura do Open Finance substitui o arquivo.</p>' : ''}</div>
       ${sec('Extrato ou fatura avulsa')}`;
     body = `${realCard}<div class="card"><label class="drop"><input type="file" accept=".ofx,.csv,.xlsx,.pdf" data-in="file"><span class="badge-ic p" style="margin:0 auto 10px;width:56px;height:56px;border-radius:18px">${I('upload', 28)}</span><b>Escolher extrato ou fatura</b><p class="small muted" style="margin-top:4px">OFX é o melhor. Também aceita CSV, XLSX e PDF de fatura. O arquivo é lido no aparelho.</p></label>
         <button class="btn ghost block" style="margin-top:12px" data-act="importNext">Usar arquivo de exemplo</button></div>
       ${sec('Onde baixar')}
       <div class="card tight">${[['Extrato do banco', 'Internet banking → Extrato → exportar OFX ou CSV'], ['Fatura do cartão', 'App do cartão → Faturas → PDF ou CSV'], ['Investimentos (B3)', 'Área do Investidor → Relatórios → Consolidado'], ['Faturas no e-mail', 'Fase 2: o Painel busca o PDF no Gmail e guarda no Drive']].map(([t, d]) => `<div class="row"><span class="badge-ic">${I('file', 20)}</span><div class="grow"><div class="ttl">${t}</div><div class="meta">${d}</div></div></div>`).join('')}</div>
-      ${sec('Conexão automática')}
-      <div class="card"><div class="row-flex"><span class="badge-ic">${I('link')}</span><div class="grow"><b>Open Finance pelo Meu Pluggy</b><div class="small muted">Gratuito para uso pessoal, até 5 bancos, consentimento de 12 meses. Atualiza uma vez por dia.</div></div><span class="chip">Em configuração</span></div></div>`;
+`;
   } else if (st === 1) {
     const rows = D.IMPORT_PREVIEW;
     const chip = (r) => `<span class="chip ${r.conf === 'duplicada' ? 'st-atrasado' : r.conf === 'sugerida' && !S.importCat ? 'st-avencer' : ''}" style="min-height:22px;font-size:12px">${r.conf === 'duplicada' ? 'duplicado, será ignorado' : r.conf === 'sugerida' ? `${S.importCat || r.c} · ${S.importCat ? 'escolhida por você' : 'sugerida, toque para mudar'}` : r.c}</span>`;
@@ -804,6 +915,154 @@ function Importar() {
       <button class="btn line block" style="margin-top:12px" data-act="importUndo">${I('refresh', 20)} Desfazer esta importação</button></div>`;
   }
   return { title: 'Importar extratos', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Importar extratos', 'Arquivo → conferir → conciliar. Cada importação pode ser desfeita depois.')}${line}${body}` };
+}
+
+// ---------- Open Finance pelo Supabase ----------
+const pend0 = SB.pending();
+// busy: '' | 'send' | 'verify'. code e email guardam o que foi digitado, para não sumir quando a tela é redesenhada.
+const LG = { email: (pend0 || {}).email || '', step: pend0 ? 'code' : 'email', busy: '', msg: '', note: '', code: '' };
+let syncBusy = false, syncErr = null, busyShown = false, leaving = false;
+const RESEND_MS = 60000; // o Supabase só manda outro código para o mesmo e-mail depois de 60 s
+const resendWait = () => { const p = SB.pending(); return p ? Math.max(0, RESEND_MS - (Date.now() - p.at)) : 0; };
+const SBMSG = {
+  offline: 'Sem internet agora. Tente de novo quando conectar.',
+  timeout: 'O Supabase demorou para responder. Tente de novo.',
+  email_invalido: 'Esse e-mail não parece completo.',
+  email_address_invalid: 'Esse e-mail não parece completo.',
+  validation_failed: 'Esse e-mail não parece completo.',
+  email_address_not_authorized: 'O Supabase só manda código para o e-mail da sua conta no Supabase. Use esse e-mail.',
+  over_email_send_rate_limit: 'O Supabase limita os e-mails de código. Espere um pouco e peça de novo.',
+  over_request_rate_limit: 'Muitas tentativas seguidas. Espere um minuto.',
+  http_429: 'Muitas tentativas seguidas. Espere um minuto.',
+  signup_disabled: 'Este e-mail não tem acesso ao Painel.',
+  otp_disabled: 'Este e-mail não tem acesso ao Painel.',
+  user_not_found: 'Este e-mail não tem acesso ao Painel.',
+  otp_expired: 'Código errado ou vencido. Confira o último e-mail ou peça outro.',
+  codigo_curto: 'Digite os 6 dígitos do e-mail.',
+  sessao_expirada: 'A sessão acabou. Entre de novo com um código.',
+  sem_sessao: 'Entre de novo com um código.',
+  nao_e_dono: 'Esta conta entrou, mas não é a dona dos dados.',
+  // O link e o código do e-mail são o mesmo código: abrir o link gasta o código.
+  link_de_outro_aparelho: 'Este link abriu fora do Painel onde você pediu o código e já gastou esse código. No Painel, toque em Mandar outro e digite o código novo, sem tocar no link.',
+  link_invalido: 'O link do e-mail veio incompleto. Peça outro código e digite os números no Painel.',
+  ja_conectado: 'Este aparelho já está conectado com outra conta. Para trocar, saia primeiro.',
+  access_denied: 'O link do e-mail venceu ou já foi usado. Peça outro código.',
+};
+function sbMsg(e) {
+  const c = e && e.code;
+  if (c === 'over_email_send_rate_limit') { const m = /(\d+)\s*second/.exec((e && e.message) || ''); if (m) return `O Supabase limita os e-mails de código. Espere ${m[1]} segundos e peça de novo.`; }
+  return SBMSG[c] || `Não deu certo${c ? ` (${esc(String(c).slice(0, 40))})` : ''}. Tente de novo.`;
+}
+const plain = (h) => String(h).replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+const dataKey = (R) => { try { return JSON.stringify({ ...R, lidoEm: 0 }); } catch { return ''; } };
+const staleSync = () => !fromSB() || !D.REAL.lidoEm || !(Date.now() - Date.parse(D.REAL.lidoEm) < 10 * 60000);
+async function syncNow(manual) {
+  if (syncBusy || leaving || !SB.session()) return false;
+  syncBusy = true; syncErr = null; busyShown = false;
+  if (manual || current() === 'dinheiro/sincronizar') render(true);
+  const ep = SB.currentEpoch();
+  try {
+    const R = await SB.fetchPainel();
+    // Saiu (ou entrou com outra conta) durante a leitura: o resultado não vale mais.
+    if (leaving || ep !== SB.currentEpoch()) { syncBusy = false; if (!leaving) render(true); return false; }
+    const before = D.REAL ? dataKey(D.REAL) : '', novo = !fromSB();
+    D.useReal(R); // valida antes de gravar
+    realErr = null;
+    try { localStorage.setItem(REALK, JSON.stringify(R)); } catch { /* sem espaço: segue só na memória */ }
+    // Marcações da demonstração ou do arquivo (contas pagas, gastos à mão) não valem para o Open Finance.
+    if (novo) { S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.expenses = []; S.card = 0; S.fat = 'aberta'; }
+    pruneReal(); save();
+    syncBusy = false;
+    if (manual || busyShown || before !== dataKey(R)) render(true);
+    if (manual) toast(`${I('cloudCheck', 18)} Open Finance de ${fmtSync()} carregado.`);
+    return true;
+  } catch (e) {
+    syncBusy = false;
+    if (leaving) return false;
+    syncErr = e;
+    // A sessão acabou: volta ao login, sem mensagem velha, com o motivo quando o Supabase recusou a sessão.
+    if (!SB.session()) { LG.busy = ''; LG.note = ''; LG.code = ''; LG.step = SB.pending() ? 'code' : 'email'; LG.msg = e.code === 'sessao_expirada' ? sbMsg(e) : ''; }
+    render(true);
+    // Um canal só: na tela do Open Finance o erro aparece nela (e é lido uma vez); nas outras, num aviso.
+    if (current() === 'dinheiro/sincronizar') announce(plain(sbMsg(e)));
+    else if (manual || e.code === 'sessao_expirada') toast(esc(plain(sbMsg(e))), 'warn', 6000);
+    return false;
+  }
+}
+// Erro do login: o foco vai para o campo, que lê o erro pela descrição dele; o aviso falado só entra quando o foco não chegou lá.
+function sayErr(sel) { render(true, sel); const f = main.querySelector(sel); if (!f || document.activeElement !== f) announce(plain(LG.msg)); }
+async function sbSend(addr, resend = false) {
+  if (LG.busy || leaving) return;
+  LG.busy = 'send'; LG.msg = ''; LG.note = ''; LG.email = String(addr || '').trim(); render(true);
+  try {
+    LG.email = await SB.sendCode(LG.email);
+    LG.busy = ''; LG.step = 'code'; LG.code = '';
+    LG.note = resend ? `Código novo enviado às ${hhmm(new Date())}. Use só o do último e-mail.` : '';
+    render(true, '#sb-code');
+    announce(resend ? LG.note : `Código enviado para ${LG.email}.`);
+  } catch (e) { LG.busy = ''; LG.msg = sbMsg(e); sayErr(LG.step === 'code' ? '#sb-code' : '#sb-email'); }
+}
+async function sbVerify(code) {
+  if (LG.busy || leaving) return;
+  LG.code = String(code || ''); LG.busy = 'verify'; LG.msg = ''; LG.note = ''; render(true);
+  try {
+    await SB.verifyCode(LG.email, code);
+    LG.busy = ''; LG.step = 'email'; LG.msg = ''; LG.code = '';
+    render(true, 'h1'); // o formulário some: o foco vai para o título da tela
+    const ok = await syncNow(false);
+    if (ok) toast(`${I('cloudCheck', 18)} Entrou. Seus dados do Open Finance estão no Painel.`, '', 6000);
+  } catch (e) {
+    LG.busy = ''; LG.msg = sbMsg(e);
+    if (e.code === 'otp_expired') LG.code = '';
+    sayErr('#sb-code');
+  }
+}
+// Ocupado: o botão continua focável (aria-disabled) para o foco do teclado e do leitor de tela não cair no começo da página.
+const busyAttr = (b) => (b ? ' aria-disabled="true"' : '');
+function Sincronizar() {
+  const s = SB.session(), R = fromSB() ? D.REAL : null, off = S.offline || !navigator.onLine;
+  // Erro ligado ao campo (aria-describedby) e lido uma vez por announce(), não a cada redesenho.
+  const err = LG.msg ? `<p class="small" id="sb-err" style="color:var(--danger);margin-top:8px">${LG.msg}</p>` : '';
+  const inv = LG.msg ? ' aria-invalid="true" aria-describedby="sb-err"' : '';
+  const note = LG.note ? `<p class="small" style="margin-top:8px">${I('check', 16, 'style="display:inline;vertical-align:-3px;color:var(--primary)"')} ${esc(LG.note)}</p>` : '';
+  const sair = (t) => `<div style="margin:10px 16px"><button class="btn ghost block" data-act="sbLogout"${busyAttr(leaving)}>${leaving ? 'Saindo…' : t}</button></div>`;
+  let body;
+  if (leaving) {
+    body = `<div class="card"><div class="row-flex"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><b>Saindo…</b><div class="small muted">A sessão e os dados deste aparelho já foram apagados. Falta avisar o Supabase.</div></div></div></div>`;
+  } else if (!s) {
+    const w = resendWait();
+    body = LG.step === 'code'
+      ? `<form class="card" data-form="sbVerify" novalidate>
+          <p class="small muted" style="margin:0">Mandamos um código para <b>${esc(LG.email)}</b>. Ele vale por uma hora. Digite os números aqui, sem tocar no link do e-mail.</p>
+          <label class="field"><span>Código do e-mail</span><input class="input num" id="sb-code" name="code" data-in="sbcode" value="${esc(LG.code)}" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="10" required style="font-size:24px;letter-spacing:4px;font-weight:700"${inv}></label>
+          ${err}${note}
+          <button class="btn block" style="margin-top:12px" type="submit" id="sb-go"${off ? ' disabled' : busyAttr(LG.busy)}>${LG.busy === 'verify' ? 'Conferindo…' : off ? 'Sem internet' : 'Entrar'}</button>
+          <div class="btnrow" style="margin-top:8px"><button class="btn ghost" type="button" id="sb-resend" data-act="sbResend"${(w && !LG.busy) || off ? ' disabled' : busyAttr(LG.busy)}>${LG.busy === 'send' ? 'Enviando…' : w ? `Mandar outro em ${Math.ceil(w / 1000)} s` : 'Mandar outro'}</button><button class="btn ghost" type="button" data-act="sbOtherEmail"${busyAttr(LG.busy)}>Trocar e-mail</button></div>
+          <p class="xs muted" style="margin-top:10px">Chegou só um link, sem número? No Supabase, o modelo do e-mail ainda não mostra o código.</p></form>`
+      : `<form class="card" data-form="sbSend" novalidate>
+          <p class="small muted" style="margin:0">Entre com o e-mail da sua conta no Supabase. Chega um código de 6 dígitos; não tem senha.</p>
+          <label class="field"><span>E-mail</span><input class="input" id="sb-email" name="email" data-in="sbemail" type="email" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false" required value="${esc(LG.email)}"${inv}></label>
+          ${err}
+          <button class="btn block" style="margin-top:12px" type="submit" id="sb-go"${off ? ' disabled' : busyAttr(LG.busy)}>${LG.busy === 'send' ? 'Enviando…' : off ? 'Sem internet' : 'Receber código'}</button></form>`;
+    if (D.REAL && !fromSB()) body += `<p class="small muted" style="margin:10px 20px">Até entrar, o Painel continua com o arquivo de ${dShort(realDate())}.</p>`;
+    else if (fromSB()) body += `<p class="small muted" style="margin:10px 20px">A última leitura, de ${fmtSync()}, continua neste aparelho até você entrar de novo.</p>`;
+  } else if (syncErr && syncErr.code === 'nao_e_dono') {
+    body = `<div class="card"><div class="row-flex"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><b>Esta conta não lê os dados</b><div class="small muted">${esc(SB.email() || '')}</div></div></div>
+        <p class="small muted" style="margin-top:8px">O login deu certo, mas o banco de dados do Painel só libera a leitura para a conta dona. Se este é o seu e-mail, ele ainda precisa ser liberado lá.</p>
+        <button class="btn line block" style="margin-top:12px" data-act="sbSync"${off || leaving ? ' disabled' : busyAttr(syncBusy)}>${I('refresh', 20)} ${syncBusy ? 'Buscando…' : 'Tentar de novo'}</button></div>
+      ${sair('Sair desta conta')}`;
+  } else {
+    const C = (R && R.conexoes) || [];
+    body = `<div class="card"><div class="row-flex"><span class="badge-ic p">${I('cloudCheck', 20)}</span><div class="grow"><b>Conectado</b><div class="small muted ellip">${esc(SB.email() || '')}</div></div></div>
+        <p class="small muted" style="margin-top:8px">${R ? `Bancos sincronizados em ${fmtSync()}. O Open Finance atualiza sozinho uma vez por dia, de manhã.` : syncBusy ? 'Buscando os seus dados…' : D.REAL ? `Ainda sem dados do Open Finance. Até chegarem, o Painel usa o arquivo de ${dShort(realDate())}.` : 'Ainda sem dados neste aparelho.'}</p>
+        ${syncErr ? `<p class="small" style="color:var(--danger);margin-top:8px">${sbMsg(syncErr)}</p>` : ''}
+        <button class="btn block" style="margin-top:12px" data-act="sbSync"${off || leaving ? ' disabled' : busyAttr(syncBusy)}>${I('refresh', 20)} ${syncBusy ? 'Buscando…' : off ? 'Sem internet' : 'Buscar de novo'}</button></div>
+      ${C.length ? `${sec('Conexões')}<div class="card tight">${C.map((c) => { const t = c.sinc ? new Date(c.sinc) : null, ok = c.status === 'SUCCESS' && !c.erro; return `<div class="row"><span class="badge-ic">${I('bank', 20)}</span><div class="grow"><div class="ttl">${esc(c.inst || 'Banco')}</div><div class="meta">${t ? `Atualizado ${dShort(t)} às ${hhmm(t)}` : 'Sem data'}${c.consentimento ? ` · consentimento até ${new Date(c.consentimento + 'T12:00').toLocaleDateString('pt-BR')}` : ''}</div></div><span class="chip st-${ok ? 'pago' : 'atrasado'}">${ok ? 'OK' : 'Atenção'}</span></div>`; }).join('')}</div>` : ''}
+      ${R ? `${sec('Neste aparelho')}<div class="card"><p class="small muted" style="margin:0">${(R.transacoes || []).length} lançamentos, ${(R.contas || []).length} contas e ${(R.cartoes || []).length} cartões. Ações, carro, financiamento e participações vêm da foto manual${R.snapshotEm ? ` de ${dShort(new Date(R.snapshotEm + 'T12:00'))}` : ''}.</p></div>` : ''}
+      ${sair('Sair e apagar os dados deste aparelho')}`;
+  }
+  return { title: 'Open Finance', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Open Finance', 'Bancos e cartões pelo Supabase, com login só seu.')}${netbar()}${body}
+    <p class="xs muted" style="margin:14px 20px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} Só a conta dona lê os dados. A sessão e a última leitura ficam só neste aparelho.</p>` };
 }
 
 function Agenda() {
@@ -868,7 +1127,7 @@ function Ajustes() {
   const integ = [
     ['health', 'Apple Health', 'Atalho grátis “PainelSync”: sono, passos, treinos, VFC e frequência de repouso. Roda ao abrir o celular.', 'Conectado · há 2 h', 'pago'],
     ['calendar', 'Google Agenda', 'Leitura pelo endereço privado da agenda (iCal). Só leitura na fase 1.', 'Conectado', 'pago'],
-    ['bank', 'Open Finance (Meu Pluggy)', 'Até 5 bancos, grátis para uso pessoal. Atualiza uma vez por dia e avisa o Painel quando muda.', 'Em configuração', 'agendado'],
+    ['bank', 'Open Finance (Meu Pluggy)', 'Até 5 bancos, grátis para uso pessoal. Atualiza uma vez por dia; o Painel lê pelo Supabase com login por código no e-mail.', SB.session() ? (fromSB() ? 'Conectado' : 'Entrou, sem dados') : 'Entrar', SB.session() && fromSB() ? 'pago' : 'agendado'],
     ['file', 'Google Drive', 'Pasta Painel/ com faturas, extratos e exames originais.', 'Conectado', 'pago'],
     ['note', 'Notion', 'Migração única do diário, treinos, medidas e exames atuais.', 'Fase 1', 'agendado'],
     ['pulse', 'Strava', 'Fora do plano: a API exige assinatura. Os treinos chegam pelo Apple Health.', 'Não usar', 'atrasado'],
@@ -877,7 +1136,7 @@ function Ajustes() {
   return {
     title: 'Integrações e ajustes',
     html: `${backbar('ficha', 'Ficha')}${hdr('Integrações e ajustes')}
-      ${sec('Integrações')}<div class="card tight">${integ.map(([ic, n, d, st, cls]) => `<div class="row"><span class="badge-ic">${I(ic, 20)}</span><div class="grow"><div class="ttl">${n}</div><div class="meta">${d}</div></div><span class="chip st-${cls}">${st}</span></div>`).join('')}</div>
+      ${sec('Integrações')}<div class="card tight">${integ.map(([ic, n, d, st, cls]) => { const inner = `<span class="badge-ic">${I(ic, 20)}</span><div class="grow"><div class="ttl">${n}</div><div class="meta">${d}</div></div><span class="chip st-${cls}">${st}</span>`; return ic === 'bank' ? `<a class="row" href="#/dinheiro/sincronizar">${inner}</a>` : `<div class="row">${inner}</div>`; }).join('')}</div>
       ${sec('Notificações', '<span class="small muted">no máximo 3 por dia</span>')}
       <div class="card tight">${N.map(([k, n, h]) => `<div class="row"><div class="grow"><div class="ttl">${n}</div><div class="meta">${h}</div></div><button class="switch" role="switch" aria-checked="${S.notif[k]}" data-act="notif" data-arg="${k}" aria-label="${n}"></button></div>`).join('')}
         <div class="row"><div class="grow"><div class="ttl">Silêncio</div><div class="meta">22:00 às 07:00, sempre</div></div>${I('moon', 20, 'class="ic muted"')}</div></div>
@@ -892,7 +1151,7 @@ function Ajustes() {
         <a class="row" href="#/estados"><span class="badge-ic">${I('eye', 20)}</span><div class="grow"><div class="ttl">Estados vazio, offline e carregando</div></div>${I('chevR', 20, 'class="ic muted"')}</a>
         <button class="row" data-act="restartOnb"><span class="badge-ic">${I('sparkle', 20)}</span><div class="grow"><div class="ttl">Ver as boas-vindas de novo</div></div>${I('chevR', 20, 'class="ic muted"')}</button>
         <button class="row" data-act="resetDemo"><span class="badge-ic">${I('refresh', 20)}</span><div class="grow"><div class="ttl">Zerar a demonstração</div><div class="meta">Volta XP, check-in e marcações ao início</div></div></button></div>
-      <p class="xs muted" style="margin:14px 20px">${D.REAL ? `Wireframe. Dinheiro usa os seus dados de ${dShort(realDate())}, guardados só neste aparelho; o resto é fictício.` : 'Wireframe com dados fictícios.'} Versão ${VERSION}.</p>`,
+      <p class="xs muted" style="margin:14px 20px">${fromSB() ? `Wireframe. Dinheiro usa o Open Finance (Supabase) de ${dShort(realDate())}, com cópia neste aparelho; o resto é fictício.` : D.REAL ? `Wireframe. Dinheiro usa os seus dados de ${dShort(realDate())}, guardados só neste aparelho; o resto é fictício.` : 'Wireframe com dados fictícios.'} Versão ${VERSION}.</p>`,
   };
 }
 
@@ -944,14 +1203,14 @@ function Onboarding() {
 
 const ROUTES = {
   onboarding: Onboarding, hoje: Hoje, saude: Saude, 'saude/treino': Treino, 'saude/campanha': Campanha, 'saude/dieta': Dieta, 'saude/exames': Exames,
-  dinheiro: Dinheiro, 'dinheiro/contas': Contas, 'dinheiro/cartoes': Cartoes, 'dinheiro/patrimonio': Patrimonio, 'dinheiro/importar': Importar,
+  dinheiro: Dinheiro, 'dinheiro/contas': Contas, 'dinheiro/cartoes': Cartoes, 'dinheiro/patrimonio': Patrimonio, 'dinheiro/importar': Importar, 'dinheiro/sincronizar': Sincronizar,
   agenda: Agenda, ficha: Ficha, ajustes: Ajustes, estados: Estados,
 };
 const TAB_OF = (r) => (r.startsWith('saude') ? 'saude' : r.startsWith('dinheiro') ? 'dinheiro' : r === 'agenda' ? 'agenda' : ['ficha', 'ajustes', 'estados'].includes(r) ? 'ficha' : 'hoje');
 const MAP = [
   ['Começo', [['onboarding', 'Boas-vindas e instalação', 'sparkle'], ['hoje', 'Hoje', 'sun']]],
   ['Saúde', [['saude', 'Visão geral', 'heart'], ['saude/treino', 'Registro de treino', 'dumbbell'], ['saude/campanha', 'Campanha de 24 semanas', 'target'], ['saude/dieta', 'Dieta do dia', 'utensils'], ['saude/exames', 'Exames e medidas', 'flask']]],
-  ['Dinheiro', [['dinheiro', 'Visão geral', 'wallet'], ['dinheiro/contas', 'Contas a pagar', 'receipt'], ['dinheiro/cartoes', 'Cartões e faturas', 'card'], ['dinheiro/patrimonio', 'Patrimônio', 'pie'], ['dinheiro/importar', 'Importar extratos', 'upload']]],
+  ['Dinheiro', [['dinheiro', 'Visão geral', 'wallet'], ['dinheiro/contas', 'Contas a pagar', 'receipt'], ['dinheiro/cartoes', 'Cartões e faturas', 'card'], ['dinheiro/patrimonio', 'Patrimônio', 'pie'], ['dinheiro/importar', 'Importar extratos', 'upload'], ['dinheiro/sincronizar', 'Open Finance (login)', 'link']]],
   ['Assessor', [['agenda', 'Agenda e tarefas', 'calendar']]],
   ['Personagem', [['ficha', 'Ficha do personagem', 'shield'], ['ajustes', 'Integrações e ajustes', 'sliders'], ['estados', 'Estados das telas', 'eye']]],
 ];
@@ -968,6 +1227,7 @@ const NOTES = {
   'dinheiro/contas': ['Contas a pagar', 'Calendário e lista no mesmo lugar.', ['Pontos por dia no calendário, com legenda. Tocar no dia filtra a lista.', 'Quatro status: paga, agendada (débito automático ou Pix Automático), a vencer, atrasada.', 'Recorrentes detectadas no extrato (3 ocorrências, intervalo de ~30 dias, valor parecido) + DDA + cadastro manual.', 'Lembretes D-3 e D-0 dentro do resumo das 07:00, sem notificação extra.'], 'M1 manual · M2 automático'],
   'dinheiro/cartoes': ['Cartões e faturas', 'Fatura do jeito que o banco cobra.', ['Fechada, aberta e próxima numa tela só, com fechamento, vencimento e melhor dia de compra.', 'Parcelas “3/10” reconhecidas na importação e projetadas nos meses seguintes.', '“Comprometido” soma a fatura aberta e as parcelas futuras para mostrar o limite real.', 'Alerta de rotativo ou parcelamento de fatura (fase 2).'], 'M2'],
   'dinheiro/patrimonio': ['Patrimônio', 'Visão de contador, quando quiser.', ['Resumo com alocação e evolução de 12 meses, ou o balanço patrimonial completo (ativo, passivo, PL).', 'Foto mensal no dia 1º; a âncora oficial é o IRPF (bens e direitos em 31/12).', 'Veículo pela FIPE, FGTS pelo extrato, investimentos pela posição da B3 ou da corretora.', 'Projeção de independência financeira libera no nível 10.'], 'M2'],
+  'dinheiro/sincronizar': ['Open Finance', 'Login por código no e-mail; os dados vêm do banco do Supabase.', ['Sem senha: o Supabase manda um código de 6 dígitos para o e-mail da conta.', 'Só a conta dona lê os dados (RLS no banco). Outra conta entra, mas não vê nada.', 'A última leitura fica guardada no aparelho para abrir sem internet; ao abrir o app, ele busca de novo se passou de 10 minutos.', 'Sair apaga a sessão e a cópia deste aparelho; no Supabase nada muda.'], 'M2'],
   'dinheiro/importar': ['Importar extratos', 'O caminho principal até o Open Finance entrar.', ['Ordem de preferência: OFX, depois CSV ou XLSX, depois PDF.', 'O arquivo é lido no aparelho. Prévia com categorias por regra, duplicados marcados e conciliação de saldo antes de gravar.', 'Cada importação é um lote que pode ser desfeito.', 'Meu Pluggy (grátis, uso pessoal, 5 bancos) entra na fase 2, depois que a importação estiver sólida.'], 'M2'],
   agenda: ['Agenda e tarefas', 'O assessor: o que fazer e quando.', ['Captura rápida em português: “pagar IPVA dia 10 R$ 820 #financas” vira tarefa com data, área e valor (e sugere conta a pagar). Experimente digitar.', 'Só 3 prioridades por dia contam para o atributo Foco, para tarefas pequenas não inflarem o placar.', 'Linha do dia junta agenda do Google, treino do plano, contas e hora de dormir.', 'Notificações: no máximo 3 por dia, silêncio das 22h às 7h.'], 'M1'],
   ficha: ['Ficha do personagem', 'Você, em 6 atributos.', ['FOR força, VIG cardio, REC sono, NUT nutrição, PAT patrimônio, FOC organização. Todos de 0 a 100 numa janela de 28 dias, com nota de S a E.', 'Toque num atributo para ver como ele é calculado e o que faz subir.', 'Consistência em 28 dias vem antes da Chama. A Chama perdoa: 1 falta livre por semana (“brasa”) e Modo Pausa.', 'Sem punição: XP nunca cai, chefe que foge não tira nada, nada se compra.'], 'M1'],
@@ -980,6 +1240,7 @@ const NOTES = {
 function focusKey(el) {
   if (!el || el === document.body || !el.isConnected) return null;
   if (el.id) return `#${CSS.escape(el.id)}`;
+  if (el.tagName === 'H1' && main.contains(el)) return 'h1';
   const d = el.dataset || {}, arg = d.arg != null ? `[data-arg="${CSS.escape(d.arg)}"]` : '';
   if (d.act) return `[data-act="${d.act}"]${arg}`;
   if (d.in) return `[data-in="${d.in}"]${arg}`;
@@ -1106,9 +1367,9 @@ function safeSheet() {
   openSheet(M.livre < 0 ? 'Falta para as contas' : 'Livre para gastar', `<p class="small muted" style="margin:0 0 8px">${D.REAL ? `Até o fim do mês, ${dShort(M.payday)} (${rel(M.payday)}). Com os dados reais a conta fecha no último dia do mês.` : `Até o pagamento em ${dShort(M.payday)} (${rel(M.payday)}).`}</p>
     <table class="bp"><tr><td>Saldo em conta</td><td>${brl(M.saldo)}</td></tr>
     <tr><td>− Contas até ${dShort(M.payday)} (${M.due.length}${D.REAL ? '' : ', com o aporte da reserva'})<div class="xs muted">${M.due.map((b) => esc(b.n.split(' · ')[0])).join(', ') || 'nenhuma'}</div></td><td>${brl(-M.contas)}</td></tr>
-    <tr><td>− Fatura do ${D.CARDS[0].n}${M.faturaAntes ? `, vence ${dShort(M.fb.due)}` : M.fb.pago ? ', já paga' : `: vence ${dShort(M.fb.due)}, depois do pagamento`}</td><td>${brl(-M.faturaAntes)}</td></tr>
+    ${semCartao() ? '' : `<tr><td>− Fatura do ${esc(card0())}${M.faturaAntes ? `, vence ${dShort(M.fb.due)}` : M.fb.pago ? ', já paga' : `: vence ${dShort(M.fb.due)}, depois do pagamento`}</td><td>${brl(-M.faturaAntes)}</td></tr>`}
     <tr class="tot"><td>${M.livre < 0 ? 'Falta' : 'Livre'}</td><td>${brl(M.livre)}</td></tr></table>
-    <p class="small muted" style="margin-top:12px">Pagar uma conta não muda esse número: sai do saldo e da lista ao mesmo tempo. ${M.fb.pago ? 'A fatura aberta já foi paga: compras novas no cartão vão para a próxima, que vence depois do pagamento, e não mexem neste número.' : 'Gastar no cartão reduz, porque aumenta a fatura que vence antes do pagamento.'} Use “Registrar → Gasto” para ver.</p>`);
+    <p class="small muted" style="margin-top:12px">Pagar uma conta não muda esse número: sai do saldo e da lista ao mesmo tempo. ${semCartao() ? '' : M.fb.pago ? 'A fatura aberta já foi paga: compras novas no cartão vão para a próxima, que vence depois do pagamento, e não mexem neste número.' : 'Gastar no cartão reduz, porque aumenta a fatura que vence antes do pagamento.'} Use “Registrar → Gasto” para ver.</p>`);
 }
 function energiaSheet() {
   const h = S.checkin ? S.checkin.s : S.sleep, E = energia(h), Z = zoneOf(E);
@@ -1128,7 +1389,7 @@ function billSheet(id) {
   const b = bills().find((x) => x.id === id); if (!b) return;
   openSheet(esc(b.n), `<div class="big">${brl(b.v)}</div><div class="row-flex" style="margin-top:6px">${stChip(b.st)}<span class="small muted">${relDue(b)}</span></div>
     <table class="bp" style="margin-top:12px"><tr><td>Forma de pagamento</td><td>${b.met}</td></tr><tr><td>Categoria</td><td>${b.cat}</td></tr><tr><td>Lembretes</td><td>3 dias antes e no dia</td></tr></table>
-    ${b.pago ? `<p class="small muted" style="margin-top:14px">${b.met === 'Cartão' ? `Cobrada no ${D.CARDS[0].n}: entra na fatura, que é a conta a pagar.` : 'Paga. O lançamento do extrato é ligado a esta conta automaticamente.'}</p>${S.paid[b.id] ? `<div class="btnrow"><button class="btn line" data-act="unpayBill" data-arg="${b.id}">${I('refresh', 20)} Desfazer pagamento</button></div>` : ''}` : `<div class="btnrow"><button class="btn" data-act="payBill" data-arg="${b.id}" data-autofocus>${I('check', 20)} Marcar como paga</button></div><p class="xs muted" style="margin-top:8px">${b.st === 'atrasado' ? 'Venceu, então não dá os +15 XP de conta em dia. Marcar agora tira a conta da lista e do resumo de amanhã.' : 'Paga até o vencimento: +15 XP e o atributo Foco sobe.'}${b.id === missao() && !S.quests.missao ? ' É a Missão de hoje: +20 XP.' : ''}</p>`}`);
+    ${b.pago ? `<p class="small muted" style="margin-top:14px">${b.met === 'Cartão' ? `Cobrada no ${esc(card0())}: entra na fatura, que é a conta a pagar.` : 'Paga. O lançamento do extrato é ligado a esta conta automaticamente.'}</p>${S.paid[b.id] ? `<div class="btnrow"><button class="btn line" data-act="unpayBill" data-arg="${b.id}">${I('refresh', 20)} Desfazer pagamento</button></div>` : ''}` : `<div class="btnrow"><button class="btn" data-act="payBill" data-arg="${b.id}" data-autofocus>${I('check', 20)} Marcar como paga</button></div><p class="xs muted" style="margin-top:8px">${b.st === 'atrasado' ? 'Venceu, então não dá os +15 XP de conta em dia. Marcar agora tira a conta da lista e do resumo de amanhã.' : 'Paga até o vencimento: +15 XP e o atributo Foco sobe.'}${b.id === missao() && !S.quests.missao ? ' É a Missão de hoje: +20 XP.' : ''}</p>`}`);
 }
 function quickAdd() {
   const items = [['openCheckin', 'Check-in', 'scale'], ['nav:saude/treino', 'Treino', 'dumbbell'], ['nav:saude/dieta', 'Refeição', 'utensils'], ['expense', 'Gasto', 'wallet'], ['nav:dinheiro/contas', 'Conta a pagar', 'receipt'], ['task', 'Tarefa ou nota', 'note'], ['nav:saude/exames', 'Medidas', 'target'], ['nav:dinheiro/importar', 'Extrato', 'upload']];
@@ -1139,8 +1400,8 @@ function expenseSheet() {
   const cats = ['Mercado', 'Alimentação fora', 'Transporte', 'Saúde', 'Lazer', 'Compras'];
   openSheet('Gasto rápido', `<label class="field"><span>Valor</span><input class="input" id="ex-v" inputmode="decimal" placeholder="R$ 0,00" style="font-size:24px;font-weight:750" data-autofocus value="${esc(S.draftExpense)}"></label>
     ${radios('Categoria', 'ex-cat', cats, 'Mercado')}
-    ${radios('Pago com', 'ex-met', ['Cartão Alfa', 'Pix', 'Dinheiro'], 'Cartão Alfa', { 'Cartão Alfa': D.CARDS[0].n })}
-    <button class="btn block" style="margin-top:16px" data-act="saveExpense">Salvar gasto</button><p class="xs muted" style="margin-top:8px">${S.paid.fatura ? 'No Cartão Alfa vai para a próxima fatura (a aberta já foi paga) e não muda o “livre para gastar”. Pix e dinheiro saem do saldo na hora.' : 'Entra na hora no “livre para gastar”.'} Quando o extrato chegar, o lançamento é ligado a este gasto e não duplica.</p>`, 'ex');
+    ${semCartao() ? radios('Pago com', 'ex-met', ['Pix', 'Dinheiro'], 'Pix') : radios('Pago com', 'ex-met', ['Cartão Alfa', 'Pix', 'Dinheiro'], 'Cartão Alfa', { 'Cartão Alfa': card0() })}
+    <button class="btn block" style="margin-top:16px" data-act="saveExpense">Salvar gasto</button><p class="xs muted" style="margin-top:8px">${S.paid.fatura && !semCartao() ? `No ${esc(card0())} vai para a próxima fatura (a aberta já foi paga) e não muda o “livre para gastar”. Pix e dinheiro saem do saldo na hora.` : 'Entra na hora no “livre para gastar”.'} Quando o extrato chegar, o lançamento é ligado a este gasto e não duplica.</p>`, 'ex');
 }
 function chamaSheet() {
   const sk = streakNow();
@@ -1160,6 +1421,20 @@ function importCatSheet() {
 
 // ---------- Ações ----------
 const A = {
+  sbSync: () => syncNow(true),
+  sbResend: () => { if (!resendWait()) sbSend(LG.email, true); },
+  sbOtherEmail: () => { if (LG.busy) return; LG.step = 'email'; LG.msg = ''; LG.note = ''; LG.code = ''; SB.clearPending(); render(true, '#sb-email'); },
+  // Sair: nada que esteja em andamento (leitura ou renovação da sessão) pode gravar de volta depois disso.
+  sbLogout: async () => {
+    if (leaving) return;
+    if (!confirm('Sair deste aparelho? A sessão e a cópia dos dados daqui são apagadas. No Supabase nada muda.')) return;
+    leaving = true; render(true); announce('Saindo…');
+    try { localStorage.removeItem(REALK); } catch { /* nada a apagar */ }
+    S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.expenses = []; save();
+    const r = await SB.signOut();
+    try { sessionStorage.setItem('painel-saiu', r === true || r === 'ok' ? '1' : r === 'sem-rede' ? 'sem-rede' : 'erro'); } catch { /* sem aviso depois */ }
+    location.reload();
+  },
   closeSheet: () => closeSheet(),
   closeSheetNav: (_, el, e) => { const href = el?.getAttribute?.('href'); if (href) { e.preventDefault(); navFromSheet(href); } else closeSheet(true, false); },
   map: () => openSheet('Mapa do wireframe', mapHtml(), 'map'),
@@ -1209,7 +1484,7 @@ const A = {
   chama: () => chamaSheet(),
   payBill: (id) => {
     const b = bills().find((x) => x.id === id); if (!b || b.pago) return;
-    S.paid[id] = true; S.paidAmt[id] = b.v;
+    S.paid[id] = true; S.paidAmt[id] = b.v; S.paidAt[id] = { m: D.iso(diaNow()).slice(0, 7), t: new Date().toISOString(), due: D.iso(b.due), n: billName(b) };
     lastFocusKey = focusKey(lastFocus) || lastFocusKey;
     closeSheet(true);
     if (b.st !== 'atrasado') addXP(15, 'Conta paga em dia'); else { touch(); toast(`${I('check', 18)} Conta marcada como paga`); }
@@ -1218,7 +1493,7 @@ const A = {
   },
   unpayBill: (id) => {
     if (!S.paid[id]) return;
-    delete S.paid[id]; delete S.paidAmt[id];
+    delete S.paid[id]; delete S.paidAmt[id]; delete S.paidAt[id];
     if (id === 'fatura') S.expenses.forEach((x) => { if (x.fat === 'proxima') x.fat = 'aberta'; }); // sem pagamento, voltam para a fatura aberta
     const b = bills().find((x) => x.id === id);
     if (b && b.st !== 'atrasado') S.xp = Math.max(0, S.xp - 15);
@@ -1330,7 +1605,7 @@ const A = {
   enableNotif: async () => { await testNotif(true); A.onbDone(); },
   restartOnb: () => { S.onbStep = 0; save(); location.hash = '#/onboarding'; },
   pendentes: () => pendentesSheet(),
-  realClear: () => { if (!confirm('Apagar os seus dados reais deste aparelho? O arquivo no seu computador continua lá.')) return; try { localStorage.removeItem(REALK); } catch { /* nada a apagar */ } S.paid = {}; S.paidAmt = {}; S.expenses = []; save(); location.reload(); },
+  realClear: () => { if (!confirm('Apagar os seus dados reais deste aparelho? O arquivo no seu computador continua lá.')) return; try { localStorage.removeItem(REALK); } catch { /* nada a apagar */ } S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.expenses = []; save(); location.reload(); },
   resetDemo: () => { const keep = { theme: S.theme, onboarded: true }; S = Object.assign(defaults(), keep, { day: D.iso(diaNow()) }); S.hist = seedHist(S); bossMonth(S); save(); toast('Demonstração zerada'); if (current() !== 'hoje') go('#/hoje', true); else render(false); renderChrome(); },
   onbNext: () => { S.onbStep = Math.min(3, (S.onbStep || 0) + 1); save(); render(false, 'h1'); },
   onbBack: () => { S.onbStep = Math.max(0, (S.onbStep || 0) - 1); save(); render(false, 'h1'); },
@@ -1344,7 +1619,8 @@ const A = {
     const el = document.getElementById('ex-v'); const v = parseMoney(el.value);
     if (!(v > 0 && v < 100000)) { toast('Digite o valor, por exemplo 45,90'); el.focus(); return; }
     const pick = (id) => sheetRoot.querySelector(`[aria-labelledby="${id}"] [aria-checked="true"]`)?.dataset.val;
-    const x = { id: 'x' + Date.now().toString(36), v: Math.round(v * 100) / 100, cat: pick('ex-cat') || 'Mercado', met: pick('ex-met') || 'Cartão Alfa', d: D.iso(diaNow()) };
+    const x = { id: 'x' + Date.now().toString(36), v: Math.round(v * 100) / 100, cat: pick('ex-cat') || 'Mercado', met: pick('ex-met') || (semCartao() ? 'Pix' : 'Cartão Alfa'), d: D.iso(diaNow()), t: new Date().toISOString() };
+    x.ja = sameDebits(x.v, x.d); // lançamentos do mesmo valor que já estavam no extrato não são este gasto
     if (x.met === 'Cartão Alfa') x.fat = S.paid.fatura ? 'proxima' : 'aberta'; // fatura já paga: o gasto novo vai para a próxima
     S.expenses.push(x); S.draftExpense = ''; touch(); closeSheet(true);
     toast(`${I('check', 18)} <span>${brl(x.v)} em ${esc(x.cat.toLowerCase())}. Livre: ${brl0(money().livre)}.</span><button class="link" data-act="delExpense" data-arg="${x.id}">Desfazer</button>`, '', 6000);
@@ -1417,6 +1693,8 @@ let parseT = null;
 document.addEventListener('input', (e) => {
   if (e.target.id === 'ex-v') { S.draftExpense = e.target.value; save(); }
   const el = e.target.closest('[data-in]'); if (!el) return;
+  if (el.dataset.in === 'sbcode') { LG.code = el.value; return; }
+  if (el.dataset.in === 'sbemail') { LG.email = el.value; return; }
   if (el.dataset.in === 'setkg' || el.dataset.in === 'setreps') { const k = el.dataset.arg, st = S.sets[k] || {}; if (el.dataset.in === 'setkg') st.kg = parseFloat(el.value.replace(',', '.')) || 0; else st.reps = parseInt(el.value, 10) || 0; S.sets[k] = st; save(); }
   if (el.dataset.in === 'inbox') { S.inboxDraft = el.value; save(); }
   if (el.dataset.in === 'inbox') {
@@ -1432,6 +1710,13 @@ document.addEventListener('change', (e) => {
   if (el.dataset.in === 'file' && el.files?.length) { toast(`${I('file', 18)} ${esc(el.files[0].name)}: no wireframe, a prévia usa o arquivo de exemplo.`, '', 3600); A.importNext(); }
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'inbox') { e.preventDefault(); A.addInbox(); } });
+document.addEventListener('submit', (e) => {
+  const f = e.target.closest('form[data-form]'); if (!f) return;
+  e.preventDefault();
+  if (f.querySelector('[type="submit"][aria-disabled="true"]')) return;
+  if (f.dataset.form === 'sbSend') sbSend(f.elements.email.value);
+  if (f.dataset.form === 'sbVerify') sbVerify(f.elements.code.value);
+});
 // Grupos de opção única: setas movem a escolha e o foco (padrão ARIA de radiogroup).
 document.addEventListener('keydown', (e) => {
   const r = e.target.closest?.('[role="radio"]'); if (!r) return;
@@ -1448,6 +1733,7 @@ document.addEventListener('click', (e) => { navFromMain = main.contains(e.target
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-act]'); if (!t) return;
   const fn = A[t.dataset.act]; if (!fn) return;
+  if (t.getAttribute('aria-disabled') === 'true') { e.preventDefault(); return; } // ocupado: o botão só guarda o foco
   if (checkDay()) { e.preventDefault(); return; } // não aplica um toque de ontem no dia novo
   if (t.tagName !== 'A') e.preventDefault();
   fn(t.dataset.arg, t, e);
@@ -1488,12 +1774,13 @@ function fitRestbar() {
 window.addEventListener('resize', fitRestbar);
 
 // ---------- Render ----------
-const VERSION = '0.3.1';
+const VERSION = '0.4.0';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
-const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/campanha': 'Campanha', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Importar', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes', estados: 'Estados' };
+const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/campanha': 'Campanha', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Importar', 'dinheiro/sincronizar': 'Open Finance', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes', estados: 'Estados' };
 let lastRoute = null, curTab = 'hoje', shownIdx = null;
 function render(keep, focusSel) {
+  if (syncBusy) busyShown = true; // a tela mostra "Buscando…": no fim da leitura ela é desenhada de novo
   const r = current();
   const sameRoute = r === lastRoute;
   let y = keep && sameRoute ? main.scrollTop : 0;
@@ -1563,11 +1850,12 @@ setInterval(() => {
   const rt = document.getElementById('restT');
   if (rt && S.rest) { const s = Math.ceil((S.rest.end - Date.now()) / 1000); if (s <= 0) { S.rest = null; save(); if (navigator.vibrate) navigator.vibrate(200); beep(); toast(`${I('timer', 18)} Descanso acabou. Próxima série.`); swapPart('.restbar'); } else rt.textContent = fmtT(s); }
   const wt = document.getElementById('wT'); if (wt && S.wStart) wt.textContent = fmtT(Math.floor((Date.now() - S.wStart) / 1000));
+  // Contagem até poder pedir outro código (o Supabase recusa antes de 60 s).
+  const rs = document.getElementById('sb-resend');
+  if (rs && !LG.busy) { const w = resendWait(), off = S.offline || !navigator.onLine, t = w ? `Mandar outro em ${Math.ceil(w / 1000)} s` : 'Mandar outro'; rs.disabled = !!w || off; if (rs.textContent !== t) rs.textContent = t; }
 }, 500);
 
-let deferredPrompt = null;
-window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; if (current() === 'onboarding') render(true); });
-window.addEventListener('online', () => { render(true); });
+window.addEventListener('online', () => { render(true); if (SB.session() && staleSync()) syncNow(false); });
 window.addEventListener('offline', () => { render(true); });
 // Troca só um pedaço da tela (sem perder o que está sendo digitado em outro campo).
 function swapPart(sel) {
@@ -1590,6 +1878,7 @@ async function keepAwake() {
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible') return;
   checkDay(); keepAwake();
+  if (SB.session() && staleSync()) syncNow(false);
   try { (await navigator.serviceWorker?.getRegistration())?.update(); } catch { /* offline */ }
 });
 window.addEventListener('pageshow', (e) => { if (e.persisted) checkDay(); });
@@ -1606,11 +1895,40 @@ applyTheme();
 const STANDALONE = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 // No iPhone o app instalado tem armazenamento próprio: a primeira abertura pelo ícone pede os lembretes lá.
 if (!S.onboarded && (!location.hash || STANDALONE)) { if (STANDALONE && (S.onbStep || 0) < 2) { S.onbStep = 2; save(); } go('#/onboarding', true); }
+// Voltou do app de e-mail com um código pedido há pouco: abre direto na etapa do código.
+else if (!hashLogin && !SB.session() && SB.pending() && current() === 'hoje') go('#/dinheiro/sincronizar', true);
+if (pruneReal()) save();
 render(false);
 renderChrome();
+if (hashLogin && hashLogin !== 'ok') {
+  // Com sessão, o aviso não cabe no formulário de login (que não aparece): vai num aviso passageiro.
+  if (SB.session()) toast(hashLogin === 'ja_conectado' ? esc(SBMSG.ja_conectado) : 'Esse link do e-mail já não valia, mas este aparelho continua conectado.', 'warn', 7000);
+  else { LG.msg = sbMsg({ code: hashLogin }); LG.step = SB.pending() ? 'code' : 'email'; render(true); announce(plain(LG.msg)); }
+}
+try {
+  const saiu = sessionStorage.getItem('painel-saiu');
+  if (saiu) { sessionStorage.removeItem('painel-saiu'); toast(saiu === '1' ? 'Saiu deste aparelho. A sessão e os dados daqui foram apagados.' : saiu === 'sem-rede' ? 'Saiu e apagou os dados deste aparelho. Sem internet, a sessão não foi encerrada no Supabase.' : 'Saiu e apagou os dados deste aparelho. O Supabase não confirmou o fim da sessão lá.', saiu === '1' ? '' : 'warn', 6000); }
+} catch { /* sem sessão da aba */ }
+if (SB.session() && (hashLogin === 'ok' || staleSync())) syncNow(false).then((ok) => { if (ok && hashLogin === 'ok') toast(`${I('cloudCheck', 18)} Entrou. Seus dados do Open Finance estão no Painel.`, '', 5000); });
+// Outra aba, ou o app instalado e o navegador no Android, mexeram na sessão ou nos dados.
+SB.onChange((what) => {
+  // Saiu ou entrou outra conta: a tela, os dados e as marcações desta aba não valem mais.
+  if (what === 'saiu' || what === 'entrou') { location.reload(); return; }
+  render(true);
+});
+window.addEventListener('storage', (e) => {
+  // Outra aba gravou o estado (contas pagas, gastos, missões): esta passa a usar o mesmo, em vez de gravar o antigo por cima.
+  if (e.key === KEY && e.newValue) { S = load(); render(true); return; }
+  if (e.key !== REALK) return;
+  if (!e.newValue) { location.reload(); return; } // dados apagados em outra aba (saída ou "apagar deste aparelho")
+  // Quem gravou os dados já ajustou e gravou o estado; aqui só na memória, até o estado dela chegar.
+  try { D.useReal(JSON.parse(e.newValue)); realErr = null; pruneReal(); render(true); } catch { /* fica com o que já está na tela */ }
+});
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   const hadController = !!navigator.serviceWorker.controller;
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  // O app termina de abrir depois do evento load (espera o sync.js): registra na hora se ele já passou.
+  const reg = () => navigator.serviceWorker.register('sw.js').catch(() => {});
+  if (document.readyState === 'complete') reg(); else window.addEventListener('load', reg, { once: true });
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) showUpdate(); });
 }
