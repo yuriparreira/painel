@@ -52,38 +52,7 @@ async function transactions(key: string, accountId: string, dateFrom: string) {
   return out;
 }
 
-// Regras genéricas: categoria da Pluggy + descrição → grupo do Painel. A escolha manual (coluna categoria) sempre vence.
-const RULES: [RegExp, string][] = [
-  [/credit card payment|pagamento de fatura/i, 'Pagamento de fatura'],
-  [/same person|mesma titularidade/i, 'Entre contas próprias'],
-  [/investment|aplica|resgate|rdb|cdb/i, 'Investimentos'],
-  [/supermarket|groceries|mercado/i, 'Mercado'],
-  [/restaurant|food delivery|\bbar\b|ifood|lanch/i, 'Alimentação fora'],
-  [/gas station|fuel|posto|combust/i, 'Transporte: combustível'],
-  [/toll|pedágio|pedagio|sem parar/i, 'Transporte: pedágio'],
-  [/parking|estacion/i, 'Transporte: estacionamento'],
-  [/taxi|\bride\b|uber|\b99 ?(app|pop|taxi)\b/i, 'Transporte: app'],
-  [/pharmacy|drugstore|farm/i, 'Saúde: farmácia'],
-  [/gym|fitness|academia|total ?pass|wellhub|gympass/i, 'Saúde: academia'],
-  [/health|hospital|clinic|dentist|médic|medic/i, 'Saúde'],
-  [/water|\bágua\b|\bagua\b|sanea/i, 'Moradia: água'],
-  [/electric|energia|\bluz\b/i, 'Moradia: energia'],
-  [/telecom|mobile|phone|internet|celular|\bvivo\b|\bclaro\b|\btim\b/i, 'Moradia: telefone e internet'],
-  [/\brent\b|aluguel|condom/i, 'Moradia: aluguel e condomínio'],
-  [/tax|tribut|iptu|ipva|darf|dare/i, 'Impostos e taxas'],
-  [/streaming|subscription|assinatura|netflix|spotify/i, 'Assinaturas'],
-  [/leisure|entertainment|cinema|games|lazer/i, 'Lazer'],
-  [/travel|airline|hotel|viagem/i, 'Viagem'],
-  [/shopping|clothing|electronics|loja/i, 'Compras'],
-  [/\bfees?\b|tarifa|juros|interest|\biof\b/i, 'Tarifas e juros'],
-  [/salary|salário|income|rendimento/i, 'Receitas'],
-  [/transfer|\bpix\b|\bted\b|\bdoc\b/i, 'Transferências'],
-];
-export function categoriza(t: any): string {
-  const s = `${t.category || ''} ${t.description || ''}`;
-  for (const [rx, c] of RULES) if (rx.test(s)) return c;
-  return t.type === 'CREDIT' ? 'Receitas' : 'Outros';
-}
+// A categoria de cada lançamento é calculada no banco (gatilho fin_tx_classifica), com as regras da tabela fin_rules.
 
 const d10 = (v: any) => (typeof v === 'string' && v.length >= 10 ? v.slice(0, 10) : null);
 const daysAgo = (n: number) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
@@ -115,9 +84,9 @@ export async function syncItem(sb: SupabaseClient, key: string, itemId: string, 
     for (let i = 0; i < tx.length; i += 500) {
       const rows = tx.slice(i, i + 500).map((t: any) => ({
         id: t.id, account_id: a.id, date: d10(t.date), description: t.description,
-        // Saída sempre negativa, entrada positiva, em conta e em cartão.
-        amount: t.type === 'DEBIT' ? -Math.abs(t.amount) : Math.abs(t.amount),
-        type: t.type, status: t.status ?? null, category: t.category ?? null, categoria_auto: categoriza(t),
+        // Saída sempre negativa, entrada positiva, em conta e em cartão. Compra em outra moeda: vale o valor convertido.
+        amount: (t.type === 'DEBIT' ? -1 : 1) * Math.abs(t.amountInAccountCurrency ?? t.amount),
+        type: t.type, status: t.status ?? null, category: t.category ?? null,
         installment: t.creditCardMetadata?.totalInstallments ? `${t.creditCardMetadata.installmentNumber}/${t.creditCardMetadata.totalInstallments}` : null,
         bill_id: t.creditCardMetadata?.billId ?? null, updated_at: new Date().toISOString(), raw: t,
       }));

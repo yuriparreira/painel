@@ -31,6 +31,7 @@ icons.js              ícones de traço em SVG
 sw.js                 service worker: funciona offline após a primeira visita
 manifest.webmanifest  instalação como PWA
 icons/                ícones do app
+supabase/             banco e funções da sincronização com o Open Finance (só estrutura)
 ```
 
 Sem build e sem dependências: JavaScript puro em módulos ES. Para rodar localmente, sirva a pasta com qualquer servidor estático, por exemplo `python3 -m http.server 8080`, e abra http://localhost:8080.
@@ -38,3 +39,14 @@ Sem build e sem dependências: JavaScript puro em módulos ES. Para rodar localm
 ## Privacidade
 
 O repositório é público para usar o GitHub Pages grátis, então **nenhum dado pessoal real entra aqui**: nada de extratos, valores, exames, endereços de agenda, chaves ou tokens. O app real, com os dados de verdade, vai para um endereço e um banco separados e privados.
+
+## Sincronização com o Open Finance
+
+A pasta `supabase/` tem só a estrutura do banco e as funções; nenhum dado real.
+
+- `migrations/`: tabelas `fin_*`, RLS em que só o dono lê, e a categorização dos lançamentos feita no próprio banco. As regras pessoais de categoria ficam só na tabela `fin_rules` do banco, nunca aqui.
+- `functions/pluggy-sync`: busca contas, lançamentos, faturas e investimentos de cada conexão do Meu Pluggy. Roda todo dia pelo agendamento, pelo webhook e à mão.
+- `functions/pluggy-webhook`: recebe os avisos da Pluggy e dispara a sincronização da conexão.
+- `cron.example.sql`: modelo do agendamento diário, para rodar no SQL Editor com os valores reais.
+
+Os segredos (`PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`, `PLUGGY_ITEM_IDS`, `PLUGGY_WEBHOOK_TOKEN`) ficam em Edge Functions → Secrets no Supabase.

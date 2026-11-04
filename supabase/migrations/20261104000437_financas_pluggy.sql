@@ -53,7 +53,7 @@ create table if not exists public.fin_transactions (
   type text,                         -- DEBIT ou CREDIT
   status text,                       -- PENDING ou POSTED
   category text,                     -- categoria da Pluggy
-  categoria_auto text,               -- categoria do Painel pelas regras da sincronização
+  categoria_auto text,               -- categoria do Painel pelas regras do banco (fin_rules)
   categoria text,                    -- escolha manual do dono; quando existe, vale esta
   installment text,                  -- "3/10" quando for parcela
   bill_id text,
@@ -114,22 +114,31 @@ create table if not exists public.fin_sync_log (
   detail jsonb
 );
 
--- RLS: tudo fechado para anon; o dono lê. Só a função de sincronização (service role) escreve.
-do $$
-declare t text;
-begin
-  foreach t in array array['owner', 'items', 'accounts', 'transactions', 'bills', 'investments', 'loans', 'snapshots', 'sync_log'] loop
-    execute format('alter table public.%I enable row level security', 'fin_' || t);
-    execute format('drop policy if exists dono_le on public.%I', 'fin_' || t);
-    execute format('create policy dono_le on public.%I for select to authenticated using (public.fin_is_owner())', 'fin_' || t);
-  end loop;
-end $$;
+-- RLS: anon não tem política, então não lê nada; o dono lê. Só a função de sincronização (service role) escreve.
+alter table public.fin_owner enable row level security;
+alter table public.fin_items enable row level security;
+alter table public.fin_accounts enable row level security;
+alter table public.fin_transactions enable row level security;
+alter table public.fin_bills enable row level security;
+alter table public.fin_investments enable row level security;
+alter table public.fin_loans enable row level security;
+alter table public.fin_snapshots enable row level security;
+alter table public.fin_sync_log enable row level security;
+
+create policy dono_le on public.fin_owner for select to authenticated using (public.fin_is_owner());
+create policy dono_le on public.fin_items for select to authenticated using (public.fin_is_owner());
+create policy dono_le on public.fin_accounts for select to authenticated using (public.fin_is_owner());
+create policy dono_le on public.fin_transactions for select to authenticated using (public.fin_is_owner());
+create policy dono_le on public.fin_bills for select to authenticated using (public.fin_is_owner());
+create policy dono_le on public.fin_investments for select to authenticated using (public.fin_is_owner());
+create policy dono_le on public.fin_loans for select to authenticated using (public.fin_is_owner());
+create policy dono_le on public.fin_snapshots for select to authenticated using (public.fin_is_owner());
+create policy dono_le on public.fin_sync_log for select to authenticated using (public.fin_is_owner());
 
 -- O dono pode corrigir a categoria de um lançamento pelo app.
-drop policy if exists dono_categoriza on public.fin_transactions;
 create policy dono_categoriza on public.fin_transactions for update to authenticated
   using (public.fin_is_owner()) with check (public.fin_is_owner());
 
--- anon não lê nada (RLS sem política para anon); authenticated lê só se for o dono.
-revoke all on public.fin_owner, public.fin_items, public.fin_accounts, public.fin_transactions, public.fin_bills,
-  public.fin_investments, public.fin_loans, public.fin_snapshots, public.fin_sync_log from anon;
+-- Agendamento diário e chamadas HTTP a partir do banco (ver ../cron.example.sql).
+create extension if not exists pg_net;
+create extension if not exists pg_cron;
