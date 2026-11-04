@@ -942,11 +942,11 @@ const SBMSG = {
   sessao_expirada: 'A sessão acabou. Entre de novo com um código.',
   sem_sessao: 'Entre de novo com um código.',
   nao_e_dono: 'Esta conta entrou, mas não é a dona dos dados.',
-  // O link e o código do e-mail são o mesmo código: abrir o link gasta o código.
-  link_de_outro_aparelho: 'Este link abriu fora do Painel onde você pediu o código e já gastou esse código. No Painel, toque em Mandar outro e digite o código novo, sem tocar no link.',
-  link_invalido: 'O link do e-mail veio incompleto. Peça outro código e digite os números no Painel.',
+  // O link e o código do e-mail são o mesmo código: abrir o link gasta o código. O link só entra no navegador que pediu o e-mail.
+  link_de_outro_aparelho: 'Este link abriu num navegador diferente daquele em que você pediu o e-mail, e já não vale. Peça outro e abra o link no mesmo navegador do Painel, ou digite o código, se o e-mail trouxer um.',
+  link_invalido: 'O link do e-mail veio incompleto. Peça outro e tente de novo.',
   ja_conectado: 'Este aparelho já está conectado com outra conta. Para trocar, saia primeiro.',
-  access_denied: 'O link do e-mail venceu ou já foi usado. Peça outro código.',
+  access_denied: 'O link do e-mail venceu ou já foi usado. Peça outro.',
 };
 function sbMsg(e) {
   const c = e && e.code;
@@ -1033,7 +1033,7 @@ function Sincronizar() {
     const w = resendWait();
     body = LG.step === 'code'
       ? `<form class="card" data-form="sbVerify" novalidate>
-          <p class="small muted" style="margin:0">Mandamos um código para <b>${esc(LG.email)}</b>. Ele vale por uma hora. Digite os números aqui, sem tocar no link do e-mail.</p>
+          <p class="small muted" style="margin:0">Mandamos um e-mail para <b>${esc(LG.email)}</b>. Se ele trouxer um código, digite os números aqui (vale por uma hora). Se trouxer só um link, abra o e-mail neste mesmo navegador e toque nele.</p>
           <label class="field"><span>Código do e-mail</span><input class="input num" id="sb-code" name="code" data-in="sbcode" value="${esc(LG.code)}" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="10" required style="font-size:24px;letter-spacing:4px;font-weight:700"${inv}></label>
           ${err}${note}
           <button class="btn block" style="margin-top:12px" type="submit" id="sb-go"${off ? ' disabled' : busyAttr(LG.busy)}>${LG.busy === 'verify' ? 'Conferindo…' : off ? 'Sem internet' : 'Entrar'}</button>
@@ -1774,7 +1774,7 @@ function fitRestbar() {
 window.addEventListener('resize', fitRestbar);
 
 // ---------- Render ----------
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
 const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/campanha': 'Campanha', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Importar', 'dinheiro/sincronizar': 'Open Finance', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes', estados: 'Estados' };
