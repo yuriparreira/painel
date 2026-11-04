@@ -200,6 +200,15 @@ export async function fetchPainel() {
   }
 }
 
+// Saúde no formato painel-saude/1 (plano, fichas, dieta, medidas e exames). Só a conta dona lê; a mesma regra de
+// sessão: se a pessoa sair no meio da leitura, o resultado é descartado.
+export async function fetchSaude() {
+  const ep = epoch;
+  const r = await rpc('saude_painel');
+  if (ep !== epoch) throw new SyncError('sem_sessao');
+  return r;
+}
+
 // Sai deste aparelho. A sessão daqui é apagada na hora (fechar o app logo depois não a deixa salva); depois o
 // Supabase encerra a sessão lá, com um token renovado antes se o atual já venceu. Devolve 'ok', 'sem-rede' ou
 // 'erro' (o Supabase não confirmou o fim da sessão lá).

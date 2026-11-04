@@ -1,7 +1,7 @@
 {
   "name": "Painel",
   "short_name": "Painel",
-  "description": "Saúde, finanças e agenda num lugar só, com você como personagem principal. Wireframe com dados fictícios.",
+  "description": "Saúde, finanças e agenda num lugar só, com você como personagem principal.",
   "lang": "pt-BR",
   "id": "./",
   "start_url": "./#/hoje",

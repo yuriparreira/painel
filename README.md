@@ -1,45 +1,53 @@
 # Painel
 
-Wireframe navegável do app pessoal do Yuri: um painel diário em que ele é o personagem principal, com saúde e treinos, finanças pessoais e um assessor para o dia a dia.
+App pessoal (PWA): um painel diário em que você é o personagem principal, com saúde e treinos, dinheiro e tarefas.
 
 **Abrir:** https://yuriparreira.github.io/painel/
 
-No iPhone, abra no Safari e use Compartilhar → Adicionar à Tela de Início para testar como app instalado, inclusive offline.
+No iPhone, abra no Safari e use Compartilhar → Adicionar à Tela de Início para usar como app instalado, inclusive offline.
 
 ## O que está aqui
 
-Esta é a etapa M0 (wireframe). Todas as telas funcionam com dados fictícios guardados só no navegador, para testar fluxo, hierarquia e hábito antes de construir o app real.
+Desde a versão 0.5.0 o app não tem nenhum dado de exemplo. Cada número vem de três lugares:
+
+- **Dinheiro:** Open Finance pelo Supabase (depois do login) ou o arquivo `painel-dados.json` carregado à mão.
+- **Saúde:** plano de treino, fichas, plano alimentar, medidas e exames, lidos do Supabase pela função `saude_painel()`.
+- **O que você registra no app:** check-in de sono e peso, treinos, refeições, tarefas, gastos e contas pagas. Fica só no aparelho.
+
+XP, Chama, atributos, conquistas e o chefe do mês começam do zero e são calculados só com esses registros. Sem dados, cada tela diz de onde eles vêm e qual é o próximo passo.
 
 | Área | Telas |
 | --- | --- |
-| Hoje | resumo do dia, check-in de sono e energia, missões diárias, chama de sequência |
-| Saúde | atributos, treino com cronômetro de descanso, campanha de 4 atos, dieta, exames e medidas |
-| Dinheiro | quanto pode gastar, contas a pagar, cartões e faturas, patrimônio, importação de extratos |
-| Agenda | top 3, caixa de entrada com texto livre, agenda do dia, hora de dormir |
-| Ficha | nível, XP, conquistas, chefe da semana, ajustes e estados de demonstração |
+| Hoje | check-in, missões do dia (Corpo, Combustível e Missão), linha do dia, resumo do dinheiro e da semana |
+| Saúde | energia pelo sono, peso, treino com cronômetro de descanso, plano de treino, dieta do dia, exames e medidas |
+| Dinheiro | quanto pode gastar, contas a pagar, cartões e faturas, patrimônio, sincronização |
+| Agenda | Top 3 do dia, caixa de entrada com texto livre, próximos 7 dias |
+| Ficha | nível, XP, atributos, missões da semana, conquistas, chefe do mês, ajustes |
 
-O mapa de telas e as notas de UX aparecem ao lado do aparelho em telas largas. No celular, Ficha → Mapa de telas e estados abre o mesmo mapa e os controles da demonstração: Hoje de manhã, feito ou à noite, simular sem internet e tema claro ou escuro.
+Ainda não conectados: Apple Health, agenda (Google ou Apple) e lembretes automáticos. Ajustes mostra o estado de cada integração.
+
+Ao abrir a 0.5.0 pela primeira vez, o aparelho zera o que a demonstração antiga tinha deixado (XP, Chama, histórico, peso e sono de exemplo) e mantém tema, contas marcadas como pagas, gastos anotados e tarefas próprias.
 
 ## Estrutura
 
 ```
 index.html            casca do app, barra de abas e botão Registrar
 app.js                telas, rotas, gamificação e interações
-data.js               dados fictícios de demonstração e leitura dos dados reais (formato painel-financas/1)
+data.js               regras fixas do jogo e leitura dos dados (painel-financas/1 e painel-saude/1)
 sync.js               login por código no e-mail (Supabase Auth) e leitura do banco
 app.css               tokens de cor (claro e escuro) e componentes
 icons.js              ícones de traço em SVG
 sw.js                 service worker: funciona offline após a primeira visita
 manifest.webmanifest  instalação como PWA
 icons/                ícones do app
-supabase/             banco e funções da sincronização com o Open Finance (só estrutura)
+supabase/             banco e funções: Open Finance e saúde (só estrutura, nenhum dado)
 ```
 
 Sem build e sem dependências: JavaScript puro em módulos ES. Para rodar localmente, sirva a pasta com qualquer servidor estático, por exemplo `python3 -m http.server 8080`, e abra http://localhost:8080.
 
 ## Privacidade
 
-O repositório é público para usar o GitHub Pages grátis, então **nenhum dado pessoal real entra aqui**: nada de extratos, valores, exames, endereços de agenda, segredos ou tokens. A única chave aqui é a publicável do Supabase, em `sync.js`: ela é feita para ficar no navegador, e quem protege os dados é o RLS do banco, que só deixa a conta dona ler. O app real, com os dados de verdade, vai para um endereço e um banco separados e privados.
+O repositório é público para usar o GitHub Pages grátis, então **nenhum dado pessoal real entra aqui**: nada de extratos, valores, exames, endereços de agenda, segredos ou tokens. A única chave aqui é a publicável do Supabase, em `sync.js`: ela é feita para ficar no navegador, e quem protege os dados é o RLS do banco, que só deixa a conta dona ler. Os dados de verdade ficam no banco do Supabase, que só a conta dona lê, e na cópia do próprio aparelho.
 
 ## Sincronização com o Open Finance
 
@@ -52,7 +60,7 @@ A pasta `supabase/` tem só a estrutura do banco e as funções; nenhum dado rea
 
 ### Login no app
 
-Em Dinheiro → Open Finance e extratos → Open Finance, o dono entra com um código de 6 dígitos que chega no e-mail (Supabase Auth, sem senha). Depois disso o app chama a função `fin_painel()`, que monta numa chamada só o mesmo formato do arquivo `painel-dados.json`: contas, cartões, faturas e lançamentos do Open Finance, mais a foto manual (`fin_snapshots`) com o que não vem por lá. A última leitura fica no aparelho para abrir sem internet.
+Em Dinheiro → Sincronizar, o dono entra com um código de 6 dígitos que chega no e-mail (Supabase Auth, sem senha). Depois disso o app chama a função `fin_painel()`, que monta numa chamada só o mesmo formato do arquivo `painel-dados.json`: contas, cartões, faturas e lançamentos do Open Finance, mais a foto manual (`fin_snapshots`) com o que não vem por lá. A última leitura fica no aparelho para abrir sem internet.
 
 - Na primeira vez, `fin_reivindicar()` torna dona a conta cujo e-mail está em `private.fin_config` (gravado direto no banco, nunca aqui), e só enquanto não há dono. Só vale o login pelo código do e-mail: senha, provedor externo ou sessão anônima não reivindicam.
 - Outra conta consegue entrar, mas não lê nada: o banco responde `nao_e_dono`.
@@ -63,3 +71,9 @@ Em Dinheiro → Open Finance e extratos → Open Finance, o dono entra com um c�
 - Service worker: a página e os arquivos saem só da versão instalada, sem troca um a um. A versão nova chega inteira (o app oferece recarregar). Todo deploy precisa subir o `VERSION` de `sw.js`.
 
 Os segredos (`PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`, `PLUGGY_ITEM_IDS`, `PLUGGY_WEBHOOK_TOKEN`) ficam em Edge Functions → Secrets no Supabase.
+
+## Saúde no Supabase
+
+- `migrations/20261104200000_saude.sql`: tabelas `saude_*` (perfil com metas e plano de treino, fichas, refeições, diário, medidas, exames, treinos e histórico), com o mesmo RLS do dinheiro: só a conta dona lê e grava.
+- `migrations/20261104201000_saude_painel.sql`: `saude_painel()`, que monta numa chamada só o formato `painel-saude/1` das telas de Saúde. Roda com as permissões de quem chama, então o RLS continua valendo.
+- Os dados foram copiados uma vez para essas tabelas, direto no banco. Medidas e exames novos ainda não entram pelo app; o check-in e os treinos registrados ficam no aparelho.

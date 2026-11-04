@@ -1,11 +1,12 @@
-// Painel · wireframe navegável. JavaScript puro, sem dependências, roteamento por hash.
-// Todos os números são fictícios (ver data.js). O estado da demonstração fica só neste navegador.
+// Painel. JavaScript puro, sem dependências, roteamento por hash.
+// Só dados seus: dinheiro do Open Finance (Supabase) ou do arquivo do Painel, saúde do Supabase (saude_painel) e o que
+// você registra aqui. A cópia fica só neste navegador; o repositório não guarda dado pessoal nenhum.
 import { I } from './icons.js';
 import * as D from './data.js';
-// sync.js chegou na versão 0.4.0. Se o aparelho ainda guarda só os arquivos da versão anterior (sem internet,
-// antes da atualização terminar), o app abre sem o login em vez de ficar em branco.
+// Se o aparelho ainda guarda só os arquivos de uma versão sem o sync.js (sem internet, antes da atualização
+// terminar), o app abre sem o login em vez de ficar em branco.
 const sbOff = async () => { const e = new Error('offline'); e.code = 'offline'; throw e; };
-const SB_OFF = { consumeHash: () => null, session: () => null, email: () => null, pending: () => null, clearPending() {}, currentEpoch: () => 0, onChange() {}, sendCode: sbOff, verifyCode: sbOff, fetchPainel: sbOff, signOut: async () => 'ok' };
+const SB_OFF = { consumeHash: () => null, session: () => null, email: () => null, pending: () => null, clearPending() {}, currentEpoch: () => 0, onChange() {}, sendCode: sbOff, verifyCode: sbOff, fetchPainel: sbOff, fetchSaude: sbOff, signOut: async () => 'ok' };
 // Antes da espera abaixo: o navegador pode oferecer a instalação enquanto o sync.js ainda chega.
 let deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; try { if (current() === 'onboarding') render(true); } catch { /* ainda abrindo */ } });
@@ -14,27 +15,34 @@ const SB = await import('./sync.js').catch(() => SB_OFF);
 // Volta do link mágico do e-mail: a sessão sai do endereço antes do roteador ler o hash.
 const hashLogin = SB.consumeHash();
 
-// Dados reais: vêm do Open Finance (Supabase, depois do login) ou do arquivo carregado em Importar.
-// A última cópia fica só neste navegador, para abrir sem internet.
+// Dinheiro: vem do Open Finance (Supabase, depois do login) ou do arquivo carregado em Importar.
+// Saúde: plano, fichas, dieta, medidas e exames do Supabase. A última cópia de cada um fica só neste navegador,
+// para abrir sem internet.
 const REALK = 'painel-real-v1';
-let realErr = null;
+const SAUDEK = 'painel-saude-v1';
+let realErr = null, saudeRaw = null, saudeErr = null;
 try { const t = localStorage.getItem(REALK); if (t) D.useReal(JSON.parse(t)); } catch (e) { realErr = e; }
+try { const t = localStorage.getItem(SAUDEK); if (t) { const H = JSON.parse(t); D.useSaude(H); saudeRaw = H; } } catch { saudeRaw = null; /* lê de novo na próxima sincronização */ }
+const CARD = 'cartao'; // gasto registrado à mão no cartão principal
 const card0 = () => (D.CARDS[0] ? D.CARDS[0].n : 'cartão');
-const semCartao = () => !!D.REAL && !D.CARDS.length; // dados reais sem nenhum cartão: nada de fatura nas telas
-const cardName = (m) => (m === 'Cartão Alfa' ? card0() : m);
+const semCartao = () => !D.CARDS.length; // sem nenhum cartão: nada de fatura nas telas
+const cardName = (m) => (m === CARD ? card0() : m);
 
 const app = document.getElementById('app');
 const main = document.getElementById('main');
 const sheetRoot = document.getElementById('sheet-root');
 const toastRoot = document.getElementById('toasts');
-const KEY = 'painel-wireframe-v1';
+// O estado mora numa chave nova desde a 0.5.0. A antiga (da demonstração) só é lida uma vez, para migrar o que é seu:
+// uma aba ainda na versão anterior que grave nela não mexe mais no estado desta versão.
+const KEY = 'painel-estado-v2', OLDKEY = 'painel-wireframe-v1';
+
 
 // ---------- Formatação ----------
 const BRL = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 const brl = (v) => BRL.format(v);
 const brl0 = (v) => 'R$ ' + Math.round(v).toLocaleString('pt-BR');
 const brlK = (v) => (Math.abs(v) >= 10000 ? 'R$ ' + (v / 1000).toLocaleString('pt-BR', { maximumFractionDigits: Math.abs(v) >= 100000 ? 0 : 1 }) + ' mil' : brl0(v));
-const n1 = (v) => v.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const n1 = (v) => (Number.isFinite(v) ? v.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '—');
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const dLong = (d) => cap(d.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
 const dShort = (d) => d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
@@ -45,6 +53,8 @@ const rel = (d) => { const k = D.diffDays(d, diaNow()); return k === 0 ? 'hoje' 
 const relDue = (b) => { const k = D.diffDays(b.due, diaNow()); return b.pago ? `pago · vencia ${dShort(b.due)}` : k < 0 ? `venceu ${rel(b.due)}` : `vence ${rel(b.due)} · ${dShort(b.due)}`; };
 // O dia do Painel vira às 03:00: quem fecha o dia depois da meia-noite ainda está no mesmo dia.
 const diaNow = () => new Date(Date.now() - 3 * 36e5);
+// Hora para comparar com os horários do dia do app ('HH:MM'). Da meia-noite às 03:00 o dia ainda é o de ontem, e tudo dele já passou.
+const hmAgora = () => { const n = new Date(); return n.getHours() < 3 ? '24:00' : `${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`; };
 const monthKey = (d) => D.iso(d).slice(0, 7);
 // Valor digitado: aceita 45,90 · 45.90 · 1.234,56 · R$ 1.234 (ponto com 3 dígitos é milhar).
 function parseMoney(raw) {
@@ -59,43 +69,52 @@ const clamp01 = (x) => Math.max(0, Math.min(1, x));
 const lin = (x, a, b) => 100 * clamp01((x - a) / (b - a));
 const pct = (v) => `${Math.round(Math.max(0, Math.min(100, v)))}%`;
 
-// ---------- Estado da demonstração ----------
+
+// ---------- Estado neste aparelho ----------
 function defaults() {
   return {
-    v: 1, xp: D.XP_START, onboarded: false, onbStep: 0, theme: 'system', demo: 'auto', offline: false, pending: 0,
+    v: 2, xp: 0, since: null, nome: '', onboarded: false, onbStep: 0, theme: 'system',
     day: null, checkin: null, quests: { corpo: false, comb: false, missao: false }, perfect: false, closed: false,
-    top3: {}, sets: {}, meals: {}, workoutDone: false, wSel: null, wStart: null, rest: null,
-    paid: {}, inbox: D.INBOX.slice(), weight: 86.4, sleep: 7, streak: 12, best: 12, pausa: false,
-    notif: { briefing: true, treino: true, dormir: true, contas: true }, card: 0, fat: 'aberta', calSel: null, calOff: 0,
-    billFilter: 'todas', importStep: 0, importXp: false, importCat: null, importRule: true, bp: 'resumo', dayType: null, agView: 'hoje', devices: {},
-    draftExpense: '', inboxDraft: '', missaoRef: null, corpoKey: null, combByMeals: false, expenses: [], mealXp: {}, inboxXp: 0, prToday: false, best1rm: {}, brasaAt: null, hist: null,
-    paidAmt: {}, paidAt: {}, txUsados: [], good: {}, bossSeed: null, bossMonth: null, importAt: null, bossWon: null,
+    sets: {}, meals: {}, wSel: null, wStart: null, rest: null,
+    paid: {}, inbox: [], weight: null, sleep: null, streak: 0, best: 0, pausa: false,
+    card: 0, calSel: null, calOff: 0, billFilter: 'todas', bp: 'resumo', dayType: null, agView: 'hoje',
+    draftExpense: '', inboxDraft: '', missaoRef: null, corpoKey: null, corpoMin: 0, combByMeals: false, expenses: [], mealXp: {}, inboxXp: 0, prToday: false,
+    best1rm: {}, lastSets: {}, brasaAt: null, hist: {}, dias: {}, semXp: {}, conq: {}, qxp: {},
+    paidAmt: {}, paidAt: {}, txUsados: [], good: {}, bossSeed: 0, bossMonth: null, bossWon: null, bossWonDay: null,
   };
 }
 const dayAt = (isoStr) => new Date(isoStr + 'T12:00');
-// Histórico fictício dos 27 dias anteriores: os últimos 12 com check-in (a Chama de 12 dias) e 3 faltas antes disso.
-function seedHist(s) {
-  const h = {}, now = diaNow();
-  for (let i = 1; i <= 27; i++) h[D.iso(D.addDays(now, -i))] = [13, 19, 24].includes(i) ? 0 : 1;
-  s.brasaAt = D.iso(D.addDays(now, -19));
-  return h;
+const isoOk = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+const fin = (v) => (Number.isFinite(v) ? v : null);
+// O registro de um dia: sono e peso do check-in, sessão feita (e minutos de zona 2), Combustível e Missão.
+function logHoje(s) {
+  const e = {};
+  if (s.checkin) { if (fin(s.checkin.s) != null) e.s = s.checkin.s; if (fin(s.checkin.w) != null) e.w = s.checkin.w; }
+  if (s.quests.corpo && s.corpoKey) { e.k = s.corpoKey; if (s.corpoKey === 'Z2' && s.corpoMin > 0) e.z = s.corpoMin; }
+  if (s.quests.comb) e.b = 1;
+  if (s.quests.missao) e.m = 1;
+  return Object.keys(e).length ? e : null;
 }
 // Virada do dia: fecha o histórico, atualiza a Chama (com brasa e Modo Pausa) e zera o que é diário.
 function rollover(s, today) {
   const prev = dayAt(s.day), gap = D.diffDays(dayAt(today), prev);
   s.hist[s.day] = s.pausa ? 'p' : s.checkin ? 1 : 0;
-  if (s.checkin && s.checkin.s >= 7) s.good[s.day] = 1; // noite boa = golpe no chefe, guardado de verdade
+  if (s.checkin && s.checkin.s >= 7) s.good[s.day] = 1; // noite boa = golpe no chefe
+  const e = logHoje(s); if (e) s.dias[s.day] = e;
   for (let i = 1; i < gap; i++) { const d = D.iso(D.addDays(prev, i)); if (!(d in s.hist)) s.hist[d] = s.pausa ? 'p' : 0; }
   for (let i = 0; i < gap; i++) {
     const d = D.iso(D.addDays(prev, i)), v = s.hist[d];
-    if (v === 1) s.streak += 1;
+    if (v === 1) { s.streak += 1; s.best = Math.max(s.best, s.streak); }
     else if (v === 'p') { /* pausa congela a Chama */ }
-    else if (!s.brasaAt || D.diffDays(dayAt(d), dayAt(s.brasaAt)) >= 7) s.brasaAt = d; // 1 falta livre a cada 7 dias
-    else s.streak = 0; // a Chama recomeça; XP nunca cai
+    else if (s.streak > 0 && (!s.brasaAt || D.diffDays(dayAt(d), dayAt(s.brasaAt)) >= 7)) s.brasaAt = d; // 1 falta livre a cada 7 dias
+    else s.streak = 0; // a Chama recomeça (sem Chama acesa, a brasa fica guardada); XP nunca cai
   }
   s.best = Math.max(s.best, s.streak);
   Object.keys(s.hist).forEach((d) => { if (D.diffDays(dayAt(today), dayAt(d)) > 60) delete s.hist[d]; });
-  Object.assign(s, { checkin: null, quests: { corpo: false, comb: false, missao: false }, perfect: false, closed: false, top3: {}, sets: {}, meals: {}, workoutDone: false, wStart: null, rest: null, dayType: null, wSel: null, missaoRef: null, corpoKey: null, combByMeals: false, mealXp: {}, inboxXp: 0, prToday: false, importStep: 0 });
+  Object.keys(s.dias).forEach((d) => { if (D.diffDays(dayAt(today), dayAt(d)) > 400) delete s.dias[d]; });
+  Object.keys(s.semXp).forEach((d) => { if (D.diffDays(dayAt(today), dayAt(d)) > 60) delete s.semXp[d]; });
+  s.inbox = s.inbox.filter((x) => !x.done); // tarefas concluídas saem na virada
+  Object.assign(s, { checkin: null, sleep: null, quests: { corpo: false, comb: false, missao: false }, perfect: false, closed: false, sets: {}, meals: {}, wStart: null, rest: null, dayType: null, wSel: null, missaoRef: null, corpoKey: null, corpoMin: 0, combByMeals: false, mealXp: {}, inboxXp: 0, prToday: false, qxp: {} });
 }
 // Mantém só valores com o mesmo formato do padrão: um dado salvo corrompido não pode travar o app.
 function sane(stored) {
@@ -110,30 +129,71 @@ function sane(stored) {
     if (typeof dv === 'number') { if (Number.isFinite(v)) out[k] = v; continue; }
     if (typeof v === typeof dv) out[k] = v;
   }
-  if (out.hist && typeof out.hist !== 'object') out.hist = null;
+  // Campos que começam vazios (null) e aceitam qualquer coisa salva: confere o formato um a um.
+  out.weight = fin(out.weight); out.sleep = fin(out.sleep);
+  if (out.checkin && (typeof out.checkin !== 'object' || fin(out.checkin.s) == null)) out.checkin = null;
+  if (out.checkin) out.checkin = { s: out.checkin.s, w: fin(out.checkin.w) };
+  ['day', 'since', 'brasaAt', 'bossMonth', 'bossWon', 'bossWonDay', 'calSel'].forEach((k) => { if (out[k] != null && typeof out[k] !== 'string') out[k] = null; });
+  if (out.dayType && !D.DIAS[out.dayType]) out.dayType = null;
+  if (out.wSel && !['A', 'B', 'C', 'Z2', 'REST'].includes(out.wSel)) out.wSel = null;
+  if (out.rest && !(out.rest.end > 0)) out.rest = null;
+  out.inbox = out.inbox.filter((x) => x && typeof x.t === 'string');
+  out.expenses = out.expenses.filter((x) => x && Number.isFinite(x.v));
   return out;
 }
+// A versão anterior era uma demonstração: XP, Chama, histórico, chefe, peso e sono começavam com números de exemplo, e
+// boa parte do XP vinha de contas, tarefas e importações de exemplo. Daqui em diante só conta o que você fizer: tudo do
+// jogo volta a zero, inclusive o dia de hoje. Fica o que é seu: tema, gastos registrados, tarefas anotadas por você e
+// contas marcadas nos dados reais.
+const DEMO_INBOX = ['Comprar whey', 'Trocar óleo do carro'];
+function migrate(s, today) {
+  s.xp = 0;
+  Object.assign(s, { hist: {}, dias: {}, semXp: {}, conq: {}, good: {}, streak: 0, best: 0, brasaAt: null, bossSeed: 0, bossWon: null, bossWonDay: null, bossMonth: null, best1rm: {}, lastSets: {}, sets: {}, meals: {}, mealXp: {}, combByMeals: false, dayType: null, wSel: null, missaoRef: null, corpoMin: 0 });
+  s.inbox = s.inbox.filter((x) => !DEMO_INBOX.includes(x.t)).map((x) => {
+    const ch = (Array.isArray(x.chips) ? x.chips : []).filter((c) => typeof c === 'string');
+    const y = { ...x, top: null, topAt: null, doneAs: null, done: false, chips: ch.filter((c) => !/^(repete|sugere):/.test(c)) };
+    // Tarefas que se repetem não existem mais: "repete: todo dia 10" vira a próxima data, ou volta para o texto da tarefa.
+    const rp = ch.find((c) => /^repete:/.test(c));
+    if (rp) {
+      const r = rp.replace(/^repete:\s*/, ''), p = parseInbox(r);
+      if (p.date && !isoOk(y.quando)) { y.quando = D.iso(p.date); y.chips.unshift(p.chips[0].t); } else if (!p.date) y.t = `${y.t} ${r}`.trim();
+    }
+    return y;
+  });
+  // O check-in da demonstração vinha preenchido com peso e sono de exemplo: o de hoje é feito de novo.
+  Object.assign(s, { checkin: null, weight: null, sleep: null, quests: { corpo: false, comb: false, missao: false }, perfect: false, closed: false, corpoKey: null, inboxXp: 0, prToday: false, qxp: {}, wStart: null, rest: null });
+  s.expenses.forEach((x) => { if (x.met === 'Cartão Alfa') x.met = CARD; });
+  if (!D.REAL) { s.paid = {}; s.paidAmt = {}; s.paidAt = {}; } // marcações de contas de exemplo
+  else Object.values(s.paidAt).forEach((a) => { if (a && typeof a === 'object') a.xp = 0; }); // o XP delas foi zerado junto
+  s.since = today; s.day = today; s.v = 2; // o dia antigo não passa pela virada: nada de brasa gasta num dia que não contava
+  return true;
+}
 function load() {
-  let s = null;
-  try { s = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { s = null; }
+  const read = (k) => { try { const v = JSON.parse(localStorage.getItem(k) || 'null'); return v && typeof v === 'object' ? v : null; } catch { return null; } };
+  let s = read(KEY), v1 = false;
+  if (!s) { s = read(OLDKEY); v1 = !!s; } // primeira abertura da 0.5.0: o que estava na chave antiga é da demonstração
+  const fresh = !s;
   s = sane(s);
-  if (!s.hist) s.hist = seedHist(s);
   const today = D.iso(diaNow());
-  const rolled = s.day !== today;
-  if (s.day && rolled) rollover(s, today);
+  const mig = v1 && migrate(s, today);
+  if (!isoOk(s.since)) s.since = today;
+  s.inbox.forEach((x, i) => { if (!x.id) x.id = `n${i}${Date.now().toString(36)}`; });
+  const rolled = !!s.day && s.day !== today;
+  if (rolled) rollover(s, today);
   s.day = today;
   bossMonth(s);
   s.expenses.forEach((x, i) => { if (x && !x.id) x.id = `x${i}${Date.now().toString(36)}`; });
-  if (rolled) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch { /* modo privado */ } }
+  if (rolled || mig || fresh) {
+    try { localStorage.setItem(KEY, JSON.stringify(s)); if (mig) localStorage.removeItem(OLDKEY); } catch { /* modo privado */ }
+  }
   return s;
 }
-// Chefe do mês: os golpes antes do primeiro uso são fictícios (fixados uma vez); depois contam as noites boas reais.
+// Chefe do mês: começa com 18 de 20 de vida a cada mês e cada noite boa (7 h ou mais no check-in) é um golpe.
 function bossMonth(s) {
-  const now = diaNow(), m = monthKey(now);
-  if (s.bossMonth === m && s.bossSeed != null) return;
-  s.bossSeed = s.bossMonth == null ? Math.floor((now.getDate() - 1) * 0.6) : 0;
+  const m = monthKey(diaNow());
+  if (s.bossMonth === m) return;
   if (s.bossMonth != null) s.good = {};
-  s.bossMonth = m;
+  s.bossSeed = 0; s.bossMonth = m;
 }
 let S = load();
 // O app instalado no iPhone volta da memória sem recarregar: confere a virada do dia ao voltar.
@@ -142,17 +202,24 @@ function checkDay() {
   rollover(S, t); S.day = t; bossMonth(S); pruneReal(); save(); setTimeout(checkBoss, 1200); closeSheet(true, false); toast(`${I('sun', 18)} Novo dia. Missões zeradas.`); render(false); return true;
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { /* modo privado: segue sem salvar */ } }
-function touch() { if (S.offline || !navigator.onLine) S.pending += 1; save(); }
+const touch = save;
 
 // ---------- Regras do jogo ----------
 const xpToNext = (L) => Math.round((70 * L ** 1.45) / 10) * 10;
 function lvl(xp) { if (!Number.isFinite(xp) || xp < 0) xp = 0; let L = 1, acc = 0; for (;;) { const need = xpToNext(L); if (xp < acc + need) return { L, into: xp - acc, need }; acc += need; L++; } }
 const titleFor = (L) => (L >= 30 ? 'Lenda' : L >= 25 ? 'Mestre' : L >= 20 ? 'Elite' : L >= 15 ? 'Veterano' : L >= 10 ? 'Combatente' : L >= 5 ? 'Aspirante' : 'Recruta');
-const rank = (v) => (v >= 90 ? 'S' : v >= 75 ? 'A' : v >= 60 ? 'B' : v >= 40 ? 'C' : v >= 20 ? 'D' : 'E');
+const rank = (v) => (v == null ? '—' : v >= 90 ? 'S' : v >= 75 ? 'A' : v >= 60 ? 'B' : v >= 40 ? 'C' : v >= 20 ? 'D' : 'E');
 const SLEEP = [['<5', 4.5], ['5', 5], ['6', 6], ['7', 7], ['8', 8], ['9+', 9]];
-function energia(h) { return Math.round(0.55 * lin(h, 4, 7.5) + 0.25 * 50 + 0.20 * 55); } // VFC e FC de repouso fictícias
-const zoneOf = (e) => (e == null ? 'nd' : e >= 67 ? 'verde' : e >= 34 ? 'amarelo' : 'vermelho');
-const ZNAME = { verde: 'Verde', amarelo: 'Amarelo', vermelho: 'Vermelho', nd: 'Sem dados' };
+// Zona do dia pelas horas de sono do check-in: 7 h ou mais, treino completo; de 6 a 7 h, uma série a menos; menos de
+// 6 h, só caminhada leve ou mobilidade. Sem check-in, sem zona. VFC e FC de repouso entram com o Apple Health.
+const zoneOf = (h) => (fin(h) == null ? 'nd' : h >= 7 ? 'verde' : h >= 6 ? 'amarelo' : 'vermelho');
+const ZNAME = { verde: 'Verde', amarelo: 'Amarelo', vermelho: 'Vermelho', nd: 'Sem check-in' };
+const sleepNow = () => (S.checkin ? fin(S.checkin.s) : null);
+const zoneNow = () => zoneOf(sleepNow());
+const hTxt = (h) => (h >= 9 ? '9 h ou mais' : h < 5 ? 'menos de 5 h' : `${h} h`);
+const hShort = (h) => (h >= 9 ? '9+' : h < 5 ? '<5' : String(h));
+const nomeDe = () => String(S.nome || D.PROFILE.nome || '').trim();
+const inicial = () => { const n = nomeDe(); return n ? esc(n.charAt(0).toUpperCase()) : I('shield', 22); };
 
 function addXP(n, why) {
   const before = lvl(S.xp).L; S.xp += n; touch();
@@ -162,19 +229,16 @@ function addXP(n, why) {
   if (after > before) setTimeout(() => toast(`${I('star')} <span>Nível ${after} · ${titleFor(after)}</span>`, 'lvl', 3800), 900);
 }
 
-// O que o "Hoje" mostra, respeitando o seletor de estados da demonstração.
-function view() {
-  const h = new Date().getHours();
-  if (S.demo === 'manha') return { checkin: null, quests: { corpo: false, comb: false, missao: false }, evening: false, demo: true };
-  if (S.demo === 'feito') return { checkin: S.checkin || { w: S.weight, s: S.sleep }, quests: { corpo: true, comb: false, missao: true }, evening: false, demo: true };
-  if (S.demo === 'noite') return { checkin: S.checkin || { w: S.weight, s: S.sleep }, quests: { corpo: true, comb: true, missao: false }, evening: true, demo: true };
-  return { checkin: S.checkin, quests: S.quests, evening: h >= 19 || h < 3 };
-}
-function plan() { return D.planFor(diaNow()); }
-function todaySession() { const p = plan(); return { p, key: p.tipo, s: D.SESSION[p.tipo] }; }
+function view() { const h = new Date().getHours(); return { checkin: S.checkin, quests: S.quests, evening: h >= 19 || h < 3 }; }
+const plan = () => D.planFor(diaNow());
+// Semana do plano para a meta de cardio: depois do fim do plano, continua a da última semana.
+const cw = (p) => p.week || p.ultima || 0;
+// A sessão de hoje pelo plano. Sem plano (sem dados, antes do início ou depois do fim) a chave é LIVRE.
+function todaySession() { const p = plan(), s = D.sessao(p); return { p, key: s.tipo || 'LIVRE', s }; }
+const sessOf = (p, tipo) => D.sessao(tipo ? { ...p, tipo } : p);
 
 // ---------- Dinheiro: uma fonte só para Hoje, Dinheiro, Contas e Cartões ----------
-const cardOf = (f) => S.expenses.filter((x) => x.met === 'Cartão Alfa' && (x.fat || 'aberta') === f).reduce((a, x) => a + x.v, 0);
+const cardOf = (f) => S.expenses.filter((x) => x.met === CARD && (x.fat || 'aberta') === f).reduce((a, x) => a + x.v, 0);
 const cardExtra = () => cardOf('aberta');
 const cardNext = () => cardOf('proxima');
 // Conta paga mostra o valor que foi pago (o mesmo que saiu do saldo), em qualquer tela.
@@ -214,7 +278,7 @@ function reflected(B) {
 function money() {
   const now = diaNow(), payday = D.payday(now), B = bills(), RF = reflected(B);
   const pagas = B.filter((b) => S.paid[b.id] && !b.porExtrato && !RF.ids.has(b.id)).reduce((a, b) => a + (S.paidAmt[b.id] ?? b.v), 0); // sai do saldo o valor pago, não o atual
-  const avista = S.expenses.filter((x) => x.met !== 'Cartão Alfa').reduce((a, x) => a + x.v, 0);
+  const avista = S.expenses.filter((x) => x.met !== CARD).reduce((a, x) => a + x.v, 0);
   const saldo = D.SAFE.saldo - pagas - avista;
   const due = B.filter((b) => !b.pago && b.id !== 'fatura' && b.met !== 'Cartão' && b.due <= payday);
   const contas = due.reduce((a, b) => a + b.v, 0);
@@ -234,7 +298,7 @@ function prunePaid() {
   const m = D.iso(diaNow()).slice(0, 7), B = bills(); let ch = false;
   Object.keys(S.paid).forEach((id) => {
     let at = S.paidAt[id];
-    if (!at || typeof at !== 'object') { at = S.paidAt[id] = { m, t: new Date().toISOString() }; ch = true; } // marcação de antes desta versão
+    if (!at || typeof at !== 'object') { at = S.paidAt[id] = { m, t: new Date().toISOString(), xp: 0 }; ch = true; } // marcação de antes desta versão
     const b = B.find((x) => x.id === id);
     if (b && !at.due) { at.due = D.iso(b.due); at.n = billName(b); ch = true; }
     const outra = b && (at.due !== D.iso(b.due) || (at.n && at.n !== billName(b)));
@@ -254,7 +318,7 @@ function pruneExpenses() {
   let ch = false;
   const keep = S.expenses.filter((x) => {
     if (!x.t) { x.t = new Date().toISOString(); ch = true; } // registrado antes desta versão
-    const ok = x.met === 'Cartão Alfa' ? card : x.met === 'Pix' ? bank : null;
+    const ok = x.met === CARD ? card : x.met === 'Pix' ? bank : null;
     if (ok) {
       const d0 = D.iso(D.addDays(dayAt(x.d), -1)), d1 = D.iso(D.addDays(dayAt(x.d), 5)), ja = new Set(x.ja || []);
       const hit = (R.transacoes || []).find((y) => { const k = K.get(y); return y.v < 0 && ok.has(y.conta) && !busy.has(y) && !usados.has(k) && !ja.has(k) && Math.abs(-y.v - x.v) < 0.5 && y.d >= d0 && y.d <= d1; });
@@ -273,31 +337,46 @@ const livreLabel = (m) => (m.livre < 0 ? `Falta para as contas até ${dShort(m.p
 const livreBig = (m) => `<span class="big${m.livre < 0 ? ' neg' : ''}" style="margin-top:2px">${brl0(Math.abs(m.livre))}</span>`;
 function missionBill() { return bills().find((b) => !b.pago && !b.auto && D.diffDays(b.due, diaNow()) <= 1); }
 // A Missão do dia é escolhida uma vez e fica fixa: pagar a conta não troca o texto pela próxima.
-function missao() { if (!S.missaoRef) { const mb = missionBill(); S.missaoRef = mb ? mb.id : 't1'; save(); } return S.missaoRef; }
+function missao() { if (S.missaoRef && S.missaoRef !== 't1' && !bills().some((b) => b.id === S.missaoRef)) S.missaoRef = null; if (!S.missaoRef) { const mb = missionBill(); S.missaoRef = mb ? mb.id : 't1'; save(); } return S.missaoRef; }
+
 
 // ---------- XP das missões: o mesmo valor venha de onde vier ----------
-// Energia vermelha troca o treino por recuperação: marcar no Hoje ou concluir no Treino conta igual na semana.
-function corpoDefault() { const { key } = todaySession(); const red = key !== 'REST' && zoneOf(energia(S.checkin ? S.checkin.s : S.sleep)) === 'vermelho'; return red ? 'REC' : key; }
-const QXP = () => { const { key } = todaySession(); return { corpo: key === 'REST' ? 15 : key === 'Z2' ? 40 : 50, comb: 20, missao: 20 }; };
+// Sono curto troca o treino por recuperação: marcar no Hoje ou concluir no Treino conta igual na semana.
+function corpoDefault() { const { key } = todaySession(); const red = !['REST', 'LIVRE'].includes(key) && zoneNow() === 'vermelho'; return red ? 'REC' : key; }
+const QXP = () => { const { key } = todaySession(); return { corpo: key === 'REST' ? 15 : key === 'Z2' || key === 'LIVRE' ? 40 : 50, comb: 20, missao: 20 }; };
 const QWHY = { corpo: 'Corpo feito', comb: 'Combustível em dia', missao: 'Missão cumprida' };
+// Minutos de zona 2 que entram na semana: os do cronômetro, se ele rodou, senão os do plano para esta semana.
+function z2Min() { const el = S.wStart ? Math.round((Date.now() - S.wStart) / 60000) : 0; const c = D.cardioMin(cw(plan())); return el >= 10 ? Math.min(el, 180) : c ? c.min : 0; }
 function setQuest(k, on, why) {
   if (!!S.quests[k] === on) return;
-  S.demo = 'auto'; S.quests[k] = on;
-  if (k === 'corpo') S.corpoKey = on ? S.corpoKey || corpoDefault() : null;
-  const x = QXP()[k];
-  if (on) addXP(x, why || QWHY[k]); else { S.xp = Math.max(0, S.xp - x); touch(); }
+  S.quests[k] = on;
+  if (k === 'corpo') { S.corpoKey = on ? S.corpoKey || corpoDefault() : null; S.corpoMin = on && S.corpoKey === 'Z2' ? z2Min() : 0; }
+  // O XP que sai ao desmarcar é o que entrou ao marcar (o plano do dia pode ter mudado no meio, com a sincronização).
+  if (on) { const x = QXP()[k]; S.qxp[k] = x; addXP(x, why || QWHY[k]); }
+  else { const x = Number.isFinite(S.qxp[k]) ? S.qxp[k] : QXP()[k]; delete S.qxp[k]; S.xp = Math.max(0, S.xp - x); touch(); }
   const all = S.quests.corpo && S.quests.comb && S.quests.missao;
   if (on && all && !S.perfect) { S.perfect = true; setTimeout(() => { addXP(20, 'Dia completo'); render(true); }, 700); }
   if (!on && S.perfect) { S.perfect = false; S.xp = Math.max(0, S.xp - 20); save(); }
+  if (k === 'corpo') setTimeout(checkWeekly, 1200);
 }
 
+// ---------- Registros: o que você marcou aqui, mais o diário do Supabase ----------
+const notionDia = (d) => { const x = D.SAUDE && D.SAUDE.diario.find((r) => r.d === d); if (!x) return null; const e = {}; if (fin(x.sono) != null) e.s = x.sono; if (fin(x.peso) != null) e.w = x.peso; return Object.keys(e).length ? e : null; };
+function logDia(d) { const loc = d === S.day ? logHoje(S) : S.dias[d] || null; const n = notionDia(d); return loc && n ? { ...n, ...loc } : loc || n; }
+// Primeiro dia com registro: o dia em que o app começou a contar, ou o primeiro do diário do Supabase, se for antes.
+function inicio() { const c = [S.since, ...((D.SAUDE && D.SAUDE.diario) || []).map((x) => x.d)].filter(isoOk).sort()[0]; return c ? D.startOfDay(dayAt(c)) : D.startOfDay(diaNow()); }
+const FORCA = new Set(['A', 'B', 'C']);
+
 // ---------- Hábito: consistência, Chama, brasa e chefe ----------
+// Dias com check-in nos últimos 28, contando só a partir do primeiro dia de uso. Sem nenhum dia ainda, sem número.
 function consistency() {
-  const now = diaNow(); let ok = 0, n = 0;
-  for (let i = 1; i <= 27; i++) { const v = S.hist[D.iso(D.addDays(now, -i))]; if (v === 'p') continue; n++; if (v === 1) ok++; }
+  const now = diaNow(), ini = D.startOfDay(dayAt(S.since || D.iso(now))); let ok = 0, n = 0;
+  for (let i = 1; i <= 27; i++) { const d = D.addDays(now, -i); if (d < ini) break; const v = S.hist[D.iso(d)]; if (v === 'p') continue; n++; if (v === 1) ok++; }
   if (S.checkin) { n++; ok++; }
-  return n ? Math.round((ok / n) * 100) : 0;
+  return n ? Math.round((ok / n) * 100) : null;
 }
+const pctTxt = (v) => (v == null ? '—' : `${v}%`);
+const diasTxt = (n) => `${n} dia${n === 1 ? '' : 's'}`;
 const streakNow = () => S.streak + (S.checkin ? 1 : 0);
 const brasaFree = () => !S.brasaAt || D.diffDays(diaNow(), dayAt(S.brasaAt)) >= 7;
 const brasaYesterday = () => S.brasaAt === D.iso(D.addDays(diaNow(), -1));
@@ -309,17 +388,97 @@ function boss() {
   const fim = new Date(now.getFullYear(), now.getMonth() + 1, 0);
   return { ...B, hp, hoje, faltam: D.diffDays(fim, now), won: S.bossWon === m };
 }
-// Missões da semana: os dias passados seguem o plano (demonstração) e hoje conta o que foi feito.
 // Chefe vencido: +500 XP uma vez no mês, e a Ficha passa a mostrar a vitória.
-function checkBoss() { const B = boss(); if (B.hp === 0 && !B.won) { S.bossWon = monthKey(diaNow()); addXP(500, `Chefe vencido · ${D.BOSS.titulo || 'Guardião da Noite'}`); } }
-function weekly() {
-  const now = diaNow(), p = plan(); let sess = 0, forca = 0, z2 = 0;
-  for (let i = 0; i < p.dow; i++) { const q = D.planFor(D.addDays(now, i - p.dow)); if (q.pre || q.tipo === 'REST') continue; sess++; if (q.tipo === 'Z2') z2 += D.SESSION.Z2.min; else forca++; }
-  const ck = S.quests.corpo ? S.corpoKey : null;
-  if (ck && ck !== 'REST' && ck !== 'REC') { sess++; if (ck === 'Z2') z2 += D.SESSION.Z2.min; else forca++; }
-  const val = { plano: sess, cerco: z2, revisao: 0 };
-  return D.WEEKLY.map((q) => ({ ...q, p: Math.min(val[q.id], q.of) }));
+// Se a vitória veio do check-in de hoje e o sono foi corrigido para menos de 7 h, ela é desfeita, com os 500 XP.
+function checkBoss() {
+  const B = boss();
+  if (B.hp === 0 && !B.won) { S.bossWon = monthKey(diaNow()); S.bossWonDay = S.day; addXP(500, 'Chefe vencido · Guardião da Noite'); return; }
+  if (B.won && B.hp > 0 && S.bossWonDay === S.day) { S.bossWon = null; S.bossWonDay = null; S.xp = Math.max(0, S.xp - 500); touch(); toast('O chefe voltou: com o sono corrigido, o golpe de hoje não vale.'); render(true); }
 }
+
+// Semana de segunda a domingo, pelo que você registrou: sessões feitas (força e cardio) e minutos de zona 2.
+const segunda = (ref = diaNow()) => D.addDays(ref, -((D.startOfDay(ref).getDay() + 6) % 7));
+function semana(ref = diaNow()) {
+  const seg = segunda(ref), n = D.diffDays(ref, seg); let sess = 0, forca = 0, z2 = 0, cardio = 0;
+  for (let i = 0; i <= n; i++) {
+    const e = logDia(D.iso(D.addDays(seg, i))); if (!e || !e.k) continue;
+    if (e.k === 'Z2') { sess++; cardio++; z2 += e.z || 0; } else if (FORCA.has(e.k)) { sess++; forca++; } else if (e.k === 'LIVRE') sess++;
+  }
+  return { sess, forca, cardio, z2, week: cw(D.planFor(ref)), key: D.iso(seg) };
+}
+const cardiosSemana = () => { const m = D.metas().semana; return (m && Number(m.cardio)) || 2; };
+const forcaSemana = () => { const m = D.metas().semana; return (m && Number(m.musculacao)) || 3; };
+function weekly() {
+  const W = semana(), c = D.cardioMin(W.week), alvo = c ? c.min * cardiosSemana() : null;
+  return D.WEEKLY.map((q) => (q.id === 'plano'
+    ? { ...q, p: Math.min(W.sess, q.of), ok: W.sess >= q.of && W.forca >= 2 }
+    : { ...q, of: alvo, p: alvo ? Math.min(W.z2, alvo) : W.z2, ok: !!alvo && W.z2 >= alvo, d: alvo ? `${cardiosSemana()} cardios de ${esc(c.txt)} na zona 2` : 'A meta de zona 2 vem do plano de treino' }));
+}
+// XP da semana: uma vez por semana em cada missão, mais o bônus com as duas. Desfazer a sessão no mesmo dia devolve.
+function checkWeekly() {
+  const k = semana().key, got = (S.semXp[k] = S.semXp[k] || {}); let ch = false;
+  weekly().forEach((q) => {
+    if (q.ok && !got[q.id]) { got[q.id] = S.day; addXP(q.xp, `Missão da semana: ${q.t}`); ch = true; }
+    else if (!q.ok && got[q.id] === S.day) { delete got[q.id]; S.xp = Math.max(0, S.xp - q.xp); ch = true; }
+  });
+  const both = D.WEEKLY.every((q) => got[q.id]);
+  if (both && !got.bonus) { got.bonus = S.day; setTimeout(() => addXP(D.WEEKLY_BONUS, 'Semana completa'), 900); ch = true; }
+  else if (!both && got.bonus === S.day) { delete got.bonus; S.xp = Math.max(0, S.xp - D.WEEKLY_BONUS); ch = true; }
+  if (ch) { save(); render(true); }
+}
+
+// ---------- Atributos: de 0 a 100, pelo que você registrou ----------
+// Janela de 28 dias (14 para sono, nutrição e foco), com no mínimo 7 dias para um dia só não valer 100. Força, Vigor,
+// Nutrição e Foco contam a partir do primeiro dia de uso do app; Recuperação também usa o sono do diário do Supabase.
+// Sem nenhum registro na janela, o atributo fica sem número.
+function attrAt(off) {
+  const end = D.addDays(diaNow(), -off), uso = D.startOfDay(dayAt(isoOk(S.since) ? S.since : D.iso(diaNow())));
+  const dias = (n, ini) => { const L = []; for (let i = 0; i < n; i++) { const d = D.addDays(end, -i); if (d < ini) break; L.push(logDia(D.iso(d))); } return L; };
+  const A28 = dias(28, uso), A14 = dias(14, uso), R14 = dias(14, inicio()), out = {};
+  const w = (L) => Math.max(7, L.length);
+  if (A28.some(Boolean)) {
+    const forca = A28.filter((e) => e && FORCA.has(e.k)).length, z2 = A28.reduce((a, e) => a + (e && e.k === 'Z2' ? e.z || 0 : 0), 0);
+    const cm = D.cardioMin(cw(D.planFor(end)));
+    Object.assign(out, { FOR: lin(forca, 0, (forcaSemana() * 4 * w(A28)) / 28), VIG: cm ? lin(z2, 0, (cm.min * cardiosSemana() * w(A28)) / 7) : null });
+  }
+  if (A14.some(Boolean)) Object.assign(out, { NUT: lin(A14.filter((e) => e && e.b).length, 0, w(A14)), FOC: lin(A14.filter((e) => e && e.m).length, 0, w(A14)) });
+  if (R14.some((e) => e && fin(e.s) != null)) out.REC = lin(R14.filter((e) => e && e.s >= 7).length, 0, w(R14));
+  return out;
+}
+function attrs() {
+  const a = attrAt(0), b = attrAt(7), R = D.SAVINGS && D.SAVINGS.reservaMeses;
+  return D.ATTRS.map((x) => {
+    const raw = x.k === 'PAT' ? (R != null ? lin(R, 0, 6) : null) : a[x.k] ?? null, prev = x.k === 'PAT' ? null : b[x.k] ?? null;
+    const v = raw == null ? null : Math.round(raw);
+    return { ...x, v, d: v != null && prev != null ? v - Math.round(prev) : null };
+  });
+}
+const deltaTxt = (d) => (d == null ? 'sem histórico' : `${d >= 0 ? '+' : '−'}${Math.abs(d)} em 7 d`);
+
+// ---------- Conquistas: ficam guardadas no dia em que você chega lá ----------
+function conquistas() {
+  const dias = [...Object.values(S.dias), logHoje(S)].filter(Boolean);
+  const forca = dias.filter((e) => FORCA.has(e.k)).length, sk = Math.max(S.best, streakNow());
+  let z28 = 0; for (let i = 0; i < 28; i++) { const e = logDia(D.iso(D.addDays(diaNow(), -i))); if (e && e.k === 'Z2') z28 += e.z || 0; }
+  const W = semana(), R = D.SAVINGS && D.SAVINGS.reservaMeses;
+  const st = {
+    primeiro: [!!S.checkin || Object.values(S.hist).includes(1), 'Faça o check-in de hoje'],
+    chama: [sk >= 7, `${sk} de 7 dias`],
+    semana: [Object.values(S.semXp).some((w) => w && w.plano), `${W.sess} de 4 sessões nesta semana`],
+    contador: [fromSB(), 'Entrar e sincronizar o Open Finance'],
+    dez: [forca >= 10, `${forca} de 10 treinos`],
+    escudo: [R != null && R >= 3, R != null ? `${n1(R)} de 3 meses` : 'Precisa do Open Finance e dos gastos essenciais'],
+    pulmao: [z28 >= 300, `${z28} de 300 min em 28 dias`],
+  };
+  let ch = false;
+  const out = D.ACHIEVEMENTS.map((a) => { const [ok, prog] = st[a.k] || [false, '']; if (ok && !S.conq[a.k]) { S.conq[a.k] = S.day; ch = true; } return { ...a, ok: !!S.conq[a.k], p: prog }; });
+  if (ch) save();
+  return out;
+}
+
+// ---------- Top 3: até três tarefas da caixa de entrada escolhidas para hoje. A primeira é a Missão. ----------
+const top3 = () => S.inbox.filter((x) => x.top === S.day).sort((a, b) => (a.topAt || 0) - (b.topAt || 0)).slice(0, 3);
+const top1 = () => top3()[0] || null;
 
 // ---------- Componentes ----------
 const bar = (v, c, cls = '') => `<div class="bar ${cls}" role="presentation"><i style="--v:${pct(v)};${c ? `--c:${c}` : ''}"></i></div>`;
@@ -331,17 +490,19 @@ function backbar(href, label) {
 }
 function sec(title, link = '') { return `<div class="sec"><h2>${title}</h2>${link}</div>`; }
 function netbar() {
-  if (!(S.offline || !navigator.onLine)) return '';
-  return `<div class="netbar" role="status">${I('wifiOff', 20)}<span>Sem conexão. Tudo o que você registrar fica salvo no aparelho e sincroniza depois${S.pending ? ` (${S.pending} pendente${S.pending > 1 ? 's' : ''})` : ''}.</span></div>`;
+  if (navigator.onLine) return '';
+  return `<div class="netbar" role="status">${I('wifiOff', 20)}<span>Sem internet. O que você registrar fica salvo neste aparelho; dinheiro e saúde ficam com a última leitura.</span></div>`;
 }
+// Estado da sincronização com o Supabase: abre a tela da conexão.
 function syncBtn() {
-  const off = S.offline || !navigator.onLine;
-  return `<button class="iconbtn" data-act="syncInfo" aria-label="${off ? 'Sem conexão' : 'Sincronizado'}" style="color:${off ? 'var(--warn)' : 'var(--muted)'}">${I(off ? 'wifiOff' : 'cloudCheck')}</button>`;
+  const off = !navigator.onLine, s = SB.session();
+  const lbl = off ? 'Sem internet' : !s ? 'Entrar para sincronizar' : syncErr || saudeErr ? 'Sincronização com problema' : 'Sincronizado';
+  return `<a class="iconbtn" href="#/dinheiro/sincronizar" aria-label="${lbl}" style="color:${off || (s && (syncErr || saudeErr)) ? 'var(--warn)' : 'var(--muted)'}">${I(off ? 'wifiOff' : s ? 'cloudCheck' : 'link')}</a>`;
 }
 function stChip(st) { return `<span class="chip st-${st}">${D.ST[st]}</span>`; }
-function ring(v, zone, size = 64) {
+function ring(v, zone, size = 64, txt = null) {
   const r = size / 2 - 5, c = 2 * Math.PI * r, off = c * (1 - (v ?? 0) / 100);
-  return `<div class="ring zone-${zone}" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="7"/><circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--zc)" stroke-width="7" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/></svg><b>${v ?? '–'}</b></div>`;
+  return `<div class="ring zone-${zone}" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="7"/><circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--zc)" stroke-width="7" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/></svg><b>${txt ?? v ?? '–'}</b></div>`;
 }
 
 function lineChart(vals, o = {}) {
@@ -379,35 +540,63 @@ function barChart(items, o = {}) {
   const lbl = (o.label || 'Gráfico de barras') + (o.values ? ': ' + items.map((it) => `${it.l} ${o.values(it.v) || 0}`).join(', ') : '');
   return `<svg class="chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(lbl)}">${g}</svg>`;
 }
+// Linha no tempo (pesagens em datas irregulares): o eixo x é a data, não a ordem.
+function timeChart(pts, o = {}) {
+  const w = 320, h = o.h || 130, pt = 10, pr = 8, pb = 20, pl = 34;
+  const vals = pts.map((p) => p.v), all = vals.concat(o.goal != null ? [o.goal] : []);
+  let mn = Math.min(...all), mx = Math.max(...all); const sp = mx - mn || 1; mn -= sp * 0.12; mx += sp * 0.12;
+  const t0 = +pts[0].d, ts = +pts[pts.length - 1].d - t0 || 1, iw = w - pl - pr, ih = h - pt - pb;
+  const x = (d) => pl + ((+d - t0) / ts) * iw, y = (v) => pt + ih - ((v - mn) / (mx - mn)) * ih;
+  const fmt = o.fmt || ((v) => n1(v)), col = o.color || 'var(--primary)';
+  let g = '';
+  [mx - sp * 0.12, mn + sp * 0.12].forEach((v) => { g += `<line x1="${pl}" x2="${w - pr}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--line)" stroke-width="1"/><text x="${pl - 6}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${fmt(v)}</text>`; });
+  if (o.goal != null) g += `<line x1="${pl}" x2="${w - pr}" y1="${y(o.goal).toFixed(1)}" y2="${y(o.goal).toFixed(1)}" stroke="var(--xp-fill)" stroke-width="1.5" stroke-dasharray="4 4"/><text x="${w - pr}" y="${(y(o.goal) - 5).toFixed(1)}" text-anchor="end">meta ${fmt(o.goal)}</text>`;
+  g += `<path d="${pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.d).toFixed(1)},${y(p.v).toFixed(1)}`).join('')}" fill="none" stroke="${col}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+  g += pts.map((p, i) => `<circle cx="${x(p.d).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="${i === pts.length - 1 ? 4 : 2.5}" fill="${col}" stroke="var(--surface)" stroke-width="${i === pts.length - 1 ? 2 : 1}"/>`).join('');
+  const lab = (d) => (D.diffDays(pts[pts.length - 1].d, d) < 300 ? dShort(d) : `${mon(d)}/${String(d.getFullYear()).slice(2)}`);
+  g += `<text x="${pl}" y="${h - 4}" text-anchor="start">${lab(pts[0].d)}</text><text x="${w - pr}" y="${h - 4}" text-anchor="end">${lab(pts[pts.length - 1].d)}</text>`;
+  return `<svg class="chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(o.label || 'Gráfico')}">${g}</svg>`;
+}
+// Tela ou bloco sem dados: diz de onde eles vêm e qual é o próximo passo.
+const empty = (ic, t, p, href = '', btn = '') => `<div class="card"><div class="empty"><span class="badge-ic">${I(ic, 28)}</span><b>${t}</b><p>${p}</p>${href ? `<a class="btn" href="${href}">${btn}</a>` : ''}</div></div>`;
+const semSaude = () => empty('heart', 'Seus dados de saúde ficam no Supabase', SB.session() ? (syncBusy ? 'Buscando…' : saudeErr ? `A última leitura não veio: ${sbMsg(saudeErr)}` : 'Toque para buscar o plano de treino, as fichas, o plano alimentar, as medidas e os exames.') : 'Plano de treino, fichas, plano alimentar, medidas e exames chegam depois do login, só para a sua conta.', '#/dinheiro/sincronizar', SB.session() ? 'Sincronizar' : 'Entrar');
+const semDinheiro = () => empty('wallet', 'Nenhum dado de dinheiro neste aparelho', 'Saldo, contas, fatura e patrimônio chegam pelo Open Finance depois do login, ou pelo arquivo do Painel.', '#/dinheiro/sincronizar', SB.session() ? 'Sincronizar' : 'Entrar');
+const fmtNum = (v) => (Number.isFinite(v) ? v.toLocaleString('pt-BR', { maximumFractionDigits: 2 }) : '—');
+const fmtInt = (v) => Math.round(v).toLocaleString('pt-BR');
+const dAno = (d) => d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+const txtBr = (s) => esc(String(s || '')).replace(/\n/g, '<br>');
+const dQuando = (d) => (d.getFullYear() === diaNow().getFullYear() ? dShort(d) : dAno(d));
 
 // ---------- Telas ----------
+const hm = (s) => { const m = /(\d{1,2})[:h](\d{2})/.exec(s || ''); return m ? `${m[1].padStart(2, '0')}:${m[2]}` : null; };
 function Hoje() {
   const V = view(), L = lvl(S.xp), now = new Date(), h = now.getHours();
-  const greet = h < 5 ? 'Boa noite' : h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
+  const greet = h < 5 ? 'Boa noite' : h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite', nome = nomeDe();
   const { p, key, s } = todaySession();
-  const sleepH = V.checkin ? V.checkin.s : S.sleep;
-  const E = energia(sleepH), Z = zoneOf(E);
+  const sl = sleepNow(), Z = zoneOf(sl);
   const sk = streakNow(), cons = consistency(), br = brasaYesterday();
   const chama = S.pausa ? `${I('pause', 20)}<span class="num">Pausa</span>` : `${I('flame', 20)}<span class="num">${sk}</span>${br ? '<small>brasa</small>' : '<small class="sr">dias</small>'}`;
-  const hero = `<a class="hero" href="#/ficha" aria-label="Ficha do personagem: ${titleFor(L.L)}, nível ${L.L}, ${L.into} de ${L.need} XP. Consistência de ${cons}% em 28 dias. ${S.pausa ? 'Chama em pausa' : `Chama de ${sk} dias${br ? ', salva pela brasa' : ''}`}. Energia ${E}, zona ${ZNAME[Z].toLowerCase()}.">
-      <div class="top"><div class="avatar" aria-hidden="true">Y<span class="lv">${L.L}</span></div>
+  const hero = `<a class="hero" href="#/ficha" aria-label="Ficha do personagem: ${titleFor(L.L)}, nível ${L.L}, ${L.into} de ${L.need} XP. ${cons == null ? 'Consistência ainda sem dias' : `Consistência de ${cons}% em 28 dias`}. ${S.pausa ? 'Chama em pausa' : `Chama de ${sk} dias${br ? ', salva pela brasa' : ''}`}. ${sl == null ? 'Sem check-in de sono hoje' : `Sono de ${hTxt(sl)}, zona ${ZNAME[Z].toLowerCase()}`}.">
+      <div class="top"><div class="avatar" aria-hidden="true">${inicial()}<span class="lv">${L.L}</span></div>
       <div class="grow"><div class="row-flex"><b>${titleFor(L.L)}</b><span class="muted small num xpn">${L.into}/${L.need} XP</span></div>${bar((L.into / L.need) * 100, null, 'xp')}</div></div>
-      <div class="hstats"><span class="hs cons">${I('target', 20)}<span class="num">${cons}%</span><small>28 dias</small></span><span class="hs ${S.pausa ? '' : br ? 'flame brasa' : 'flame'}">${chama}</span><span class="hs zone-${Z}">${I('bolt', 20)}<span class="num">${E}</span><small>${ZNAME[Z].toLowerCase()}</small></span></div>
+      <div class="hstats"><span class="hs cons">${I('target', 20)}<span class="num">${pctTxt(cons)}</span><small>28 dias</small></span><span class="hs ${S.pausa ? '' : br ? 'flame brasa' : 'flame'}">${chama}</span><span class="hs zone-${Z}">${I('bolt', 20)}<span class="num">${sl == null ? '—' : `${hShort(sl)} h`}</span><small>${Z === 'nd' ? 'sono' : ZNAME[Z].toLowerCase()}</small></span></div>
     </a>`;
 
   // Missões
-  const X = QXP();
-  let corpo = { t: s.nome, d: s.resumo + ` · ${s.min} min`, go: '#/saude/treino', goAct: 'openTreino', xp: X.corpo };
-  if (p.deload && key !== 'REST') corpo.d += ' · semana leve (Acampamento)';
-  if (Z === 'amarelo' && key !== 'REST') corpo.d = `${s.resumo} · Energia amarela: esforço máx. 8 e uma série a menos`;
-  if (Z === 'vermelho' && key !== 'REST') corpo = { ...corpo, t: 'Recuperação', d: `Energia vermelha: caminhada leve de 20 a 30 min ou mobilidade, no lugar de ${s.nome.toLowerCase()}. Vale os mesmos ${X.corpo} XP.` };
-  const dt = D.DAYTYPES[S.dayType || D.dayTypeFor(key)];
-  const comb = { t: `Proteína ${D.PROT.meta} g`, d: `${dt.nome} · ${dt.kcal.toLocaleString('pt-BR')} kcal · conta a partir de ${D.PROT.conta} g`, go: '#/saude/dieta', xp: X.comb };
-  const ref = missao(), mbill = ref !== 't1' ? bills().find((b) => b.id === ref) : null;
-  const miss = mbill ? { t: `Pagar ${mbill.n.split(' · ')[0].toLowerCase()}`, d: `${brl(mbill.v)} · ${relDue(mbill)}`, goAct: 'bill', goArg: mbill.id, goLabel: 'Ver a conta', xp: X.missao } : { t: 'Concluir o Top 1 do dia', d: D.TOP3[0].t, go: '#/agenda', xp: X.missao };
+  const X = QXP(), F = !['REST', 'LIVRE'].includes(key);
+  let corpo = { t: s.nome, d: s.resumo || '', go: '#/saude/treino', goAct: 'openTreino', xp: X.corpo };
+  if (key === 'LIVRE') corpo = { ...corpo, t: 'Treino livre', d: `${s.nome}. ${s.resumo}.` };
+  if (p.deload && F) corpo.d += ' · semana de deload';
+  if (Z === 'amarelo' && FORCA.has(key)) corpo.d = `${s.resumo} · Sono entre 6 e 7 h: uma série a menos por exercício`;
+  if (Z === 'vermelho' && F) corpo = { ...corpo, t: 'Recuperação', d: `Menos de 6 h de sono: caminhada leve ou mobilidade, no lugar de ${s.nome.toLowerCase()}. Vale os mesmos ${X.corpo} XP.` };
+  const pr = D.prot(), tk = S.dayType || D.tipoDia(key), kc = D.kcalDia(tk);
+  const comb = pr ? { t: `Proteína ${pr.meta} g`, d: `Dia de ${D.DIAS[tk].toLowerCase()}${kc ? ` · ${fmtInt(kc)} kcal` : ''} · conta a partir de ${pr.conta} g`, go: '#/saude/dieta', xp: X.comb } : { t: 'Proteína na meta', d: 'A meta vem do plano alimentar no Supabase', go: '#/saude/dieta', xp: X.comb };
+  const ref = missao(), mbill = ref !== 't1' ? bills().find((b) => b.id === ref) : null, t1 = top1();
+  const miss = mbill ? { t: `Pagar ${mbill.n.split(' · ')[0].toLowerCase()}`, d: `${brl(mbill.v)} · ${relDue(mbill)}`, goAct: 'bill', goArg: mbill.id, goLabel: 'Ver a conta', xp: X.missao }
+    : t1 ? { t: 'Concluir o Top 1 do dia', d: t1.t, go: '#/agenda', xp: X.missao } : { t: 'Escolher o Top 1 do dia', d: 'Na Agenda, marque até 3 tarefas com a estrela. A primeira é a Missão.', go: '#/agenda', xp: X.missao };
   const qrow = (k, label, q) => {
     const on = V.quests[k];
-    const go = q.go ? `<a class="iconbtn go" href="${q.go}" ${q.goAct ? `data-act="${q.goAct}"` : ''} aria-label="Abrir ${label}">${I('chevR')}</a>` : `<button class="iconbtn go" data-act="${q.goAct}" data-arg="${q.goArg}" aria-label="${q.goLabel || 'Abrir ' + label}">${I('chevR')}</button>`;
+    const go = q.go ? `<a class="iconbtn go" href="${q.go}" ${q.goAct ? `data-act="${q.goAct}"` : ''} aria-label="Abrir ${label}">${I('chevR')}</a>` : `<button class="iconbtn go" data-act="${q.goAct}" data-arg="${esc(q.goArg)}" aria-label="${q.goLabel || 'Abrir ' + label}">${I('chevR')}</button>`;
     return `<div class="quest ${on ? 'done' : ''}">
       <button class="qcheck" aria-pressed="${on}" data-act="quest" data-arg="${k}" aria-label="${label}: ${esc(q.t)}. ${on ? `Feito, ${q.xp} XP` : `Marcar como feito, vale ${q.xp} XP`}">${I('check', 28)}</button>
       <div class="grow"><div class="k">${label}<span class="qxp num">${on ? '' : '+'}${q.xp} XP</span></div><div class="t">${esc(q.t)}</div><div class="d">${esc(q.d)}</div></div>
@@ -420,245 +609,322 @@ function Hoje() {
   if (!V.checkin) {
     ci = `<section class="card" aria-labelledby="ci-t">
       <div class="row-flex"><h3 id="ci-t">Check-in da manhã</h3><span class="chip xp right">+20 XP</span></div>
-      <p class="lead">${S.pausa ? 'Modo Pausa ligado: o check-in é opcional e nada conta contra você.' : 'Já vem preenchido. Confira e salve.'}</p>
+      <p class="lead">${S.pausa ? 'Modo Pausa ligado: o check-in é opcional e nada conta contra você.' : 'As horas de sono decidem o treino de hoje. O peso é só se você se pesou.'}</p>
       ${checkinForm()}
       <button class="btn block" style="margin-top:16px" data-act="saveCheckin">Salvar check-in</button>
     </section>`;
   } else {
-    ci = `<section class="card"><div class="done-line"><span class="tick">${I('check', 20)}</span><div class="grow"><b>Check-in feito</b><div class="meta muted small num">${n1(V.checkin.w)} kg · ${V.checkin.s >= 9 ? '9 h ou mais' : V.checkin.s < 5 ? 'menos de 5 h' : V.checkin.s + ' h'} de sono · Energia ${E} (${ZNAME[Z].toLowerCase()})</div></div><button class="btn sm ghost" data-act="openCheckin">Editar</button></div></section>`;
+    ci = `<section class="card"><div class="done-line"><span class="tick">${I('check', 20)}</span><div class="grow"><b>Check-in feito</b><div class="meta muted small num">${V.checkin.w != null ? `${n1(V.checkin.w)} kg · ` : ''}${hTxt(V.checkin.s)} de sono · zona ${ZNAME[Z].toLowerCase()}</div></div><button class="btn sm ghost" data-act="openCheckin">Editar</button></div></section>`;
   }
 
   // Noite
-  const tomorrow = D.planFor(D.addDays(diaNow(), 1)), ts = D.SESSION[tomorrow.tipo];
-  const tdt = D.DAYTYPES[D.dayTypeFor(tomorrow.tipo)];
+  const tq = D.planFor(D.addDays(diaNow(), 1)), ts = D.sessao(tq), ttk = D.tipoDia(ts.tipo || 'LIVRE'), tkc = D.kcalDia(ttk);
   const evening = V.evening ? `<section class="card soft" aria-labelledby="ev-t">
       <div class="row-flex">${I('moon')}<h3 id="ev-t" tabindex="-1">Fechar o dia</h3><span class="chip right num">${doneN}/3</span></div>
-      <p class="lead" style="color:var(--ink)">${doneN === 3 ? 'Dia completo. ' : 'Marque abaixo o que você fez. '}Hora de dormir: <b>${D.BEDTIME}</b>, lembrete às 21:30.</p>
-      <p class="small" style="margin-top:8px">Amanhã: <b>${ts.nome}</b> · ${tdt.nome.toLowerCase()} (${tdt.kcal.toLocaleString('pt-BR')} kcal). O resumo chega às 07:00.</p>
+      <p class="lead" style="color:var(--ink)">${doneN === 3 ? 'Dia completo. ' : 'Marque abaixo o que você fez. '}Meta de sono: <b>${Number(D.metas().sono) || 7} h</b>.</p>
+      <p class="small" style="margin-top:8px">Amanhã: <b>${esc(ts.tipo ? ts.nome : 'sem sessão no plano')}</b>${D.SAUDE && D.SAUDE.refeicoes.length ? ` · dia de ${D.DIAS[ttk].toLowerCase()}${tkc ? ` (${fmtInt(tkc)} kcal)` : ''}` : ''}.</p>
       ${S.closed ? `<p class="small b" style="margin-top:10px;color:var(--primary)">Dia fechado. Bom descanso.</p>` : `<button class="btn block" style="margin-top:12px" data-act="closeDay">Fechar o dia</button>`}
     </section>` : '';
 
-  // Agenda
-  const ev = D.events();
+  // Linha do dia: o que já existe no Painel (agenda do Google ou da Apple ainda não conectada)
+  const meals = D.SAUDE ? D.refeicoes(tk) : [];
   const slots = [
-    ...ev.map((e) => ({ h: e.h, t: e.t, c: 'var(--info)' })),
-    { h: '18:30', t: corpo.t, c: 'var(--a-for)' },
+    { h: 'Hoje', t: corpo.t, c: 'var(--a-for)' },
     ...(mbill && !mbill.pago ? [{ h: 'Hoje', t: miss.t, c: 'var(--danger)' }] : []),
-    { h: D.BEDTIME, t: 'Hora de dormir', c: 'var(--a-rec)' },
+    ...top3().filter((x) => !x.done).map((x) => ({ h: hm(x.hora) || 'Top 3', t: x.t, c: 'var(--a-foc)' })),
+    ...S.inbox.filter((x) => x.quando === S.day && x.top !== S.day && !x.done).map((x) => ({ h: hm(x.hora) || 'Hoje', t: x.t, c: 'var(--info)' })),
+    ...meals.map((m) => ({ h: hm(m.hora) || '—', t: m.nome, c: 'var(--a-nut)' })),
   ];
-  const nowHM = `${String(h).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  const nextIdx = slots.findIndex((x) => /\d/.test(x.h) && x.h >= nowHM);
-  const agenda = `<section class="hscroll" tabindex="0" aria-label="Agenda de hoje, role para o lado">${slots.map((x, i) => `<div class="slot ${i === nextIdx ? 'now' : ''}"><div class="h"><span class="k" style="--c:${x.c}"></span>${x.h}${i === nextIdx ? '<span class="sr"> (próximo)</span>' : ''}</div><div class="t">${esc(x.t)}</div></div>`).join('')}</section>`;
+  const isHm = (x) => /^\d\d:\d\d$/.test(x.h);
+  const ord = [...slots.filter((x) => !isHm(x) && x.h !== '—'), ...slots.filter(isHm).sort((a, b) => a.h.localeCompare(b.h)), ...slots.filter((x) => x.h === '—')];
+  const nowHM = hmAgora();
+  const nextIdx = ord.findIndex((x) => isHm(x) && x.h >= nowHM);
+  const agenda = `<section class="hscroll" tabindex="0" aria-label="Linha do dia, role para o lado">${ord.map((x, i) => `<div class="slot ${i === nextIdx ? 'now' : ''}"><div class="h"><span class="k" style="--c:${x.c}"></span>${esc(x.h)}${i === nextIdx ? '<span class="sr"> (próximo)</span>' : ''}</div><div class="t">${esc(x.t)}</div></div>`).join('')}</section>`;
 
   // Dinheiro
-  const M = money();
-  const up = bills().filter((b) => !b.pago && b.met !== 'Cartão' && D.diffDays(b.due, diaNow()) <= 7).slice(0, 3);
-  const moneyCard = `<div class="card">
+  let moneyCard;
+  if (!D.REAL) moneyCard = `<a class="card cardlink" href="#/dinheiro/sincronizar"><span class="badge-ic">${I('wallet')}</span><div class="grow"><b>${SB.session() ? 'Buscar os dados do Open Finance' : 'Entrar para ver o dinheiro'}</b><div class="small muted">Saldo, contas e fatura chegam pelo Supabase.</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`;
+  else {
+    const M = money(), up = bills().filter((b) => !b.pago && b.met !== 'Cartão' && D.diffDays(b.due, diaNow()) <= 7).slice(0, 3), R = D.SAVINGS && D.SAVINGS.reservaMeses;
+    moneyCard = `<div class="card">
       <a class="cardhead" href="#/dinheiro"><span class="row-flex"><span class="muted small">${livreLabel(M)} (em ${M.dias} dias)</span>${I('chevR', 20, 'class="ic right muted"')}</span>
       ${livreBig(M)}</a>
-      <div class="kpis"><div class="kpi"><span>Em conta</span><b>${brlK(M.saldo)}</b></div>${fatKpi(M)}<div class="kpi"><span>Reserva</span><b>${n1(D.SAVINGS.reservaMeses)} meses</b></div></div>
+      <div class="kpis"><div class="kpi"><span>Em conta</span><b>${brlK(M.saldo)}</b></div>${fatKpi(M)}<div class="kpi"><span>Reserva</span><b>${R != null ? `${n1(R)} meses` : '—'}</b></div></div>
     </div>
-    <div class="card tight">${up.map((b) => `<button class="row" data-act="bill" data-arg="${b.id}"><span class="badge-ic">${I('receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('')}</div>`;
+    ${up.length ? `<div class="card tight">${up.map((b) => `<button class="row" data-act="bill" data-arg="${esc(b.id)}"><span class="badge-ic">${I('receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('')}</div>` : ''}`;
+  }
 
   // Semana
-  const week = `<div class="card">
-      <div class="row-flex wrap"><span class="chip p">${I('target')} Ato ${p.act.n} · ${p.act.nome}</span><span class="chip num">semana ${Math.max(1, p.week)} de 24</span></div>
-      ${weekly().map((q) => `<div style="margin-top:14px"><div class="row-flex"><span class="b small grow">${q.t}</span><span class="small muted num">${q.p}/${q.of}${q.un ? ' ' + q.un : ''} · ${q.xp} XP</span></div>${bar((q.p / q.of) * 100)}</div>`).join('')}
-    </div>`;
-
-  const insight = `<div class="card"><div class="row-flex">${I('sparkle', 20, 'class="ic" style="color:var(--xp)"')}<b>Achado da semana</b></div><p class="small" style="margin-top:6px">Nas noites com 7 h ou mais de sono, seus treinos tiveram 9% mais volume. Liberado no nível 6.</p></div>`;
+  const P = D.SAUDE && D.SAUDE.plano, b = p.bloco;
+  const chips = P && p.week ? `<div class="row-flex wrap" style="margin-bottom:4px">${b ? `<span class="chip p">${I('target')} Bloco ${b.n} · ${esc(b.nome)}</span>` : ''}<span class="chip num">semana ${p.week} de ${P.semanas}</span>${p.deload ? '<span class="chip">deload</span>' : ''}</div>`
+    : P && p.pre ? `<div class="row-flex wrap" style="margin-bottom:4px"><span class="chip">${I('target')} O plano começa em ${dShort(P.ini)}</span></div>` : '';
+  const week = `<div class="card">${chips}${weekly().map(weekRow).join('')}</div>`;
 
   return {
     title: 'Hoje',
-    html: `${hdr(`${greet}, ${D.PROFILE.nome}`, dLong(diaNow()), `${syncBtn()}<button class="iconbtn" data-act="map" aria-label="Mapa do wireframe">${I('map')}</button>`)}
+    html: `${hdr(`${greet}${nome ? `, ${esc(nome)}` : ''}`, dLong(diaNow()), syncBtn())}
       ${netbar()}${hero}${evening}${ci}
       <section class="card" aria-labelledby="q-t"><div class="row-flex"><h3 id="q-t">Missões de hoje</h3><span class="chip right num ${doneN === 3 ? 'p' : ''}">${doneN}/3${doneN === 3 ? ' · dia completo' : ''}</span></div>
         ${qrow('corpo', 'Corpo', corpo)}${qrow('comb', 'Combustível', comb)}${qrow('missao', 'Missão', miss)}
         ${doneN < 3 ? `<p class="small muted" style="margin-top:4px">As três juntas dão +20 XP de bônus.${S.pausa ? ' Em Modo Pausa nada disso conta contra você.' : ''}</p>` : ''}
       </section>
-      ${sec('Agenda', '<a href="#/agenda">Ver tudo</a>')}${agenda}
-      ${sec('Dinheiro', '<a href="#/dinheiro/contas">Contas</a>')}${moneyCard}
-      ${sec('Semana')}${week}${insight}`,
+      ${sec('Linha do dia', '<a href="#/agenda">Agenda</a>')}${agenda}
+      ${sec('Dinheiro', D.REAL ? '<a href="#/dinheiro/contas">Contas</a>' : '')}${moneyCard}
+      ${sec('Semana')}${week}`,
   };
 }
+const weekRow = (q) => `<div style="margin-top:12px"><div class="row-flex"><span class="b small grow">${q.t}</span><span class="small muted num">${q.p}/${q.of ?? '—'}${q.un ? ' ' + q.un : ''} · ${q.xp} XP</span></div>${bar(q.of ? (q.p / q.of) * 100 : 0)}</div>`;
+
+// Pesagens: medidas e diário do Supabase, mais os check-ins com peso (o check-in do dia vale mais que o resto).
+function pesos() {
+  const m = new Map(), H = D.SAUDE;
+  ((H && H.medidas) || []).forEach((x) => { if (fin(x.peso) != null) m.set(x.d, { d: dayAt(x.d), v: x.peso, f: 'Medida' }); });
+  ((H && H.diario) || []).forEach((x) => { if (fin(x.peso) != null) m.set(x.d, { d: dayAt(x.d), v: x.peso, f: 'Diário' }); });
+  Object.entries(S.dias).forEach(([d, e]) => { if (e && fin(e.w) != null && isoOk(d)) m.set(d, { d: dayAt(d), v: e.w, f: 'Check-in' }); });
+  if (S.checkin && fin(S.checkin.w) != null) m.set(S.day, { d: dayAt(S.day), v: S.checkin.w, f: 'Check-in' });
+  return [...m.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map((x) => x[1]);
+}
+const lastWeight = () => { const P = pesos(); return P[P.length - 1] || null; };
 
 function checkinForm() {
-  const w = S.checkin ? S.checkin.w : S.weight, s = S.checkin ? S.checkin.s : S.sleep;
-  return `<div class="ci-label">Peso <span class="src">último: ${n1(S.weight)} kg</span></div>
+  const w = S.checkin ? S.checkin.w : null, s = S.checkin ? S.checkin.s : S.sleep, lw = lastWeight();
+  return `<div class="ci-label">Peso <span class="src">${lw ? `último: ${n1(lw.v)} kg em ${dQuando(lw.d)}` : 'opcional'}</span></div>
     <div class="stepper"><button type="button" data-act="wstep" data-arg="-0.1" aria-label="Diminuir 100 gramas">${I('minus')}</button>
-      <input id="ci-w" type="text" inputmode="decimal" value="${n1(w)}" aria-label="Peso em quilos" data-in="weight"><span class="u">kg</span>
+      <input id="ci-w" type="text" inputmode="decimal" value="${w != null ? n1(w) : ''}" placeholder="${lw ? n1(lw.v) : '—'}" aria-label="Peso em quilos, vazio se não se pesou" data-in="weight"><span class="u">kg</span>
       <button type="button" data-act="wstep" data-arg="0.1" aria-label="Aumentar 100 gramas">${I('plus')}</button></div>
-    <div class="ci-label" id="sl-l">Sono, em horas <span class="src">Apple Health: 7 h 10 min</span></div>
-    <div class="picks six" role="radiogroup" aria-labelledby="sl-l">${SLEEP.map(([l, v]) => `<button type="button" class="pick" role="radio" aria-checked="${s === v}" tabindex="${s === v ? 0 : -1}" data-act="sleep" data-arg="${v}" aria-label="${l === '<5' ? 'menos de 5' : l === '9+' ? '9 ou mais' : l} horas">${l}</button>`).join('')}</div>`;
+    <div class="ci-label" id="sl-l">Sono, em horas <span class="src">Apple Health não conectado</span></div>
+    <div class="picks six" role="radiogroup" aria-labelledby="sl-l">${SLEEP.map(([l, v]) => `<button type="button" class="pick" role="radio" aria-checked="${s === v}" tabindex="${s === v || (s == null && v === 7) ? 0 : -1}" data-act="sleep" data-arg="${v}" aria-label="${l === '<5' ? 'menos de 5' : l === '9+' ? '9 ou mais' : l} horas">${l}</button>`).join('')}</div>`;
 }
+
+const foraRef = (e) => Number.isFinite(e.v) && ((e.hi != null && e.v > e.hi) || (e.lo != null && e.v < e.lo));
+// Último resultado de cada marcador (a lista vem em ordem de data).
+function examesUltimos() { const m = new Map(); ((D.SAUDE && D.SAUDE.exames) || []).forEach((e) => { if (e.n) m.set(e.n, e); }); return [...m.values()]; }
 
 function Saude() {
-  const { p, key, s } = todaySession();
-  const ws = D.weightSeries(), trend = ws.map((x) => x.t), raw = ws.map((x) => x.w);
-  const last = ws[ws.length - 1], first14 = ws[ws.length - 15];
-  const dlt = last.t - first14.t;
-  const sl = D.sleepSeries();
-  const E = energia(S.checkin ? S.checkin.s : S.sleep), Z = zoneOf(E);
-  const advice = { verde: 'Pode fazer o treino planejado.', amarelo: 'Treine com esforço máximo 8 e uma série a menos.', vermelho: 'Hoje vale recuperação: caminhada leve ou mobilidade.', nd: '' }[Z];
-  const nextGym = (() => { for (let i = 0; i < 7; i++) { const q = D.planFor(D.addDays(diaNow(), i)); if (['A', 'B', 'C'].includes(q.tipo)) return { i, q }; } return null; })();
-  const ex = D.EXAMS.itens, off = ex.filter((e) => e.v < e.lo || e.v > e.hi).length;
+  const H = D.SAUDE, P = H && H.plano, { p, key, s } = todaySession(), sl = sleepNow(), Z = zoneOf(sl);
+  const advice = { verde: 'Treino completo, como no plano.', amarelo: 'Uma série a menos por exercício.', vermelho: 'Só caminhada leve ou mobilidade.', nd: 'Faça o check-in para ajustar o treino ao sono.' }[Z];
+  const red = Z === 'vermelho' && !['REST', 'LIVRE'].includes(key);
+  const nextGym = (() => { if (!P) return null; for (let i = 0; i < 7; i++) { const q = D.planFor(D.addDays(diaNow(), i)); if (FORCA.has(q.tipo)) return { i, q }; } return null; })();
+
+  const WS = pesos(), last = WS[WS.length - 1];
+  let peso;
+  if (!last) peso = `<div class="card"><p class="small muted" style="margin:0">Sem pesagens ainda. O check-in da manhã aceita o peso, e as medidas vêm do Supabase.</p></div>`;
+  else {
+    const ano = WS.filter((x) => D.diffDays(last.d, x.d) <= 365), pts = ano.length >= 3 ? ano : WS.slice(-8);
+    const prev = [...WS].reverse().find((x) => D.diffDays(last.d, x.d) >= 14), meta = fin(Number(D.metas().peso));
+    peso = `<div class="card"><div class="row-flex"><div><div class="mid">${n1(last.v)} kg</div><div class="small muted">${last.f} de ${dQuando(last.d)}${prev ? ` · ${last.v <= prev.v ? '−' : '+'}${n1(Math.abs(last.v - prev.v))} kg desde ${dQuando(prev.d)}` : ''}</div></div>${meta ? `<div class="right small muted">meta<br><b class="num" style="color:var(--ink)">${n1(meta)} kg</b></div>` : ''}</div>
+      ${pts.length >= 2 ? `${timeChart(pts, { goal: meta, label: `Peso: de ${n1(pts[0].v)} kg em ${dQuando(pts[0].d)} para ${n1(last.v)} kg em ${dQuando(last.d)}` })}<div class="legend"><span><i style="--c:var(--primary)"></i>pesagens</span>${meta ? '<span><i style="--c:var(--xp-fill)"></i>meta</span>' : ''}</div>` : ''}
+      <p class="small muted" style="margin-top:8px">Medidas e diário do Supabase, mais os check-ins com peso. A variação de um dia para o outro é água.</p></div>`;
+  }
+  const alvo = Number(D.metas().sono) || 7;
+  const noites = Array.from({ length: 7 }, (_, i) => { const d = D.addDays(diaNow(), i - 6), e = logDia(D.iso(d)); return { d, h: e && fin(e.s) != null ? e.s : null }; });
+  const com = noites.filter((x) => x.h != null);
+  const sono = com.length ? `<div class="card"><div class="row-flex"><div class="mid">${n1(com.reduce((a, x) => a + x.h, 0) / com.length)} h</div><span class="small muted">média de ${com.length} noite${com.length > 1 ? 's' : ''} · alvo ${alvo} h</span></div>
+      ${barChart(noites.map((x) => ({ v: x.h || 0, l: wd(x.d).slice(0, 3), c: 'var(--a-rec)', dim: x.h == null || x.h < alvo })), { target: alvo, label: 'Horas de sono nos últimos 7 dias', values: (v) => (v ? n1(v) : '') })}</div>`
+    : `<div class="card"><p class="small muted" style="margin:0">Sem noites registradas nesta semana. O check-in da manhã pede as horas de sono.</p></div>`;
+
+  let planos = '';
+  if (H) {
+    const tk = S.dayType || D.tipoDia(key), kc = D.kcalDia(tk), pr = D.prot();
+    const ultD = H.exames.length ? H.exames[H.exames.length - 1].d : null, fora = ultD ? H.exames.filter((e) => e.d === ultD && foraRef(e)).length : 0;
+    planos = `${sec('Plano')}
+      ${P ? `<a class="card cardlink" href="#/saude/campanha"><span class="badge-ic">${I('target')}</span><div class="grow"><b>${esc(P.nome || `Plano de ${P.semanas} semanas`)}</b><div class="small muted">${P.blocos.length} blocos · de ${dQuando(P.ini)}${isoOk(P.fim) ? ` a ${dQuando(dayAt(P.fim))}` : ''}</div>${bar(p.fim ? 100 : ((p.week || 0) / P.semanas) * 100)}</div>${I('chevR', 24, 'class="ic chev"')}</a>` : ''}
+      ${H.refeicoes.length ? `<a class="card cardlink" href="#/saude/dieta"><span class="badge-ic">${I('utensils')}</span><div class="grow"><b>Dieta de hoje</b><div class="small muted">Dia de ${D.DIAS[tk].toLowerCase()}${kc ? ` · ${fmtInt(kc)} kcal` : ''}${pr ? ` · proteína ${pr.meta} g` : ''}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>` : ''}
+      <a class="card cardlink" href="#/saude/exames"><span class="badge-ic">${I('flask')}</span><div class="grow"><b>Exames e medidas</b><div class="small muted">${ultD ? `Último exame em ${dAno(dayAt(ultD))} · ${fora} fora da referência` : 'Sem exames'}${H.medidas.length ? ` · ${H.medidas.length} medidas` : ''}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`;
+    const anos = {}; H.historico.forEach((x) => { const y = x.mes.slice(0, 4); anos[y] = (anos[y] || 0) + (Number(x.musculacao) || 0) + (Number(x.cardio) || 0) + (Number(x.outros) || 0); });
+    const AY = Object.keys(anos).sort();
+    if (AY.length) planos += `${sec('Histórico de treinos')}<div class="card">${barChart(AY.map((y) => ({ v: anos[y], l: y, c: 'var(--a-for)' })), { label: 'Treinos por ano', values: (v) => (v ? fmtInt(v) : '') })}<p class="small muted" style="margin-top:6px">Treinos por ano, de ${D.mesCurto(H.historico[0].mes)} a ${D.mesCurto(H.historico[H.historico.length - 1].mes)}, do histórico mensal no Supabase.</p></div>`;
+  }
+  const sessTxt = red ? 'Recuperação' : s.nome, sessSub = red ? 'Menos de 6 h de sono: caminhada leve ou mobilidade' : s.resumo;
   return {
     title: 'Saúde',
-    html: `${hdr('Saúde', `Ato ${p.act.n} · ${p.act.nome} · semana ${Math.max(1, p.week)} de 24`)}${netbar()}
+    html: `${hdr('Saúde', P && p.week ? `${p.bloco ? `Bloco ${p.bloco.n} · ${esc(p.bloco.nome)} · ` : ''}semana ${p.week} de ${P.semanas}` : P && p.pre ? `O plano começa em ${dShort(P.ini)}` : P && p.fim ? 'Plano de treino concluído' : '')}${netbar()}
       <button class="card cardlink" style="width:calc(100% - 32px);text-align:left" data-act="energia">
-        <span class="sr">Energia ${E} de 100.</span>${ring(E, Z)}<div class="grow"><div class="row-flex"><b>Energia</b><span class="zpill zone-${Z} small">${ZNAME[Z]}</span></div><p class="small muted">Sono, variabilidade cardíaca e frequência de repouso.</p><p class="small" style="margin-top:2px">${advice}</p><span class="sr">Ver como é calculada.</span></div>${I('info', 20, 'class="ic chev"')}
+        <span class="sr">${sl == null ? 'Sem check-in de sono hoje.' : `Sono de ${hTxt(sl)}.`}</span>${ring(sl == null ? 0 : lin(sl, 4, 8), Z, 64, sl == null ? '—' : hShort(sl))}<div class="grow"><div class="row-flex"><b>Energia</b><span class="zpill zone-${Z} small">${ZNAME[Z]}</span></div><p class="small muted">Pelas horas de sono do check-in.</p><p class="small" style="margin-top:2px">${advice}</p><span class="sr">Ver como é calculada.</span></div>${I('info', 20, 'class="ic chev"')}
       </button>
-      <a class="card cardlink" href="#/saude/treino" data-act="openTreino"><span class="badge-ic p">${I(key === 'Z2' ? 'pulse' : key === 'REST' ? 'walk' : 'dumbbell')}</span><div class="grow"><div class="muted small">Hoje</div><b>${Z === 'vermelho' && key !== 'REST' ? 'Recuperação' : s.nome}</b><div class="small muted">${Z === 'vermelho' && key !== 'REST' ? 'Energia vermelha: caminhada leve ou mobilidade' : s.resumo}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
-      ${nextGym && nextGym.i > 0 ? `<a class="card cardlink" href="#/saude/treino" data-act="openTreino" data-arg="${nextGym.q.tipo}"><span class="badge-ic">${I('dumbbell')}</span><div class="grow"><div class="muted small">Próximo treino de força · ${nextGym.i === 1 ? 'amanhã' : wd(D.addDays(diaNow(), nextGym.i))}</div><b>${D.SESSION[nextGym.q.tipo].nome}</b></div>${I('chevR', 24, 'class="ic chev"')}</a>` : ''}
-      ${sec('Peso', '<a href="#/saude/exames">Medidas</a>')}
-      <div class="card"><div class="row-flex"><div><div class="mid">${n1(last.t)} kg</div><div class="small muted">tendência · ${dlt <= 0 ? '−' : '+'}${n1(Math.abs(dlt))} kg em 14 dias</div></div><div class="right small muted">meta<br><b class="num" style="color:var(--ink)">${n1(D.PROFILE.metaPeso)} kg</b></div></div>
-        ${lineChart(trend, { dots: raw, goal: D.PROFILE.metaPeso, label: `Peso: tendência de ${n1(trend[0])} para ${n1(last.t)} kg em 6 semanas`, labels: [[0, '6 sem'], [21, '3 sem'], [41, 'hoje']] })}
-        <div class="legend"><span><i style="--c:var(--primary)"></i>tendência</span><span><i style="--c:var(--muted);height:6px;width:6px;border-radius:50%"></i>pesagens</span><span><i style="--c:var(--xp-fill)"></i>meta</span></div>
-        <p class="small muted" style="margin-top:8px">A variação de um dia para o outro é água. O app mostra só a tendência.</p></div>
-      ${sec('Sono · 7 dias')}
-      <div class="card"><div class="row-flex"><div class="mid">${n1(sl.reduce((a, b) => a + b.h, 0) / 7)} h</div><span class="small muted">média · alvo 7 h</span></div>
-        ${barChart(sl.map((x) => ({ v: x.h, l: wd(x.d).slice(0, 3), c: 'var(--a-rec)', dim: x.h < 7 })), { target: 7, label: 'Horas de sono nos últimos 7 dias', values: (v) => n1(v) })}</div>
-      ${sec('Plano')}
-      <a class="card cardlink" href="#/saude/campanha"><span class="badge-ic">${I('target')}</span><div class="grow"><b>Campanha de 24 semanas</b><div class="small muted">4 atos de 6 semanas, do condicionamento ao tatame</div>${bar((Math.max(1, p.week) / 24) * 100)}</div>${I('chevR', 24, 'class="ic chev"')}</a>
-      <a class="card cardlink" href="#/saude/dieta"><span class="badge-ic">${I('utensils')}</span><div class="grow"><b>Dieta de hoje</b><div class="small muted">${D.DAYTYPES[S.dayType || D.dayTypeFor(key)].nome} · ${D.DAYTYPES[S.dayType || D.dayTypeFor(key)].kcal.toLocaleString('pt-BR')} kcal · proteína ${D.PROT.meta} g</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
-      <a class="card cardlink" href="#/saude/exames"><span class="badge-ic">${I('flask')}</span><div class="grow"><b>Exames e medidas</b><div class="small muted">Último painel: ${D.EXAMS.quando} · ${off} fora da referência</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
-      <p class="small muted" style="margin:14px 20px">${I('health', 16, 'style="display:inline;vertical-align:-3px"')} Apple Health sincronizado há 2 h pelo Atalho “PainelSync”.</p>`,
+      <a class="card cardlink" href="#/saude/treino" data-act="openTreino"><span class="badge-ic p">${I(key === 'Z2' ? 'pulse' : key === 'REST' || key === 'LIVRE' || red ? 'walk' : 'dumbbell')}</span><div class="grow"><div class="muted small">Hoje</div><b>${esc(sessTxt)}</b><div class="small muted">${esc(sessSub || '')}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
+      ${nextGym && nextGym.i > 0 ? `<a class="card cardlink" href="#/saude/treino" data-act="openTreino" data-arg="${nextGym.q.tipo}"><span class="badge-ic">${I('dumbbell')}</span><div class="grow"><div class="muted small">Próximo treino de força · ${nextGym.i === 1 ? 'amanhã' : wd(D.addDays(diaNow(), nextGym.i))}</div><b>${esc(D.sessao(nextGym.q).nome)}</b></div>${I('chevR', 24, 'class="ic chev"')}</a>` : ''}
+      ${sec('Peso', H ? '<a href="#/saude/exames">Medidas</a>' : '')}${peso}
+      ${sec('Sono · 7 dias')}${sono}
+      ${H ? planos : `${sec('Plano')}${semSaude()}`}
+      <p class="small muted" style="margin:14px 20px">${I('note', 16, 'style="display:inline;vertical-align:-3px"')} ${H && H.fonte ? `${esc(H.fonte)}. ` : ''}Apple Health ainda não conectado: o sono vem do check-in.</p>`,
   };
 }
 
+// Ficha do dia (ou da sessão escolhida) já convertida em exercícios com séries e faixa de repetições.
+function fichaList(sel, p) {
+  const ss = sessOf(p, sel), f = ss.ficha, q = { ...p, tipo: sel };
+  return { ss, f, q, list: f && FORCA.has(sel) ? (f.exercicios || []).filter((e) => e && e.nome).map((e) => D.exercicio(e, q)) : [] };
+}
+const nSeries = (ex, cut) => (cut && ex.series > 1 ? ex.series - 1 : ex.series);
+const setKey = (sel, j, ex, i) => `${sel}-${j}-${ex.id}-${i}`;
 function Treino() {
-  const tp = todaySession();
-  const today = tp.key;
-  const sel = S.wSel || today;
-  const p = tp.p;
-  const Z = zoneOf(energia(S.checkin ? S.checkin.s : S.sleep));
-  const opts = ['A', 'B', 'C', 'Z2'];
-  const seg = `<div class="seg" role="group" aria-label="Escolher sessão" style="margin:4px 16px 0">${opts.map((k) => `<button aria-pressed="${sel === k}" data-act="wsel" data-arg="${k}">${k === 'Z2' ? 'Cardio' : 'Treino ' + k}</button>`).join('')}</div>`;
-  const isToday = sel === today;
-  const xpHoje = QXP().corpo;
-  const xpNote = S.quests.corpo ? 'O XP de treino de hoje já foi ganho.' : isToday ? `Vale +${xpHoje} XP.` : `Reposição: vale os +${xpHoje} XP do plano de hoje, nunca mais que isso.`;
+  const tp = todaySession(), today = tp.key, p = tp.p, H = D.SAUDE;
+  const sel = S.wSel || (today === 'LIVRE' ? 'A' : today);
+  const Z = zoneNow(), isToday = sel === today, xpHoje = QXP().corpo;
+  const xpNote = S.quests.corpo ? 'O XP de treino de hoje já foi ganho.' : isToday || today === 'LIVRE' ? `Vale +${xpHoje} XP.` : `Reposição: vale os +${xpHoje} XP do plano de hoje, nunca mais que isso.`;
   const elapsed = S.wStart ? Math.floor((Date.now() - S.wStart) / 1000) : 0;
-  const head = `${backbar('saude', 'Saúde')}${hdr(sel === 'REST' ? 'Descanso ativo' : D.SESSION[sel].nome, `${isToday ? 'Hoje' : 'Prévia'} · Ato ${p.act.n} · ${p.act.foco}${p.deload ? ' · semana leve' : ''}`, `<span class="syncchip num" aria-label="Tempo de treino">${I('timer', 16)}<span id="wT">${fmtT(elapsed)}</span></span>`)}${seg}`;
-  if (sel === 'REST') {
-    return { title: 'Descanso ativo', chrome: 'focus', html: `${head}<div class="card"><h3>Hoje é descanso</h3><p class="lead">Descanso faz parte do plano e conta para a Chama. Se quiser, 15 min de mobilidade ou 7 mil passos valem +${QXP().corpo} XP.</p><div class="btnrow"><button class="btn" data-act="finishWorkout" data-arg="REST">Fiz mobilidade</button><a class="btn ghost" href="#/hoje" data-act="voltar" data-arg="hoje">Voltar</a></div></div>` };
+  if (!H || !H.fichas.length) {
+    return { title: 'Treino', chrome: 'focus', html: `${backbar('saude', 'Saúde')}${hdr('Treino', 'Sem fichas neste aparelho')}${semSaude()}
+      <div class="card"><h3>Treinou mesmo assim?</h3><p class="lead">Marque como feito: ${S.quests.corpo ? 'o XP de treino de hoje já foi ganho' : `vale +${xpHoje} XP`} e conta na semana.</p><div class="btnrow"><button class="btn" data-act="finishWorkout" data-arg="LIVRE">${I('check', 20)} Fiz um treino</button></div></div>` };
   }
-  // Energia vermelha no dia do treino: a missão Corpo vira recuperação, com o mesmo XP.
-  const recovery = isToday && Z === 'vermelho' ? `<div class="card soft" style="margin-top:12px"><div class="row-flex">${I('bolt', 20)}<b>Energia vermelha: hoje vale recuperação</b></div>
-      <p class="small" style="margin-top:4px">Caminhada leve de 20 a 30 min ou 15 min de mobilidade, no lugar da sessão. Vale os mesmos +${xpHoje} XP e a sessão volta no próximo dia verde.</p>
+  const ss = sessOf(p, sel);
+  const seg = `<div class="seg" role="group" aria-label="Escolher sessão" style="margin:4px 16px 0">${['A', 'B', 'C', 'Z2'].map((k) => `<button aria-pressed="${sel === k}" data-act="wsel" data-arg="${k}">${k === 'Z2' ? 'Cardio' : 'Treino ' + k}</button>`).join('')}</div>`;
+  const sub = [isToday ? 'Hoje' : today === 'LIVRE' ? 'Fora do plano' : 'Prévia', p.bloco ? `Bloco ${p.bloco.n}: ${esc(p.bloco.nome)}` : '', p.week ? `semana ${p.week}` : '', p.deload ? 'deload' : ''].filter(Boolean).join(' · ');
+  const head = `${backbar('saude', 'Saúde')}${hdr(sel === 'REST' ? 'Descanso ativo' : esc(ss.nome), sub, `<span class="syncchip num" aria-label="Tempo de treino">${I('timer', 16)}<span id="wT">${fmtT(elapsed)}</span></span>`)}${seg}`;
+  if (sel === 'REST') {
+    const f = ss.ficha, L = f ? (f.exercicios || []).filter((e) => e && e.nome) : [];
+    return { title: 'Descanso ativo', chrome: 'focus', html: `${head}<div class="card"><h3>Hoje é descanso</h3><p class="lead">Descanso faz parte do plano e conta para a Chama. Se quiser, a mobilidade vale +${xpHoje} XP.</p>
+      ${L.length ? `<ul class="small" style="padding-left:20px;margin:10px 0 0">${L.map((e) => `<li style="margin:4px 0">${esc(e.nome)}${e.prescricao ? ` · <span class="muted">${esc(e.prescricao)}</span>` : ''}</li>`).join('')}</ul>` : ''}
+      ${f && f.orientacao ? `<p class="small muted" style="margin-top:10px">${txtBr(f.orientacao)}</p>` : ''}
+      <div class="btnrow"><button class="btn" data-act="finishWorkout" data-arg="REST">Fiz mobilidade</button><a class="btn ghost" href="#/hoje" data-act="voltar" data-arg="hoje">Voltar</a></div></div>` };
+  }
+  // Sono curto no dia do treino: a missão Corpo vira recuperação, com o mesmo XP.
+  const recovery = isToday && Z === 'vermelho' ? `<div class="card soft" style="margin-top:12px"><div class="row-flex">${I('bolt', 20)}<b>Menos de 6 h de sono: hoje vale recuperação</b></div>
+      <p class="small" style="margin-top:4px">Caminhada leve ou mobilidade, no lugar da sessão. Vale os mesmos +${xpHoje} XP, e a sessão volta no próximo dia com sono bom.</p>
       <div class="btnrow"><button class="btn" data-act="finishWorkout" data-arg="REC">${I('walk', 20)} Fiz a recuperação</button></div><p class="xs muted" style="margin-top:8px">Se mesmo assim quiser treinar, a sessão está abaixo.</p></div>` : '';
   if (sel === 'Z2') {
-    const W = weekly().find((q) => q.id === 'cerco');
+    const W = weekly().find((q) => q.id === 'cerco'), c = D.cardioMin(cw(p) || 1), f = ss.ficha, P = H.plano, z2 = P && typeof P.zona2 === 'string' ? P.zona2 : '';
+    const prog = f ? (f.exercicios || []).filter((e) => e && e.nome) : [];
     return { title: 'Cardio zona 2', chrome: 'focus', html: `${head}${recovery}
-      <div class="card"><div class="row-flex"><span class="badge-ic p">${I('pulse')}</span><div><b>${D.SESSION.Z2.min} min na zona 2</b><div class="small muted">125–140 bpm · esteira inclinada, bike ou caminhada rápida</div></div></div>
-        <div class="kpis"><div class="kpi"><span>Semana (min)</span><b class="num">${W.p}/${W.of}</b></div><div class="kpi"><span>28 dias (min)</span><b class="num">185</b></div><div class="kpi"><span>Vale hoje</span><b class="num">${S.quests.corpo ? 'feito' : `${xpHoje} XP`}</b></div></div>
-        <p class="small muted" style="margin-top:12px">O Apple Watch grava o treino e o Atalho manda para o Painel. Os minutos na zona entram sozinhos, sem digitar nada. ${xpNote}</p></div>
-      <div class="card"><h3>Sem relógio hoje?</h3><p class="lead">Use o cronômetro e marque como feito no final.</p><div class="btnrow"><button class="btn ghost" data-act="startWorkout">${I('timer', 20)} Iniciar cronômetro</button></div></div>
-      <div class="restbar"><div class="grow"><div class="xs" style="opacity:.75">Cardio</div><div class="t">${D.SESSION.Z2.min} min</div></div><button class="btn go" data-act="finishWorkout" data-arg="Z2">Concluir</button></div>` };
+      <div class="card"><div class="row-flex"><span class="badge-ic p">${I('pulse')}</span><div><b>${c ? `${esc(c.txt)} na zona 2` : 'Cardio na zona 2'}</b>${c && c.nota ? `<div class="small muted">${esc(c.nota)}</div>` : ''}</div></div>
+        <div class="kpis"><div class="kpi"><span>Semana (min)</span><b class="num">${W.p}/${W.of ?? '—'}</b></div><div class="kpi"><span>Cardios</span><b class="num">${semana().cardio}/${cardiosSemana()}</b></div><div class="kpi"><span>Vale hoje</span><b class="num">${S.quests.corpo ? 'feito' : `${xpHoje} XP`}</b></div></div>
+        <p class="small muted" style="margin-top:12px">Sem relógio conectado: use o cronômetro e conclua no final. Com 10 min ou mais no cronômetro entram os minutos dele; senão, os do plano. ${xpNote}</p></div>
+      ${z2 ? `<div class="card"><h3>Zona 2</h3><p class="small" style="margin-top:4px">${txtBr(z2)}</p></div>` : ''}
+      ${prog.length ? `<div class="card"><h3>${esc(f.titulo || 'Progressão do cardio')}</h3><table class="bp" style="margin-top:8px">${prog.map((e) => `<tr><td>${esc(e.nome)}</td><td>${esc(e.prescricao || '')}</td></tr>`).join('')}</table>${f.orientacao ? `<p class="small muted" style="margin-top:8px">${txtBr(f.orientacao)}</p>` : ''}</div>` : ''}
+      <div class="card"><h3>Cronômetro</h3><p class="lead">${S.wStart ? 'Rodando. Conclua no final.' : 'Inicie ao começar e conclua no final.'}</p>${S.wStart ? '' : `<div class="btnrow"><button class="btn ghost" data-act="startWorkout">${I('timer', 20)} Iniciar cronômetro</button></div>`}</div>
+      <div class="restbar"><div class="grow"><div class="xs" style="opacity:.75">Cardio</div><div class="t">${c ? esc(c.txt) : 'zona 2'}</div></div><button class="btn go" data-act="finishWorkout" data-arg="Z2">Concluir</button></div>` };
   }
-  const list = D.WORKOUTS[sel];
-  const cut = Z === 'amarelo' || Z === 'vermelho'; // uma série a menos por exercício
-  const cards = list.map((ex) => {
-    const sg = D.suggestion(ex);
-    const reps = cut && ex.reps.length > 1 ? ex.reps.slice(0, -1) : ex.reps;
-    const rows = reps.map((r, i) => {
-      const k = `${sel}-${ex.id}-${i}`, st = S.sets[k] || {};
-      const kg = st.kg ?? sg.kg, reps = st.reps ?? (sg.reps || r);
-      return `<tr><td>${i + 1}</td><td><input type="text" inputmode="decimal" value="${D.fmtKg(kg)}" aria-label="${esc(ex.nome)}, série ${i + 1}, carga em kg" data-in="setkg" data-arg="${k}"></td><td><input type="text" inputmode="numeric" value="${reps}" aria-label="${esc(ex.nome)}, série ${i + 1}, repetições" data-in="setreps" data-arg="${k}"></td><td><button class="ok" aria-pressed="${!!st.ok}" data-act="set" data-arg="${k}" data-rest="${ex.rest}" aria-label="Concluir série ${i + 1} de ${esc(ex.nome)}">${I('check', 24)}</button></td></tr>`;
+  const { f, list } = fichaList(sel, p);
+  if (!f || !list.length) return { title: esc(ss.nome), chrome: 'focus', html: `${head}${empty('dumbbell', 'Sem ficha para esta sessão', 'A ficha deste bloco não veio do Supabase. Confira em Sincronizar.', '#/dinheiro/sincronizar', 'Sincronizar')}` };
+  const rest = D.descanso(f), cut = Z === 'amarelo' || Z === 'vermelho';
+  const cards = list.map((ex, j) => {
+    const last = S.lastSets[ex.id], sg = D.suggestion(ex, last), n = nSeries(ex, cut);
+    const rows = Array.from({ length: n }, (_, i) => {
+      const k = setKey(sel, j, ex, i), st = S.sets[k] || {};
+      const kg = st.kg ?? (sg ? sg.kg : last ? last.kg : ex.carga), reps = st.reps ?? (sg ? sg.reps : ex.rr ? ex.rr[0] : null);
+      return `<tr><td>${i + 1}</td><td><input type="text" inputmode="decimal" value="${kg ? D.fmtKg(kg) : ''}" placeholder="kg" aria-label="${esc(ex.nome)}, série ${i + 1}, carga em kg" data-in="setkg" data-arg="${k}"></td><td><input type="text" inputmode="numeric" value="${reps || ''}" aria-label="${esc(ex.nome)}, série ${i + 1}, repetições" data-in="setreps" data-arg="${k}"></td><td><button class="ok" aria-pressed="${!!st.ok}" data-act="set" data-arg="${k}" data-rest="${rest}" aria-label="Concluir série ${i + 1} de ${esc(ex.nome)}">${I('check', 24)}</button></td></tr>`;
     }).join('');
-    return `<section class="ex" aria-label="${esc(ex.nome)}"><div class="row-flex"><h3 class="grow">${esc(ex.nome)}</h3><span class="chip num">${ex.alvo}</span></div>
-      <div class="tip">${I('refresh', 16)}<span>Última vez: <b class="num">${D.fmtKg(ex.kg)} kg × ${ex.reps.join(', ')}</b>. ${sg.txt}. Reserva de ${ex.rir} repetições · descanso ${ex.rest >= 120 ? ex.rest / 60 + ' min' : ex.rest + ' s'}.</span></div>
+    const tip = last ? `Última vez: <b class="num">${last.kg ? `${D.fmtKg(last.kg)} kg × ` : ''}${last.reps.join(', ')}</b>${isoOk(last.d) ? ` em ${dShort(dayAt(last.d))}` : ''}.${sg ? ` ${sg.txt}.` : ''}` : 'Primeira vez com este exercício: anote a carga que usar.';
+    return `<section class="ex" aria-label="${esc(ex.nome)}"><div class="row-flex"><h3 class="grow">${esc(ex.nome)}</h3><span class="chip num">${esc(ex.alvo)}</span></div>
+      <div class="tip">${I('refresh', 16)}<span>${tip} Hoje ${n} série${n > 1 ? 's' : ''}${ex.perna ? ', repetições por perna' : ''} · descanso ${fmtRest(rest)}.</span></div>
       <table class="sets"><thead><tr><th>Série</th><th>kg</th><th>Reps</th><th><span class="sr">Feito</span></th></tr></thead><tbody>${rows}</tbody></table></section>`;
   }).join('');
-  const total = list.reduce((a, e) => a + (cut && e.reps.length > 1 ? e.reps.length - 1 : e.reps.length), 0);
-  const done = setsDone(sel, cut);
-  const rest = S.rest && S.rest.end > Date.now();
-  const banner = { verde: 'Sessão completa. As cargas sugeridas seguem a progressão dupla.', amarelo: 'Esforço máximo 8 e uma série a menos por exercício (já tirada abaixo).', vermelho: 'Se for treinar, esforço máximo 7 e uma série a menos por exercício.', nd: '' }[Z];
+  const total = list.reduce((a, ex) => a + nSeries(ex, cut), 0), done = setsDone(sel, list, cut);
+  const restOn = S.rest && S.rest.end > Date.now();
+  const banner = { verde: 'Sono de 7 h ou mais: treino completo. As cargas sugeridas seguem a progressão dupla.', amarelo: 'Sono entre 6 e 7 h: uma série a menos por exercício (já tirada abaixo).', vermelho: 'Se for treinar mesmo assim: uma série a menos por exercício e esforço leve.', nd: 'Com as horas de sono do check-in, o treino se ajusta sozinho.' }[Z];
+  const obs = (f.observacoes || []).filter((x) => typeof x === 'string' && x.trim());
+  const orient = f.orientacao || obs.length ? `<div class="card"><h3>Da ficha</h3>${f.orientacao ? `<p class="small" style="margin-top:4px">${txtBr(f.orientacao)}</p>` : ''}${obs.map((x) => `<p class="small muted" style="margin-top:6px">${txtBr(x)}</p>`).join('')}</div>` : '';
   return {
-    title: D.SESSION[sel].nome, chrome: 'focus',
+    title: esc(ss.nome), chrome: 'focus',
     html: `${head}${recovery}
-      <div class="card soft" style="margin-top:12px"><div class="row-flex">${I('bolt', 20)}<span class="small"><b>Energia ${ZNAME[Z].toLowerCase()}.</b> ${banner} ${xpNote}</span></div></div>
-      ${cards}
-      <div class="restbar">${rest ? `<div class="grow"><div class="xs" style="opacity:.75">Descanso</div><div class="t" id="restT" role="timer" aria-label="Descanso restante">${fmtT(Math.ceil((S.rest.end - Date.now()) / 1000))}</div></div><button class="btn sm" data-act="skipRest">Pular</button>` : `<div class="grow"><div class="xs" style="opacity:.75">Séries</div><div class="t num">${done}/${total}</div></div><button class="btn go" data-act="finishWorkout" data-arg="${sel}">Concluir treino</button>`}</div>`,
+      <div class="card soft" style="margin-top:12px"><div class="row-flex">${I('bolt', 20)}<span class="small"><b>${Z === 'nd' ? 'Sem check-in.' : `Zona ${ZNAME[Z].toLowerCase()}.`}</b> ${banner} ${xpNote}</span></div></div>
+      ${cards}${orient}
+      <div class="restbar">${restOn ? `<div class="grow"><div class="xs" style="opacity:.75">Descanso</div><div class="t" id="restT" role="timer" aria-label="Descanso restante">${fmtT(Math.ceil((S.rest.end - Date.now()) / 1000))}</div></div><button class="btn sm" data-act="skipRest">Pular</button>` : `<div class="grow"><div class="xs" style="opacity:.75">Séries</div><div class="t num">${done}/${total}</div></div><button class="btn go" data-act="finishWorkout" data-arg="${sel}">Concluir treino</button>`}</div>`,
   };
 }
-function setsDone(sel, cut) {
-  return D.WORKOUTS[sel].reduce((a, ex) => { const n = cut && ex.reps.length > 1 ? ex.reps.length - 1 : ex.reps.length; let c = 0; for (let i = 0; i < n; i++) if (S.sets[`${sel}-${ex.id}-${i}`]?.ok) c++; return a + c; }, 0);
-}
+function setsDone(sel, list, cut) { return list.reduce((a, ex, j) => { let c = 0; for (let i = 0; i < nSeries(ex, cut); i++) if (S.sets[setKey(sel, j, ex, i)]?.ok) c++; return a + c; }, 0); }
 const e1rm = (kg, reps) => kg * (1 + reps / 30); // fórmula de Epley
-const best1rm = (ex) => S.best1rm[ex.id] ?? e1rm(ex.kg, Math.max(...ex.reps));
 const fmtT = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.max(0, s % 60)).padStart(2, '0')}`;
+const fmtRest = (r) => (r >= 120 && r % 60 === 0 ? `${r / 60} min` : `${r} s`);
 
 function Campanha() {
-  const p = plan(), wk = Math.max(1, p.week);
-  const ws = D.weightSeries(), wt = ws[ws.length - 1], w0 = ws[0].t;
+  const H = D.SAUDE, P = H && H.plano;
+  if (!P) return { title: 'Plano de treino', html: `${backbar('saude', 'Saúde')}${hdr('Plano de treino')}${semSaude()}` };
+  const p = plan(), wk = p.week, W = semana(), wkB = p.fim ? P.semanas + 1 : wk; // plano concluído: todos os blocos ficam para trás
   const strip = D.DOW.map((d, i) => {
-    const date = D.addDays(diaNow(), i - p.dow), q = D.planFor(date);
-    const lbl = { A: 'A', B: 'B', C: 'C', Z2: 'Z2', REST: '—' }[q.tipo];
-    return `<div class="${i === p.dow ? 'today' : i < p.dow ? 'done' : ''}"><b>${d}</b>${lbl}</div>`;
+    const date = D.addDays(diaNow(), i - p.dow), q = D.planFor(date), e = logDia(D.iso(date));
+    const lbl = q.tipo ? { A: 'A', B: 'B', C: 'C', Z2: 'Z2', REST: '—' }[q.tipo] : '·';
+    return `<div class="${i === p.dow ? 'today' : e && e.k ? 'done' : ''}"><b>${d}</b>${lbl}<span class="sr">${e && e.k ? ', feito' : ''}</span></div>`;
   }).join('');
-  const acts = D.ACTS.map((a, i) => {
-    const from = i * 6 + 1, to = from + 5, on = wk >= from && wk <= to, past = wk > to;
-    const weeks = Array.from({ length: 6 }, (_, j) => { const w = from + j; return `<i class="${w < wk ? 'done' : w === wk ? 'now' : w % 6 === 0 ? 'deload' : ''}" title="Semana ${w}"></i>`; }).join('');
-    return `<div class="act ${on ? 'on' : past ? 'past' : ''}"><span class="n">${a.n}</span><div><div class="row-flex"><b>${a.nome}</b><span class="small muted">· ${a.foco}</span><span class="small muted right num">sem ${from}–${to}</span></div><div class="weeks" aria-hidden="true">${weeks}</div><div class="xs muted" style="margin-top:4px">Semana ${to}: leve (Acampamento) e Teste do Ato</div></div></div>`;
+  const dias = (fn) => P.semana.map((x, i) => (fn(String(x).toUpperCase()) ? D.DOW[i].toLowerCase() : null)).filter(Boolean);
+  const lista = (a) => (a.length > 1 ? `${a.slice(0, -1).join(', ')} e ${a[a.length - 1]}` : a[0] || '');
+  const lead = [['Força', dias((t) => FORCA.has(t))], ['Cardio', dias((t) => t === 'Z2')], ['Descanso', dias((t) => t === 'REST')]].filter(([, a]) => a.length).map(([n, a]) => `${n} ${lista(a)}.`).join(' ');
+  const blocos = P.blocos.map((b) => {
+    const on = wkB >= b.de && wkB <= b.ate, past = wkB > b.ate, nW = b.ate - b.de + 1;
+    const weeks = Array.from({ length: nW }, (_, j) => { const w = b.de + j, dl = P.deload.includes(w); return `<i class="${w < wkB ? 'done' : w === wkB ? 'now' : dl ? 'deload' : ''}" title="Semana ${w}${dl ? ', deload' : ''}"></i>`; }).join('');
+    const det = [b.series, b.esforco].filter((x) => typeof x === 'string' && x).map(esc).join(' · ');
+    return `<div class="act ${on ? 'on' : past ? 'past' : ''}"><span class="n">${esc(b.n)}</span><div><div class="row-flex"><b>${esc(b.nome || `Bloco ${b.n}`)}</b><span class="small muted right num">sem ${b.de}–${b.ate}</span></div>${b.objetivo ? `<div class="small muted">${esc(b.objetivo)}</div>` : ''}<div class="weeks" aria-hidden="true" style="grid-template-columns:repeat(${nW},1fr)">${weeks}</div>${det ? `<div class="xs muted" style="margin-top:4px">${det}</div>` : ''}</div></div>`;
   }).join('');
+  const M = D.metas(), med = H.medidas;
+  const atual = (k) => { for (let i = med.length - 1; i >= 0; i--) if (fin(med[i][k]) != null) return { v: med[i][k], d: dayAt(med[i].d) }; return null; };
+  const metasL = [['peso', 'Peso', 'kg', lastWeight()], ['cintura', 'Cintura', 'cm', atual('cintura')], ['abdomen', 'Abdômen', 'cm', atual('abdomen')], ['gordura', 'Gordura', '%', atual('gordura')]].filter(([k]) => fin(Number(M[k])) != null);
+  const metasH = metasL.map(([k, n, u, a]) => { const alvo = Number(M[k]); return `<div style="margin-top:10px"><div class="row-flex small"><span class="grow">${n}</span><span class="muted num">${a ? `${n1(a.v)} ${u} em ${dQuando(a.d)}` : 'sem medida'}</span><b class="num" style="min-width:96px;text-align:right">meta ${n1(alvo)} ${u}</b></div>${a ? `<div class="xs muted">${a.v > alvo ? `faltam ${n1(a.v - alvo)} ${u}` : 'meta alcançada'}</div>` : ''}</div>`; }).join('');
+  const ul = (t, L) => (L.length ? `<div class="card"><h3>${t}</h3><ul class="small" style="padding-left:20px;margin:8px 0 0">${L.map((x) => `<li style="margin:4px 0">${txtBr(x)}</li>`).join('')}</ul></div>` : '');
   return {
-    title: 'Campanha',
-    html: `${backbar('saude', 'Saúde')}${hdr('Campanha de 24 semanas', `Semana ${wk} de 24 · Ato ${p.act.n}: ${p.act.nome}`)}
-      <div class="card"><h3>Esta semana</h3><p class="lead">Força seg, qua e sex. Cardio ter e sáb. Descanso qui e dom.</p><div class="weekstrip">${strip}</div></div>
-      <div class="card"><h3>Atos</h3><div class="acts">${acts}</div>
-        <div class="legend" style="margin-top:10px"><span><i style="--c:var(--primary)"></i>feita</span><span><i style="--c:var(--xp-fill)"></i>atual</span><span><i style="--c:var(--line)"></i>semana leve</span></div></div>
-      <div class="card"><div class="row-flex">${I('lock', 20)}<h3>Pronto para o tatame</h3></div><p class="lead">O BJJ volta quando o condicionamento chegar lá. Critérios fictícios para a demonstração:</p>
-        <div style="margin-top:12px"><div class="row-flex small"><span class="grow">Zona 2 ≥ 150 min/semana (meta do Ato IV) por 4 semanas</span><span class="muted num">0/4</span></div>${bar(0, 'var(--a-vig)')}</div>
-        <div style="margin-top:12px"><div class="row-flex small"><span class="grow">Energia verde em 70% dos dias</span><span class="muted num">64%</span></div>${bar(91, 'var(--a-rec)')}</div>
-        <div style="margin-top:12px"><div class="row-flex small"><span class="grow">Peso (tendência) ≤ 84 kg</span><span class="muted num">${n1(wt.t)} kg</span></div>${bar(((w0 - wt.t) / (w0 - 84)) * 100, 'var(--a-nut)')}</div>
-        <p class="xs muted" style="margin-top:10px">O plano do Ato I pede ${D.Z2_WEEK_MIN} min de zona 2 por semana; a meta sobe a cada ato.</p></div>`,
+    title: 'Plano',
+    html: `${backbar('saude', 'Saúde')}${hdr(esc(P.nome || 'Plano de treino'), wk ? `Semana ${wk} de ${P.semanas}${p.bloco ? ` · Bloco ${p.bloco.n}: ${esc(p.bloco.nome)}` : ''}${p.deload ? ' · deload' : ''}` : p.pre ? `Começa em ${dShort(P.ini)}` : 'Plano concluído')}
+      <div class="card"><h3>Esta semana</h3><p class="lead">${lead}</p><div class="weekstrip">${strip}</div>
+        <p class="small muted" style="margin-top:10px">Feito nesta semana: ${W.forca} de ${forcaSemana()} treinos de força e ${W.cardio} de ${cardiosSemana()} cardios.</p></div>
+      <div class="card"><h3>Blocos</h3><div class="acts">${blocos}</div>
+        <div class="legend" style="margin-top:10px"><span><i style="--c:var(--primary)"></i>feita</span><span><i style="--c:var(--xp-fill)"></i>atual</span><span><i style="--c:var(--line)"></i>deload</span></div>
+        ${typeof P.deloadTexto === 'string' && P.deloadTexto ? `<p class="small muted" style="margin-top:8px">${txtBr(P.deloadTexto)}</p>` : ''}</div>
+      ${metasH ? `<div class="card"><h3>Metas</h3>${metasH}</div>` : ''}
+      ${ul('Regras do plano', P.lista('regras'))}${ul('Sono e treino', P.lista('sono'))}${ul('Testes de progresso', P.lista('testes'))}
+      ${typeof P.aviso === 'string' && P.aviso ? `<p class="small muted" style="margin:14px 20px">${txtBr(P.aviso)}</p>` : ''}`,
   };
 }
 
 function Dieta() {
-  const { key } = todaySession();
-  const tkey = S.dayType || D.dayTypeFor(key), T = D.DAYTYPES[tkey], f = T.kcal / 2400;
-  const meals = D.MEALS.map((m) => ({ ...m, kcal: Math.round((m.kcal * f) / 10) * 10 }));
-  const got = meals.filter((m) => S.meals[m.id]);
-  const p = got.reduce((a, m) => a + m.p, 0), k = got.reduce((a, m) => a + m.kcal, 0);
-  const falta = D.PROT.meta - p;
-  const resto = meals.filter((m) => !S.meals[m.id]).reduce((a, m) => a + m.p, 0);
+  const H = D.SAUDE;
+  if (!H || !H.refeicoes.length) return { title: 'Dieta', html: `${backbar('saude', 'Saúde')}${hdr('Dieta de hoje')}${H ? empty('utensils', 'Sem plano alimentar ativo', 'Nenhuma refeição ativa veio do Supabase.') : semSaude()}` };
+  const { key } = todaySession(), tk = S.dayType || D.tipoDia(key), meals = D.refeicoes(tk), pr = D.prot(), kc = D.kcalDia(tk);
+  const got = meals.filter((m) => S.meals[m.id]), p = Math.round(got.reduce((a, m) => a + m.p, 0)), k = Math.round(got.reduce((a, m) => a + m.kcal, 0));
+  const planP = Math.round(meals.reduce((a, m) => a + m.p, 0)), planK = Math.round(meals.reduce((a, m) => a + m.kcal, 0));
+  const resto = planP - p, ver = (meals[0] && meals[0].versao) || '', agua = fin(Number(D.metas().agua)), metaP = pr ? pr.meta : planP;
   return {
     title: 'Dieta',
-    html: `${backbar('saude', 'Saúde')}${hdr('Dieta de hoje', `${T.nome} · ${T.quando}`)}
-      <div class="seg" role="group" aria-label="Tipo de dia" style="margin:4px 16px 0">${Object.entries(D.DAYTYPES).map(([id, t]) => `<button aria-pressed="${tkey === id}" data-act="daytype" data-arg="${id}">${t.nome.replace('Dia ', '')}</button>`).join('')}</div>
+    html: `${backbar('saude', 'Saúde')}${hdr('Dieta de hoje', `Dia de ${D.DIAS[tk].toLowerCase()} · ${S.dayType ? 'escolhido por você' : 'pelo plano de treino'}`)}
+      <div class="seg" role="group" aria-label="Tipo de dia" style="margin:4px 16px 0">${Object.entries(D.DIAS).map(([id, t]) => `<button aria-pressed="${tk === id}" data-act="daytype" data-arg="${id}">${t}</button>`).join('')}</div>
       <div class="card"><div class="grid3">
-        <div><div class="small muted">Proteína</div><div class="mid">${p}<span class="small muted"> / ${D.PROT.meta} g</span></div>${bar((p / D.PROT.meta) * 100, 'var(--a-nut)')}</div>
-        <div><div class="small muted">Calorias</div><div class="mid">${k.toLocaleString('pt-BR')}</div><div class="small muted">de ${T.kcal.toLocaleString('pt-BR')}</div></div>
-        <div><div class="small muted">Combustível</div><div class="mid">${p >= D.PROT.conta ? 'ok' : `${Math.max(0, D.PROT.conta - p)} g`}</div><div class="small muted">${p >= D.PROT.conta ? 'missão feita' : 'para a missão contar'}</div></div>
+        <div><div class="small muted">Proteína</div><div class="mid">${p}<span class="small muted"> / ${metaP} g</span></div>${bar(metaP ? (p / metaP) * 100 : 0, 'var(--a-nut)')}</div>
+        <div><div class="small muted">Calorias</div><div class="mid">${fmtInt(k)}</div><div class="small muted">de ${fmtInt(kc || planK)}</div></div>
+        <div><div class="small muted">Combustível</div><div class="mid">${pr ? (p >= pr.conta ? 'ok' : `${pr.conta - p} g`) : '—'}</div><div class="small muted">${pr ? (p >= pr.conta ? 'missão feita' : 'para a missão contar') : 'sem meta'}</div></div>
       </div></div>
-      ${sec('Refeições do plano')}
-      <div class="card tight">${meals.map((m) => `<div class="quest ${S.meals[m.id] ? 'done' : ''}"><button class="qcheck" aria-pressed="${!!S.meals[m.id]}" data-act="meal" data-arg="${m.id}" aria-label="${m.nome}: ${S.meals[m.id] ? 'comida' : 'marcar como comida'}">${I('check', 28)}</button><div class="grow"><div class="k num">${m.hora}</div><div class="t">${m.nome}</div><div class="d">${m.itens} · <span class="num">${m.kcal} kcal · ${m.p} g</span></div></div></div>`).join('')}</div>
-      ${falta > 0 ? `<div class="card soft"><div class="row-flex">${I('sparkle', 20)}<b>Sugestão</b></div><p class="small" style="margin-top:4px">Faltam ${falta} g de proteína. ${p + resto >= D.PROT.conta ? `As refeições que faltam no plano somam ${resto} g: seguindo o plano a missão conta${p + resto < D.PROT.meta ? `, e um iogurte com whey fecha os ${D.PROT.meta - p - resto} g até a meta` : ''}.` : `Mesmo seguindo o plano faltam ${D.PROT.conta - p - resto} g para a missão contar: um iogurte com whey resolve.`}</p></div>` : ''}
-      <div class="btnrow" style="margin:6px 16px 0"><button class="btn ghost" data-act="toastInfo" data-arg="No app real: busca na Tabela TACO (offline) e no Open Food Facts.">${I('plus', 20)} Comi outra coisa</button></div>
-      <p class="small muted" style="margin:14px 20px">Comer abaixo da faixa não dá XP. A meta é acertar o alvo, não comer menos.</p>`,
+      ${sec('Refeições do plano', `<span class="small muted num">${fmtInt(planK)} kcal · ${planP} g</span>`)}
+      <div class="card tight">${meals.length ? meals.map((m) => `<div class="quest ${S.meals[m.id] ? 'done' : ''}"><button class="qcheck" aria-pressed="${!!S.meals[m.id]}" data-act="meal" data-arg="${esc(m.id)}" aria-label="${esc(m.nome)}: ${S.meals[m.id] ? 'comida' : 'marcar como comida'}">${I('check', 28)}</button><div class="grow"><div class="k num">${esc(m.hora)}</div><div class="t">${esc(m.nome)}</div><div class="d">${txtBr(m.itens)} · <span class="num">${fmtInt(m.kcal)} kcal · ${fmtInt(m.p)} g</span></div></div></div>`).join('') : '<div class="empty"><p>Nenhuma refeição para este tipo de dia.</p></div>'}</div>
+      ${pr && p < pr.conta && meals.length ? `<div class="card soft"><div class="row-flex">${I('sparkle', 20)}<b>Para a missão contar</b></div><p class="small" style="margin-top:4px">Faltam ${pr.conta - p} g. ${p + resto >= pr.conta ? `As refeições que faltam no plano somam ${resto} g: seguindo o plano, a missão conta.` : `Mesmo seguindo o plano, faltam ${pr.conta - p - resto} g para chegar a ${pr.conta} g.`}</p></div>` : ''}
+      <p class="small muted" style="margin:14px 20px">${agua ? `Água: meta de ${n1(agua)} L por dia. ` : ''}Comer abaixo da faixa não dá XP: a meta é acertar o alvo, não comer menos.${ver ? ` ${esc(ver)}.` : ''}</p>`,
   };
 }
 
+const refTxt = (e) => { const u = e.u ? ` ${esc(e.u)}` : ''; return e.lo != null && e.hi != null ? `Referência: ${fmtNum(e.lo)} a ${fmtNum(e.hi)}${u}` : e.hi != null ? `Referência: até ${fmtNum(e.hi)}${u}` : e.lo != null ? `Referência: a partir de ${fmtNum(e.lo)}${u}` : ''; };
+function refBar(e) {
+  const v = e.v, lo = e.lo ?? null, hi = e.hi ?? null; if (!Number.isFinite(v) || (lo == null && hi == null)) return '';
+  const a = Math.min(lo ?? v, hi ?? v, v), b = Math.max(lo ?? v, hi ?? v, v), pad = (b - a || Math.abs(b) || 1) * 0.2, L = a - pad, sp = b + pad - L;
+  const okL = lo != null ? ((lo - L) / sp) * 100 : 0, okR = hi != null ? ((hi - L) / sp) * 100 : 100;
+  return `<div class="ref" aria-hidden="true"><span class="ok" style="left:${pct(okL)};right:${pct(100 - okR)}"></span><span class="mk" style="left:${pct(((v - L) / sp) * 100)}"></span></div>`;
+}
+const exVal = (e) => (Number.isFinite(e.v) ? `${fmtNum(e.v)}${e.u ? ' ' + esc(e.u) : ''}` : esc(e.txt || '—'));
+const exFlag = (e) => (!Number.isFinite(e.v) || (e.lo == null && e.hi == null) ? '' : e.hi != null && e.v > e.hi ? '<span class="flag hi">acima</span>' : e.lo != null && e.v < e.lo ? '<span class="flag lo">abaixo</span>' : '<span class="flag">na faixa</span>');
+const CAMPOS = [['peso', 'Peso', 'kg'], ['gordura', 'Gordura', '%'], ['cintura', 'Cintura', 'cm'], ['abdomen', 'Abdômen', 'cm'], ['peito', 'Peito', 'cm'], ['ombros', 'Ombros', 'cm'], ['pescoco', 'Pescoço', 'cm'], ['quadril', 'Quadril', 'cm'], ['bicepsD', 'Bíceps dir.', 'cm'], ['bicepsE', 'Bíceps esq.', 'cm'], ['antebracoD', 'Antebraço dir.', 'cm'], ['antebracoE', 'Antebraço esq.', 'cm'], ['coxaD', 'Coxa dir.', 'cm'], ['coxaE', 'Coxa esq.', 'cm'], ['panturrilhaD', 'Panturrilha dir.', 'cm'], ['panturrilhaE', 'Panturrilha esq.', 'cm']];
 function Exames() {
-  const it = D.EXAMS.itens;
+  const H = D.SAUDE;
+  if (!H) return { title: 'Exames e medidas', html: `${backbar('saude', 'Saúde')}${hdr('Exames e medidas')}${semSaude()}` };
+  const med = H.medidas, M = med[med.length - 1], metas = D.metas();
+  let medH;
+  if (!M) medH = `<div class="card"><p class="small muted" style="margin:0">Nenhuma medida no Supabase.</p></div>`;
+  else {
+    const ant = (k) => { for (let i = med.length - 2; i >= 0; i--) if (fin(med[i][k]) != null) return med[i]; return null; };
+    const kp = CAMPOS.filter(([k]) => fin(M[k]) != null).map(([k, n, u]) => { const a = ant(k), m = fin(Number(metas[k])); return `<div class="kpi"><span>${n}</span><b>${n1(M[k])} ${u}</b><small>${a ? `${M[k] <= a[k] ? '−' : '+'}${n1(Math.abs(M[k] - a[k]))} desde ${dQuando(dayAt(a.d))}` : 'primeira medida'}${m != null ? ` · meta ${n1(m)}` : ''}</small></div>`; }).join('');
+    const rc = fin(M.cintura) != null && H.altura ? M.cintura / H.altura : null;
+    medH = `<div class="card"><div class="small muted" style="margin-bottom:8px">${dAno(dayAt(M.d))}${M.fonte ? ` · ${esc(M.fonte)}` : ''}</div><div class="grid2" style="margin:0">${kp}</div>
+      ${rc != null ? `<p class="small muted" style="margin-top:10px">Cintura ÷ altura: <b class="num" style="color:var(--ink)">${rc.toFixed(2).replace('.', ',')}</b> (alvo abaixo de 0,50).</p>` : ''}${M.notas ? `<p class="small muted" style="margin-top:6px">${txtBr(M.notas)}</p>` : ''}</div>`;
+  }
+  const ult = examesUltimos(), ultD = H.exames.length ? H.exames[H.exames.length - 1].d : null, cats = {};
+  ult.forEach((e) => { const c = e.cat || 'Outros'; (cats[c] = cats[c] || []).push(e); });
+  const row = (e) => `<button class="row" style="display:block;padding:12px 0;width:100%;text-align:left" data-act="exame" data-arg="${esc(e.n)}"><div class="row-flex"><span class="ttl grow" style="white-space:normal">${esc(e.n)}</span><b class="num">${exVal(e)}</b>${exFlag(e)}</div>${refBar(e)}<div class="xs muted" style="margin-top:4px">${[refTxt(e), e.d !== ultD ? `de ${dAno(dayAt(e.d))}` : ''].filter(Boolean).join(' · ')}</div></button>`;
+  const exH = ult.length ? Object.keys(cats).sort((a, b) => a.localeCompare(b, 'pt-BR')).map((c) => `${sec(esc(c))}<div class="card tight">${cats[c].sort((a, b) => a.n.localeCompare(b.n, 'pt-BR')).map(row).join('')}</div>`).join('') : `<div class="card"><p class="small muted" style="margin:0">Nenhum exame no Supabase.</p></div>`;
+  const resumo = (m) => [fin(m.peso) != null ? `${n1(m.peso)} kg` : '', fin(m.cintura) != null ? `cintura ${n1(m.cintura)} cm` : '', fin(m.gordura) != null ? `gordura ${n1(m.gordura)}%` : ''].filter(Boolean).join(' · ') || esc(m.fonte || 'medida');
   return {
     title: 'Exames e medidas',
-    html: `${backbar('saude', 'Saúde')}${hdr('Exames e medidas', 'Mostra tendências e a referência do laboratório. Não é diagnóstico.')}
-      ${sec('Medidas', '<button class="link" data-act="toastInfo" data-arg="Missão mensal de medidas: +20 XP. No app real abre um formulário rápido.">Medir agora</button>')}
-      <div class="card"><div class="grid2" style="margin:0">${D.MEASURES.map((m) => `<div class="kpi"><span>${m.n}</span><b>${n1(m.v)} ${m.u}</b><small>${m.v <= m.prev ? '−' : '+'}${n1(Math.abs(m.v - m.prev))} no mês</small></div>`).join('')}</div>
-        <p class="small muted" style="margin-top:10px">Cintura ÷ altura: <b class="num" style="color:var(--ink)">${(D.MEASURES[0].v / D.PROFILE.alturaCm).toFixed(2).replace('.', ',')}</b> (alvo abaixo de 0,50).</p></div>
-      ${sec(`Painel de ${D.EXAMS.quando}`, '<button class="link" data-act="toastInfo" data-arg="Abre o PDF original na pasta Painel/Saude/Exames do Google Drive.">PDF</button>')}
-      <div class="card tight">${it.map((e) => {
-        const lo = Math.min(e.lo, e.v) * 0.8, hi = Math.max(e.hi, e.v) * 1.15, sp = hi - lo;
-        const fl = e.v > e.hi ? '<span class="flag hi">acima</span>' : e.v < e.lo ? '<span class="flag lo">abaixo</span>' : '<span class="flag">na faixa</span>';
-        return `<div class="row" style="display:block;padding:12px 0"><div class="row-flex"><span class="ttl grow">${e.n}</span><b class="num">${n1(e.v).replace(',0', '')} ${e.u}</b>${fl}</div>
-          <div class="ref" aria-hidden="true"><span class="ok" style="left:${pct(((e.lo - lo) / sp) * 100)};right:${pct(100 - ((e.hi - lo) / sp) * 100)}"></span><span class="mk" style="left:${pct(((e.v - lo) / sp) * 100)}"></span></div>
-          <div class="xs muted" style="margin-top:4px">Referência do laboratório: ${e.lo ? `${n1(e.lo).replace(',0', '')} a ` : 'até '}${n1(e.hi).replace(',0', '')} ${e.u}</div></div>`;
-      }).join('')}</div>
-      ${sec('Histórico')}
-      <div class="card tight">${D.EXAMS.historico.map((h) => `<button class="row" data-act="toastInfo" data-arg="Painel de ${h}: comparação lado a lado com o atual."><span class="badge-ic">${I('file', 20)}</span><span class="ttl grow">Painel de ${h}</span>${I('chevR', 20, 'class="ic muted"')}</button>`).join('')}</div>
-      <p class="small muted" style="margin:14px 20px">Exame novo: envie o PDF para a pasta do Drive. Você digita os 12 marcadores principais em 1 minuto (+30 XP). A leitura automática do PDF vem depois.</p>`,
+    html: `${backbar('saude', 'Saúde')}${hdr('Exames e medidas', 'Valores e a referência do laboratório. Não é diagnóstico.')}
+      ${sec('Última medida')}${medH}
+      ${sec('Exames', ultD ? `<span class="small muted">último em ${dAno(dayAt(ultD))}</span>` : '')}
+      <p class="small muted" style="margin:0 20px">O resultado mais recente de cada marcador. Toque para ver o histórico.</p>
+      ${exH}
+      ${med.length > 1 ? `${sec('Medidas anteriores', `<span class="small muted num">${med.length} no total</span>`)}<div class="card tight">${med.slice(0, -1).slice(-12).reverse().map((m) => `<div class="row"><span class="badge-ic">${I('scale', 20)}</span><div class="grow"><div class="ttl">${dAno(dayAt(m.d))}</div><div class="meta">${resumo(m)}</div></div></div>`).join('')}</div>` : ''}
+      <p class="small muted" style="margin:14px 20px">${esc(H.fonte || '')}${H.fonte ? '. ' : ''}Medidas e exames novos ainda não entram pelo app: os do Supabase foram copiados uma vez.</p>`,
   };
 }
 
@@ -674,7 +940,7 @@ const realLine = () => (!D.REAL ? '' : fromSB()
   ? `<p class="small muted" style="margin:0 20px 6px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} Open Finance de ${fmtSync()}, com cópia neste aparelho. <a href="#/dinheiro/sincronizar">${syncBusy ? 'Atualizando…' : 'Ver conexão'}</a></p>`
   : `<p class="small muted" style="margin:0 20px 6px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} Seus dados de ${dShort(realDate())}, só neste aparelho. <a href="#/dinheiro/importar">Atualizar</a></p>`);
 function plMes(pl) {
-  if (!D.REAL) return '+1,2% no mês';
+  if (!D.REAL) return '';
   const ser = D.netWorthSeries(); if (!ser.length) return '';
   const base = ser[ser.length - 1], dv = pl - base.v;
   return `${dv >= 0 ? '+' : '−'}${brlK(Math.abs(dv))} desde ${mon(base.d)}`;
@@ -687,8 +953,8 @@ function loadRealFile(f) {
       D.useReal(R); // valida antes de gravar
       localStorage.setItem(REALK, JSON.stringify(R));
       try { sessionStorage.setItem('painel-real-ok', '1'); } catch { /* sem aviso */ }
-      // Os marcadores da demonstração (contas pagas, gastos à mão) não valem para os dados reais.
-      S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.expenses = []; S.card = 0; S.fat = 'aberta'; save();
+      // Contas marcadas como pagas em outros dados não valem para este arquivo (os gastos anotados à mão ficam).
+      S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.card = 0; save();
       location.reload();
     } catch (e) {
       toast(`Não consegui ler ${esc(f.name)}. Use o painel-dados.json gerado no seu computador.`, 'warn', 6000);
@@ -704,46 +970,53 @@ function pendentesSheet() {
     ${(D.REAL.aClassificar || []).length ? `<h3 style="margin:16px 0 6px">Pix de terceiros para classificar</h3><div class="card tight" style="margin:0">${D.REAL.aClassificar.slice(0, 8).map((x) => `<div class="row"><div class="grow"><div class="ttl ellip">${esc(x.nome)}</div><div class="meta">${x.n} lançamento${x.n > 1 ? 's' : ''}</div></div><div class="amt num small">${x.entradas ? `+${brl0(x.entradas)}` : ''}${x.entradas && x.saidas ? '<br>' : ''}${x.saidas ? `−${brl0(x.saidas)}` : ''}</div></div>`).join('')}</div>` : ''}`);
 }
 
-function cats() {
-  const add = {}; S.expenses.forEach((x) => { add[x.cat] = (add[x.cat] || 0) + x.v; });
-  return D.CATS.map((c) => ({ ...c, v: c.v + (add[c.n] || 0) }));
-}
+// Gastos do último mês fechado, como vieram (os anotados à mão são deste mês e aparecem em "Registrados à mão").
+const cats = () => D.CATS;
 function Dinheiro() {
-  const M = money();
+  const exp = S.expenses.length ? `${sec('Registrados à mão', '<span class="small muted">ligados ao extrato quando ele chegar</span>')}<div class="card tight">${S.expenses.slice().reverse().map(expRow).join('')}</div>` : '';
+  if (!D.REAL) {
+    return { title: 'Dinheiro', html: `${hdr('Dinheiro', `${cap(monLong(diaNow()))} · pessoa física`)}${netbar()}${semDinheiro()}${exp}
+      ${sec('Mais')}<a class="card cardlink" href="#/dinheiro/importar"><span class="badge-ic">${I('upload')}</span><div class="grow"><b>Open Finance e arquivo</b><div class="small muted">Login no Supabase ou o painel-dados.json do seu computador</div></div>${I('chevR', 24, 'class="ic chev"')}</a>` };
+  }
+  const M = money(), SV = D.SAVINGS;
   const up = bills().filter((b) => !b.pago && b.met !== 'Cartão' && D.diffDays(b.due, diaNow()) <= 7);
-  const C = cats(), rest = D.REAL ? D.CATS_REST : 0, tot = C.reduce((a, c) => a + c.v, 0) + rest, top = Math.max(1, ...C.map((c) => c.v));
+  const C = cats(), rest = D.CATS_REST, tot = C.reduce((a, c) => a + c.v, 0) + rest, top = Math.max(1, ...C.map((c) => c.v));
   const pl = plTotal();
+  const reserva = SV.reservaMeses != null
+    ? `<div class="row-flex">${I('shieldHalf', 22, 'class="ic" style="color:var(--a-pat)"')}<div class="grow"><b class="num">${n1(SV.reservaMeses)} de ${SV.reservaMeta} meses</b><div class="small muted">de gastos essenciais (${brl0(SV.essenciais)}/mês${SV.essLabel ? ` ${esc(SV.essLabel)}` : ''})</div></div></div><div style="margin-top:10px">${bar((SV.reservaMeses / SV.reservaMeta) * 100, 'var(--a-pat)', 'lg')}</div>
+        <p class="small muted" style="margin-top:8px">Escudo da Reserva: cada aporte reforça o escudo e sobe o atributo Patrimônio.${SV.reservaMeses < SV.reservaMeta ? ` Faltam ${brl0((SV.reservaMeta - SV.reservaMeses) * SV.essenciais)} para ${SV.reservaMeta} meses.` : ''}</p>`
+    : `<div class="row-flex">${I('shieldHalf', 22, 'class="ic" style="color:var(--a-pat)"')}<div class="grow"><b class="num">${brl0(SV.reserva)} guardados</b><div class="small muted">Sem o valor dos gastos essenciais na foto manual, os meses de reserva ficam sem número.</div></div></div>`;
   return {
     title: 'Dinheiro',
-    html: `${hdr('Dinheiro', `${cap(monLong(diaNow()))} · pessoa física`, `<a class="iconbtn" href="#/dinheiro/importar" aria-label="Importar extratos">${I('upload')}</a>`)}${netbar()}${realLine()}
+    html: `${hdr('Dinheiro', `${cap(monLong(diaNow()))} · pessoa física`, `<a class="iconbtn" href="#/dinheiro/importar" aria-label="Open Finance e arquivo">${I('upload')}</a>`)}${netbar()}${realLine()}
       <div class="card">
-        <button class="cardhead" data-act="safe"><span class="row-flex"><span class="muted small">${livreLabel(M)}${D.REAL ? '' : ', dia do pagamento'}</span>${I('info', 18, 'class="ic right muted"')}</span>
+        <button class="cardhead" data-act="safe"><span class="row-flex"><span class="muted small">${livreLabel(M)}</span>${I('info', 18, 'class="ic right muted"')}</span>
         ${livreBig(M)}<span class="sr">Ver a conta.</span></button>
-        <div class="kpis"><div class="kpi"><span>Em conta</span><b>${brlK(M.saldo)}</b></div>${fatKpi(M, D.REAL ? 'média de 3 meses' : `fecha ${rel(D.addDays(diaNow(), D.CARDS[0].fecha))}`)}<div class="kpi"><span>Patrimônio</span><b>${brlK(pl)}</b><small>${plMes(pl)}</small></div></div>
+        <div class="kpis"><div class="kpi"><span>Em conta</span><b>${brlK(M.saldo)}</b></div>${fatKpi(M, M.fb && !M.fb.pago && M.fb.due ? `vence ${dShort(M.fb.due)}` : '')}<div class="kpi"><span>Patrimônio</span><b>${brlK(pl)}</b><small>${plMes(pl)}</small></div></div>
       </div>
       ${sec('Próximos 7 dias', '<a href="#/dinheiro/contas">Calendário</a>')}
-      <div class="card tight">${up.length ? up.map((b) => `<button class="row" data-act="bill" data-arg="${b.id}"><span class="badge-ic">${I('receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${b.met}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><p>Nada vence nos próximos 7 dias.</p></div>`}</div>
+      <div class="card tight">${up.length ? up.map((b) => `<button class="row" data-act="bill" data-arg="${esc(b.id)}"><span class="badge-ic">${I('receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${esc(b.met)}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><p>Nada vence nos próximos 7 dias.</p></div>`}</div>
       ${sec('Reserva de emergência')}
-      <div class="card"><div class="row-flex">${I('shieldHalf', 22, 'class="ic" style="color:var(--a-pat)"')}<div class="grow"><b class="num">${n1(D.SAVINGS.reservaMeses)} de ${D.SAVINGS.reservaMeta} meses</b><div class="small muted">de gastos essenciais (${brl0(D.SAVINGS.essenciais)}/mês ${D.SAVINGS.essLabel || ': moradia, mercado, transporte e saúde'})</div></div></div><div style="margin-top:10px">${bar((D.SAVINGS.reservaMeses / D.SAVINGS.reservaMeta) * 100, 'var(--a-pat)', 'lg')}</div>
-        <p class="small muted" style="margin-top:8px">Escudo da Reserva: cada aporte reforça o escudo e sobe o atributo Patrimônio. Faltam ${brl0((D.SAVINGS.reservaMeta - D.SAVINGS.reservaMeses) * D.SAVINGS.essenciais)} para ${D.SAVINGS.reservaMeta} meses.</p></div>
-      ${sec(D.CATS_TITLE, D.SAVINGS.taxa == null ? '' : `<span class="small muted num">poupança ${D.SAVINGS.taxa}% · meta ${D.SAVINGS.meta}%</span>`)}
+      <div class="card">${reserva}</div>
+      ${sec(D.CATS_TITLE, SV.taxa == null ? '' : `<span class="small muted num">poupança ${esc(SV.taxa)}% · meta ${SV.meta}%</span>`)}
       <div class="card">${C.map((c) => `<div style="margin:10px 0"><div class="row-flex small"><span class="grow">${esc(c.n)}</span><b class="num">${brl0(c.v)}</b><span class="muted num" style="width:72px;text-align:right">${c.v > c.avg * 1.1 ? `${I('up', 14, 'style="display:inline;vertical-align:-2px"')} ${Math.round((c.v / c.avg - 1) * 100)}%` : 'na média'}</span></div>${bar((c.v / top) * 100, c.v > c.avg * 1.1 ? 'var(--xp-fill)' : 'var(--primary)')}</div>`).join('')}
         ${C.length ? '' : '<div class="empty"><p>Ainda sem gastos no Open Finance.</p></div>'}
-        <p class="small muted">Total ${brl0(tot)}${Math.abs(rest) >= 1 ? `, com ${rest > 0 ? '' : '−'}${brl0(Math.abs(rest))} de outras categorias e estornos` : ''}. ${D.REAL ? `Comparação com a média dos 6 meses anteriores. ${D.REAL.cartaoDetalhado ? 'As compras do cartão entram no mês em que a fatura vence.' : 'A fatura aparece numa linha só até as faturas do cartão chegarem.'}` : 'Comparação com a média de 30 dias dos últimos 6 meses.'}${S.expenses.length ? ` Inclui ${S.expenses.length} gasto${S.expenses.length > 1 ? 's' : ''} registrado${S.expenses.length > 1 ? 's' : ''} à mão.` : ''}</p></div>
-      ${S.expenses.length ? `${sec('Registrados à mão', '<span class="small muted">ligados ao extrato quando ele chegar</span>')}<div class="card tight">${S.expenses.slice().reverse().map(expRow).join('')}</div>` : ''}
-      ${D.REAL && (D.REAL.pendentes || []).length ? `${sec('Para completar o painel')}<button class="card cardlink" data-act="pendentes"><span class="badge-ic">${I('target')}</span><div class="grow"><b>Faltam ${D.REAL.pendentes.length} itens</b><div class="small muted">${esc(D.REAL.pendentes.slice(0, 2).map((x) => x.n).join(', '))} e outros</div></div>${I('chevR', 24, 'class="ic chev"')}</button>` : ''}
+        <p class="small muted">Total ${brl0(tot)}${Math.abs(rest) >= 1 ? `, com ${rest > 0 ? '' : '−'}${brl0(Math.abs(rest))} de outras categorias e estornos` : ''}. Comparação com a média dos 6 meses anteriores. ${D.REAL.cartaoDetalhado ? 'As compras do cartão entram no mês em que a fatura vence.' : 'A fatura aparece numa linha só até as faturas do cartão chegarem.'}</p></div>
+      ${exp}
+      ${(D.REAL.pendentes || []).length ? `${sec('Para completar o painel')}<button class="card cardlink" data-act="pendentes"><span class="badge-ic">${I('target')}</span><div class="grow"><b>Faltam ${D.REAL.pendentes.length} itens</b><div class="small muted">${esc(D.REAL.pendentes.slice(0, 2).map((x) => x.n).join(', '))} e outros</div></div>${I('chevR', 24, 'class="ic chev"')}</button>` : ''}
       ${sec('Mais')}
-      <a class="card cardlink" href="#/dinheiro/cartoes"><span class="badge-ic">${I('card')}</span><div class="grow"><b>Cartões e faturas</b><div class="small muted">Fatura aberta, parcelas e melhor dia de compra</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
+      <a class="card cardlink" href="#/dinheiro/cartoes"><span class="badge-ic">${I('card')}</span><div class="grow"><b>Cartões e faturas</b><div class="small muted">Limite, faturas pagas e lançamentos</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
       <a class="card cardlink" href="#/dinheiro/patrimonio"><span class="badge-ic">${I('pie')}</span><div class="grow"><b>Patrimônio</b><div class="small muted">Balanço, evolução e alocação</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
-      <a class="card cardlink" href="#/dinheiro/importar"><span class="badge-ic">${I('upload')}</span><div class="grow"><b>Open Finance e extratos</b><div class="small muted">${fromSB() ? `Open Finance de ${fmtSync()}` : D.REAL ? `Seus dados de ${dShort(new Date(D.REAL.geradoEm + 'T12:00'))}` : `Última importação ${S.importAt ? rel(dayAt(S.importAt)) : 'há 9 dias'}`}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`,
+      <a class="card cardlink" href="#/dinheiro/importar"><span class="badge-ic">${I('upload')}</span><div class="grow"><b>Open Finance e arquivo</b><div class="small muted">${fromSB() ? `Open Finance de ${fmtSync()}` : `Seus dados de ${dShort(realDate())}`}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`,
   };
 }
 // Depois de paga, a fatura do mês sai de cena: o card mostra a próxima, que recebe os gastos novos no cartão.
 const fatKpi = (M, sub = '') => (semCartao() ? '<div class="kpi"><span>Cartão</span><b>—</b><small>nenhum no Open Finance</small></div>' : M.fb.pago ? `<div class="kpi"><span>Próxima fatura</span><b>${brlK(M.proxima)}</b><small>a aberta já foi paga</small></div>` : `<div class="kpi"><span>Fatura aberta</span><b>${brlK(M.fatura)}</b>${sub ? `<small>${sub}</small>` : ''}</div>`);
-const expRow = (x) => `<div class="row"><span class="badge-ic">${I(x.met === 'Cartão Alfa' ? 'card' : 'wallet', 20)}</span><div class="grow"><div class="ttl">${esc(x.cat)}</div><div class="meta">${dShort(dayAt(x.d))} · ${esc(cardName(x.met))}${x.met === 'Cartão Alfa' ? (x.fat === 'proxima' ? ', próxima fatura' : ', fatura aberta') : ''}</div></div><div class="amt num">${brl(x.v)}</div><button class="iconbtn" data-act="delExpense" data-arg="${esc(x.id)}" aria-label="Apagar gasto de ${brl(x.v)} em ${esc(x.cat.toLowerCase())}">${I('x')}</button></div>`;
+const expRow = (x) => `<div class="row"><span class="badge-ic">${I(x.met === CARD ? 'card' : 'wallet', 20)}</span><div class="grow"><div class="ttl">${esc(x.cat)}</div><div class="meta">${dShort(dayAt(x.d))} · ${esc(cardName(x.met))}${x.met === CARD ? (x.fat === 'proxima' ? ', próxima fatura' : ', fatura aberta') : ''}</div></div><div class="amt num">${brl(x.v)}</div><button class="iconbtn" data-act="delExpense" data-arg="${esc(x.id)}" aria-label="Apagar gasto de ${brl(x.v)} em ${esc(x.cat.toLowerCase())}">${I('x')}</button></div>`;
 function plTotal() { const a = D.BALANCE.ativo.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0); const p = D.BALANCE.passivo.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0); return a - p; }
 
 function Contas() {
+  if (!D.REAL) return { title: 'Contas a pagar', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Contas a pagar')}${semDinheiro()}` };
   const all = bills(), now = diaNow();
   const m0 = new Date(now.getFullYear(), now.getMonth() + S.calOff, 1);
   const first = (m0.getDay() + 6) % 7, dim = new Date(m0.getFullYear(), m0.getMonth() + 1, 0).getDate();
@@ -765,14 +1038,14 @@ function Contas() {
   const F = [['todas', 'Todas'], ['avencer', 'A vencer'], ['agendado', 'Agendadas'], ['atrasado', 'Atrasadas'], ['pago', 'Pagas']];
   return {
     title: 'Contas a pagar',
-    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Contas a pagar', `${brl0(tot)} no mês · ${brl0(pago)} já pagos${noCartao ? ` · ${noCartao} no cartão, dentro da fatura` : ''}`, `<button class="iconbtn" data-act="toastInfo" data-arg="No app real: nova conta recorrente com valor, dia, forma de pagamento e lembretes 3 dias antes e no dia." aria-label="Nova conta">${I('plus')}</button>`)}
+    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Contas a pagar', `${brl0(tot)} no mês · ${brl0(pago)} já pagos${noCartao ? ` · ${noCartao} no cartão, dentro da fatura` : ''}`)}
       <div class="card"><div class="row-flex"><button class="iconbtn" data-act="calnav" data-arg="-1" aria-label="Mês anterior">${I('chevL')}</button><b class="grow" style="text-align:center">${cap(monLong(m0))}</b><button class="iconbtn" data-act="calnav" data-arg="1" aria-label="Próximo mês">${I('chevR')}</button></div>
         <div class="cal">${cells}</div>
         <div class="legend" style="margin-top:8px"><span><i class="dot-pago" style="width:8px;height:8px;border-radius:50%"></i>paga</span><span><i class="dot-agendado" style="width:8px;height:8px;border-radius:50%"></i>agendada</span><span><i class="dot-avencer" style="width:8px;height:8px;border-radius:50%"></i>a vencer</span><span><i class="dot-atrasado" style="width:8px;height:8px;border-radius:50%"></i>atrasada</span></div></div>
       <div class="hscroll" role="group" aria-label="Filtrar contas">${F.map(([k, l]) => `<button class="pick" aria-pressed="${S.billFilter === k}" data-act="billf" data-arg="${k}">${l}</button>`).join('')}</div>
       ${S.calSel ? `<div class="sec"><h2>${dShort(new Date(S.calSel + 'T12:00'))}</h2><button class="link" data-act="calsel" data-arg="${S.calSel}">Ver o mês todo</button></div>` : ''}
-      <div class="card tight">${list.length ? list.map((b) => `<button class="row" data-act="bill" data-arg="${b.id}"><span class="badge-ic">${I(b.cat === 'Cartão' ? 'card' : b.cat === 'Transporte' ? 'car' : b.cat === 'Investimento' ? 'trend' : 'receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${b.met === 'Cartão' ? `no ${esc(card0())}, entra na fatura` : b.met}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><span class="badge-ic">${I('receipt')}</span><p>Nenhuma conta com esse filtro.</p></div>`}</div>
-      <p class="small muted" style="margin:14px 20px">Lembretes 3 dias antes e no dia, dentro do resumo das 07:00. Pagar no prazo dá +15 XP e sobe o Foco. Fontes: contas recorrentes detectadas no extrato, DDA do banco e as que você cadastrar.</p>`,
+      <div class="card tight">${list.length ? list.map((b) => `<button class="row" data-act="bill" data-arg="${esc(b.id)}"><span class="badge-ic">${I(b.cat === 'Cartão' ? 'card' : b.cat === 'Transporte' ? 'car' : b.cat === 'Investimento' ? 'trend' : 'receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${b.met === 'Cartão' ? `no ${esc(card0())}, entra na fatura` : esc(b.met || '')}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><span class="badge-ic">${I('receipt')}</span><p>Nenhuma conta com esse filtro.</p></div>`}</div>
+      <p class="small muted" style="margin:14px 20px">Pagar até o vencimento dá +15 XP. ${fromSB() ? 'As contas vêm do Open Finance: as recorrentes que aparecem no extrato e a fatura do cartão.' : 'As contas vêm do arquivo do Painel.'}</p>`,
   };
 }
 
@@ -795,8 +1068,8 @@ function CartoesReal() {
     title: 'Cartões e faturas',
     html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Cartões e faturas', esc(N.cartoes || 'Limite e pagamentos pelos seus arquivos'))}${realLine()}
       <div class="seg" role="group" aria-label="Escolher cartão" style="margin:4px 16px 0">${D.CARDS.map((x, j) => `<button aria-pressed="${i === j}" data-act="card" data-arg="${j}">${esc(x.n.replace('Cartão ', ''))}</button>`).join('')}</div>
-      <div class="card"><div class="row-flex"><span class="small muted grow">Limite usado${refU ? ` em ${refU}` : ''}</span><b class="num">${lim ? `${brl0(usado)} de ${brl0(lim)}` : brl0(usado)}</b></div><div style="margin-top:8px">${bar(pc, pc > 50 ? 'var(--xp-fill)' : 'var(--primary)', 'lg')}</div>
-        <p class="small muted" style="margin-top:8px">${lim ? `Disponível ${brl0(lim - usado)}.` : 'O banco não informa o limite.'}${k.faturaAtual && k.faturaAtual.v != null ? ` Fatura que vence em ${dShort(new Date(k.faturaAtual.vence + 'T12:00'))}: ${brl(k.faturaAtual.v)}.` : vdate ? ` Vence todo dia ${k.vence}; a próxima em ${dShort(vdate)} (${rel(vdate)}).` : ''}</p></div>
+      <div class="card"><div class="row-flex"><span class="small muted grow">Limite usado${refU ? ` em ${esc(refU)}` : ''}</span><b class="num">${lim ? `${brl0(usado)} de ${brl0(lim)}` : brl0(usado)}</b></div><div style="margin-top:8px">${bar(pc, pc > 50 ? 'var(--xp-fill)' : 'var(--primary)', 'lg')}</div>
+        <p class="small muted" style="margin-top:8px">${lim ? `Disponível ${brl0(lim - usado)}.` : 'O banco não informa o limite.'}${k.faturaAtual && k.faturaAtual.v != null ? ` Fatura que vence em ${dShort(new Date(k.faturaAtual.vence + 'T12:00'))}: ${brl(k.faturaAtual.v)}.` : vdate ? ` Vence todo dia ${esc(k.vence)}; a próxima em ${dShort(vdate)} (${rel(vdate)}).` : ''}</p></div>
       ${P.length ? `${sec(P.some((p) => p.vence && !p.pagoEm) ? 'Faturas anteriores' : 'Faturas pagas')}<div class="card"><div class="small muted">${lastPaid(P[P.length - 1])}</div><div class="big">${brl(P[P.length - 1].v)}</div>
         <div class="kpis"><div class="kpi"><span>Média 3 meses</span><b>${brlK(med)}</b></div><div class="kpi"><span>No período</span><b>${brlK(tot)}</b></div><div class="kpi"><span>Maior</span><b>${brlK(Math.max(...P.map((p) => p.v)))}</b></div></div>
         <div style="margin-top:12px">${barChart(P.slice(-10).map((p) => ({ v: p.v, l: mon(pd(p)), c: 'var(--a-pat)' })), { label: `Faturas por mês, de ${brl0(P[Math.max(0, P.length - 10)].v)} a ${brl0(P[P.length - 1].v)}`, values: (v) => (v ? (v / 1000).toFixed(1).replace('.', ',') + 'k' : '') })}</div></div>` : ''}
@@ -806,54 +1079,15 @@ function CartoesReal() {
 }
 
 function Cartoes() {
-  if (D.REAL) return CartoesReal();
-  const c = D.CARDS[S.card], now = diaNow();
-  const fecha = D.addDays(now, c.fecha), vence = D.addDays(now, c.vence);
-  const extra = S.card === 0 ? cardExtra() : 0, aberta = { v: c.faturas.aberta.v + extra, st: S.card === 0 && S.paid.fatura ? 'Paga' : null };
-  const proxima = { v: c.faturas.proxima.v + (S.card === 0 ? cardNext() : 0) };
-  const nx = S.card === 0 ? cardNext() : 0;
-  const comprometido = (aberta.st ? 0 : aberta.v) + nx + c.futuro.reduce((a, b) => a + b, 0);
-  const f = S.fat;
-  const mine = S.card === 0 && f !== 'fechada' ? S.expenses.filter((x) => x.met === 'Cartão Alfa' && (x.fat || 'aberta') === f).map((x) => ({ id: x.id, d: dayAt(x.d), n: `${x.cat} · registrado no Painel`, c: x.cat, v: x.v })).reverse() : [];
-  const fv = { fechada: c.faturas.fechada, aberta, proxima }[f];
-  // Cada lista soma o valor da fatura mostrada: o que não está detalhado vira uma linha de “demais lançamentos”.
-  const base = S.card === 0 ? (f === 'aberta' ? D.cardTx(diaNow()) : f === 'proxima' ? nextTx(c) : []) : f === 'aberta' ? BETA_TX.map((t) => ({ ...t, d: D.addDays(diaNow(), t.d) })) : [];
-  const rows = [...mine, ...base], rest = Math.round((fv.v - rows.reduce((a, t) => a + t.v, 0)) * 100) / 100;
-  const tx = rest > 0.004 ? [...rows, { more: true, n: rows.length ? 'Demais lançamentos desta fatura' : 'Todos os lançamentos desta fatura', c: 'Compras', v: rest }] : rows;
-  const nextDue = new Date(vence.getFullYear(), vence.getMonth() + 1, vence.getDate());
-  const months = Array.from({ length: 6 }, (_, i) => mon(new Date(nextDue.getFullYear(), nextDue.getMonth() + i, 1)));
-  return {
-    title: 'Cartões e faturas',
-    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Cartões e faturas')}
-      <div class="seg" role="group" aria-label="Escolher cartão" style="margin:4px 16px 0">${D.CARDS.map((k, i) => `<button aria-pressed="${S.card === i}" data-act="card" data-arg="${i}">${k.n} ••${k.fim}</button>`).join('')}</div>
-      <div class="card"><div class="row-flex"><span class="small muted grow">Limite usado</span><b class="num">${brl0(comprometido)} de ${brl0(c.limite)}</b></div><div style="margin-top:8px">${bar((comprometido / c.limite) * 100, comprometido / c.limite > 0.5 ? 'var(--xp-fill)' : 'var(--primary)', 'lg')}</div>
-        <p class="small muted" style="margin-top:8px">Disponível ${brl0(c.limite - comprometido)}. Acima de 50% no fechamento pesa no atributo Patrimônio.</p></div>
-      <div class="seg" role="group" aria-label="Escolher fatura" style="margin:10px 16px 0">${[['fechada', 'Fechada'], ['aberta', 'Aberta'], ['proxima', 'Próxima']].map(([k, l]) => `<button aria-pressed="${f === k}" data-act="fat" data-arg="${k}">${l}</button>`).join('')}</div>
-      <div class="card">
-        <div class="row-flex"><div><div class="small muted">${f === 'fechada' ? 'Fatura anterior' : f === 'aberta' ? (aberta.st ? `Paga antes do fechamento · vencia ${dShort(vence)}` : `Fecha ${rel(fecha)} (${dShort(fecha)}) · vence ${dShort(vence)}`) : `Vence ${dShort(nextDue)} · parcelas já lançadas${nx ? ' e compras novas' : ''}`}</div><div class="big">${brl(fv.v)}</div></div>${fv.st ? `<span class="chip st-pago right">${I('check', 16)} ${fv.st}</span>` : ''}</div>
-        ${f === 'aberta' ? `<div class="kpis"><div class="kpi"><span>Média 3 meses</span><b>${brl0(3010)}</b></div><div class="kpi"><span>Projeção</span><b>${brl0(3180)}</b></div><div class="kpi"><span>Melhor dia</span><b>${dShort(D.addDays(fecha, 1))}</b></div></div>
-        <p class="small muted" style="margin-top:10px">${aberta.st ? 'Compras novas no cartão já entram na próxima fatura.' : `Compras a partir de ${dShort(D.addDays(fecha, 1))} caem na próxima fatura, com até 40 dias para pagar.`}</p>` : ''}
-      </div>
-      ${sec('Comprometido nos próximos meses')}
-      <div class="card">${c.futuro.some((v) => v) ? barChart(c.futuro.map((v, i) => ({ v: v + (i === 0 ? nx : 0), l: months[i], c: 'var(--a-pat)' })), { label: 'Parcelas já assumidas nos próximos 6 meses', values: (v) => (v ? Math.round(v / 10) * 10 : '') }) + `<p class="small muted" style="margin-top:6px">Parcelas já assumidas. Elas reduzem o “livre para gastar” dos próximos meses.</p>` : `<div class="empty"><p>Nenhuma parcela futura neste cartão.</p></div>`}</div>
-      ${sec(f === 'aberta' ? 'Lançamentos da fatura aberta' : 'Lançamentos', '<button class="link" data-act="toastInfo" data-arg="Busca por loja, categoria ou valor, e filtro só de parcelados.">Buscar</button>')}
-      <div class="card tight">${tx.map((t) => `<div class="row"><span class="badge-ic">${I(t.c === 'Mercado' ? 'utensils' : t.c === 'Transporte' ? 'car' : t.c === 'Saúde' ? 'heart' : t.c === 'Compras' ? 'tag' : t.c === 'Assinaturas' ? 'refresh' : 'utensils', 20)}</span><div class="grow"><div class="ttl ellip">${esc(t.n)}</div><div class="meta">${t.more ? 'vários dias e categorias' : `${dShort(t.d)} · ${t.c}${t.parc ? ` · <b>parcela ${t.parc}</b>` : ''}`}</div></div><div class="amt num">${brl(t.v)}</div>${t.id ? `<button class="iconbtn" data-act="delExpense" data-arg="${esc(t.id)}" aria-label="Apagar gasto de ${brl(t.v)}">${I('x')}</button>` : ''}</div>`).join('') || '<div class="empty"><p>Nenhum lançamento nesta fatura ainda.</p></div>'}</div>`,
-  };
-}
-
-// Próxima fatura: as parcelas que caem nela (próxima parcela de cada compra) e o resto agrupado, somando o total.
-const BETA_TX = [{ d: -3, n: 'Posto Rodovia', c: 'Transporte', v: 180.00 }, { d: -6, n: 'Farmácia', c: 'Saúde', v: 56.80 }, { d: -9, n: 'Livraria', c: 'Compras', v: 49.90 }];
-function nextTx(c) {
-  const v0 = D.addDays(diaNow(), c.vence), due = new Date(v0.getFullYear(), v0.getMonth() + 1, v0.getDate());
-  const parc = D.cardTx(diaNow()).filter((t) => t.parc).map((t) => { const [n, m] = t.parc.split('/').map(Number); return n < m ? { d: due, n: t.n, c: t.c, v: t.v, parc: `${n + 1}/${m}` } : null; }).filter(Boolean);
-  const rest = Math.round((c.faturas.proxima.v - parc.reduce((a, t) => a + t.v, 0)) * 100) / 100;
-  return rest > 0 ? [...parc, { d: due, n: 'Outras parcelas e assinaturas', c: 'Assinaturas', v: rest }] : parc;
+  if (!D.REAL) return { title: 'Cartões e faturas', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Cartões e faturas')}${semDinheiro()}` };
+  return CartoesReal();
 }
 function Patrimonio() {
+  if (!D.REAL) return { title: 'Patrimônio', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Patrimônio')}${semDinheiro()}` };
   const A = D.BALANCE.ativo, P = D.BALANCE.passivo;
   const ta = A.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0), tp = P.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0), pl = ta - tp;
   const ser = D.netWorthSeries();
-  if (D.REAL) ser.push({ d: realDate(), v: pl }); else { const shift = pl - ser[ser.length - 1].v; ser.forEach((x) => (x.v += shift)); }
+  ser.push({ d: realDate(), v: pl });
   const L = ser.length - 1, hasSer = L >= 1, sg = (v) => `${v >= 0 ? '+' : '−'}${brl0(Math.abs(v))}`, N = (D.REAL && D.REAL.notas) || {};
   const colors = ['var(--a-foc)', 'var(--a-pat)', 'var(--a-vig)'];
   const gsum = A.map((g) => g.itens.reduce((s, i) => s + i[1], 0));
@@ -862,59 +1096,32 @@ function Patrimonio() {
   const table = (side, label, tot) => `<table class="bp"><caption class="sr">${label}</caption>${side.map((g) => `<tr><th colspan="2">${g.g}</th></tr>${g.itens.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${brl0(v)}</td></tr>`).join('')}`).join('')}<tr class="tot"><td>Total ${label.toLowerCase()}</td><td>${brl0(tot)}</td></tr></table>`;
   return {
     title: 'Patrimônio',
-    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Patrimônio', fromSB() ? `Open Finance de ${dShort(realDate())}, mais a foto manual` : D.REAL ? `Foto de ${dShort(realDate())}, com os seus arquivos` : 'Atualizado no dia 1º de cada mês')}${realLine()}
-      <div class="card"><div class="small muted">Patrimônio líquido</div><div class="big">${brl0(pl)}</div><div class="small muted">${D.REAL ? (hasSer ? `${sg(ser[L].v - ser[L - 1].v)} desde o fim de ${mon(ser[L - 1].d)}${L >= 2 ? ` · ${sg(ser[L].v - ser[0].v)} desde o fim de ${mon(ser[0].d)}` : ''}` : 'Ainda sem a série mensal: a evolução aparece depois da primeira foto manual.') : `+${brl0(ser[11].v - ser[10].v)} no mês · +${brl0(ser[11].v - ser[0].v)} em 12 meses`}</div>
-        ${!hasSer ? '' : lineChart(ser.map((x) => x.v), { area: true, label: `Patrimônio líquido ${D.REAL ? `desde o fim de ${mon(ser[0].d)}` : 'nos últimos 12 meses'}, de ${brl0(ser[0].v)} para ${brl0(pl)}`, fmt: (v) => Math.round(v / 1000) + 'k', labels: [[0, mon(ser[0].d)], ...(L >= 2 ? [[Math.round(L / 2), mon(ser[Math.round(L / 2)].d)]] : []), [L, D.REAL ? 'hoje' : mon(ser[L].d)]] })}
+    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Patrimônio', fromSB() ? `Open Finance de ${dShort(realDate())}, mais a foto manual` : `Foto de ${dShort(realDate())}, com os seus arquivos`)}${realLine()}
+      <div class="card"><div class="small muted">Patrimônio líquido</div><div class="big">${brl0(pl)}</div><div class="small muted">${hasSer ? `${sg(ser[L].v - ser[L - 1].v)} desde o fim de ${mon(ser[L - 1].d)}${L >= 2 ? ` · ${sg(ser[L].v - ser[0].v)} desde o fim de ${mon(ser[0].d)}` : ''}` : 'Ainda sem a série mensal: a evolução aparece depois da primeira foto manual.'}</div>
+        ${!hasSer ? '' : lineChart(ser.map((x) => x.v), { area: true, label: `Patrimônio líquido desde o fim de ${mon(ser[0].d)}, de ${brl0(ser[0].v)} para ${brl0(pl)}`, fmt: (v) => Math.round(v / 1000) + 'k', labels: [[0, mon(ser[0].d)], ...(L >= 2 ? [[Math.round(L / 2), mon(ser[Math.round(L / 2)].d)]] : []), [L, 'hoje']] })}
         ${N.serie ? `<p class="xs muted" style="margin-top:8px">${esc(N.serie)}</p>` : ''}</div>
       <div class="seg" role="group" aria-label="Formato" style="margin:6px 16px 0"><button aria-pressed="${S.bp === 'resumo'}" data-act="bp" data-arg="resumo">Resumo</button><button aria-pressed="${S.bp === 'balanco'}" data-act="bp" data-arg="balanco">Balanço patrimonial</button></div>
       ${S.bp === 'resumo' ? `<div class="card"><b>Onde está o ativo</b><div class="stack" aria-hidden="true">${gsum.map((v, i) => `<i style="--c:${colors[i]};width:${share(i).toFixed(1)}%"></i>`).join('')}</div>
           ${A.map((g, i) => `<div class="row-flex small" style="margin-top:10px"><span class="k" style="width:10px;height:10px;border-radius:3px;background:${colors[i]}"></span><span class="grow">${g.g}</span><b class="num">${brl0(gsum[i])}</b><span class="muted num" style="width:44px;text-align:right">${gsum[i] < 0 ? '—' : `${Math.round(share(i))}%`}</span></div>`).join('')}</div>
         <div class="grid2"><div class="card"><div class="small muted">Ativo</div><div class="mid">${brlK(ta)}</div></div><div class="card"><div class="small muted">Passivo</div><div class="mid">${brlK(tp)}</div></div></div>
-        ${lvl(S.xp).L >= 10 ? `<div class="card soft"><div class="row-flex">${I('trend', 20)}<b>Projeção de independência</b></div><p class="small" style="margin-top:4px">${D.SAVINGS.taxa == null ? 'Precisa da sua renda mensal para calcular a taxa de poupança.' : `Com poupança de ${D.SAVINGS.taxa}% e retorno real de 4% a.a., o patrimônio cobre seus gastos em cerca de 21 anos.`}</p></div>` : `<div class="card soft"><div class="row-flex">${I('lock', 20)}<b>Projeção de independência</b><span class="chip right">nível 10</span></div><p class="small" style="margin-top:4px">Em quantos anos o patrimônio cobre seus gastos, com a sua taxa de poupança. Libera no nível 10.</p></div>`}`
+        ${D.SAVINGS && D.SAVINGS.taxa != null ? `<div class="card soft"><div class="row-flex">${I('trend', 20)}<b class="grow">Taxa de poupança</b><b class="num">${esc(D.SAVINGS.taxa)}%</b></div></div>` : ''}`
         : `<div class="card">${table(A, 'Ativo', ta)}</div><div class="card">${table(P, 'Passivo', tp)}<table class="bp"><tr class="tot"><td>Patrimônio líquido</td><td>${brl0(pl)}</td></tr></table></div>`}
-      ${D.REAL ? `<p class="small muted" style="margin:14px 20px">${esc(N.balanco || '')} ${(D.REAL.participacoes || []).length ? 'Empresas só pela sua participação; as contas delas ficam fora.' : 'Só pessoa física: as empresas ficam fora.'}</p>${(D.REAL.pendentes || []).length ? `<div style="margin:0 16px"><button class="btn line block" data-act="pendentes">Ver o que falta (${D.REAL.pendentes.length})</button></div>` : ''}` : `<p class="small muted" style="margin:14px 20px">Veículo pela tabela FIPE, investimentos pela última posição importada, FGTS pelo extrato. Só pessoa física: as empresas ficam fora.</p>`}`,
+      ${D.REAL ? `<p class="small muted" style="margin:14px 20px">${esc(N.balanco || '')} ${(D.REAL.participacoes || []).length ? 'Empresas só pela sua participação; as contas delas ficam fora.' : 'Só pessoa física: as empresas ficam fora.'}</p>${(D.REAL.pendentes || []).length ? `<div style="margin:0 16px"><button class="btn line block" data-act="pendentes">Ver o que falta (${D.REAL.pendentes.length})</button></div>` : ''}` : ''}`,
   };
 }
 
 function Importar() {
-  const st = S.importStep;
-  const steps = ['Arquivo', 'Conferir', 'Conciliar', 'Pronto'];
-  const line = `<h2 class="sr" id="imp-step" tabindex="-1">Etapa ${st + 1} de 4: ${steps[st]}</h2><div class="stepline" aria-hidden="true">${steps.map((s, i) => `<span class="${i <= st ? 'on' : ''}">${s}</span>`).join('')}</div>`;
-  let body = '';
-  if (st === 0) {
-    const sbSub = SB.session() ? (fromSB() ? `Bancos e cartões de ${fmtSync()}. Não precisa mais do arquivo.` : syncBusy ? 'Buscando os dados…' : syncErr ? sbMsg(syncErr) : 'Ainda sem dados neste aparelho. Toque para buscar.') : 'Bancos e cartões chegam sozinhos, sem arquivo. Login com código no e-mail.';
-    const ofCard = `${sec('Open Finance')}<a class="card cardlink" href="#/dinheiro/sincronizar"><span class="badge-ic">${I('link')}</span><div class="grow"><b>${SB.session() ? (fromSB() ? 'Conectado pelo Supabase' : 'Entrou no Supabase') : 'Entrar para sincronizar'}</b><div class="small muted">${sbSub}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`;
-    // O arquivo continua disponível até os dados do Open Finance chegarem de fato.
-    const realCard = fromSB() ? `${ofCard}${sec('Extrato ou fatura avulsa')}` : `${ofCard}${sec('Arquivo do computador')}<div class="card"><div class="row-flex"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><b>${D.REAL ? 'Carregados neste aparelho' : 'Carregar o arquivo do Painel'}</b><div class="small muted">${D.REAL ? `Arquivo de ${dShort(realDate())}: ${(D.REAL.transacoes || []).length} lançamentos, ${(D.REAL.contas || []).length} contas e ${(D.REAL.cartoes || []).length} cartões.` : 'O painel-dados.json é gerado no seu computador a partir dos seus extratos. Ele é lido aqui e não sai deste aparelho.'}</div></div></div>
+  const sbSub = SB.session() ? (fromSB() ? `Bancos e cartões de ${fmtSync()}. Não precisa mais do arquivo.` : syncBusy ? 'Buscando os dados…' : syncErr ? sbMsg(syncErr) : 'Ainda sem dados neste aparelho. Toque para buscar.') : 'Bancos e cartões chegam sozinhos, sem arquivo. Login com código no e-mail.';
+  const ofCard = `${sec('Open Finance')}<a class="card cardlink" href="#/dinheiro/sincronizar"><span class="badge-ic">${I('link')}</span><div class="grow"><b>${SB.session() ? (fromSB() ? 'Conectado pelo Supabase' : 'Entrou no Supabase') : 'Entrar para sincronizar'}</b><div class="small muted">${sbSub}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`;
+  // O arquivo continua disponível até os dados do Open Finance chegarem de fato.
+  const fileCard = fromSB() ? '' : `${sec('Arquivo do computador')}<div class="card"><div class="row-flex"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><b>${D.REAL ? 'Carregados neste aparelho' : 'Carregar o arquivo do Painel'}</b><div class="small muted">${D.REAL ? `Arquivo de ${dShort(realDate())}: ${(D.REAL.transacoes || []).length} lançamentos, ${(D.REAL.contas || []).length} contas e ${(D.REAL.cartoes || []).length} cartões.` : 'O painel-dados.json é gerado no seu computador a partir dos seus extratos. Ele é lido aqui e não sai deste aparelho.'}</div></div></div>
       ${realErr ? '<p class="small" style="color:var(--danger);margin-top:8px">O arquivo salvo neste aparelho não abriu. Carregue de novo.</p>' : ''}
       ${justLoaded() ? `<p class="small" style="margin-top:8px">${I('check', 16, 'style="display:inline;vertical-align:-3px;color:var(--primary)"')} Pronto. <a href="#/dinheiro">Ver em Dinheiro</a></p>` : ''}
       <label class="btn ${D.REAL ? 'line ' : ''}block filebtn" style="margin-top:12px"><input type="file" accept=".json,application/json" data-in="realfile">${I('upload', 20)} ${D.REAL ? 'Trocar pelo arquivo novo' : 'Escolher painel-dados.json'}</label>
-      ${D.REAL ? '<button class="btn ghost block" style="margin-top:8px" data-act="realClear">Apagar deste aparelho e voltar ao exemplo</button>' : ''}
-      ${SB.session() ? '<p class="xs muted" style="margin-top:8px">Com o login, a próxima leitura do Open Finance substitui o arquivo.</p>' : ''}</div>
-      ${sec('Extrato ou fatura avulsa')}`;
-    body = `${realCard}<div class="card"><label class="drop"><input type="file" accept=".ofx,.csv,.xlsx,.pdf" data-in="file"><span class="badge-ic p" style="margin:0 auto 10px;width:56px;height:56px;border-radius:18px">${I('upload', 28)}</span><b>Escolher extrato ou fatura</b><p class="small muted" style="margin-top:4px">OFX é o melhor. Também aceita CSV, XLSX e PDF de fatura. O arquivo é lido no aparelho.</p></label>
-        <button class="btn ghost block" style="margin-top:12px" data-act="importNext">Usar arquivo de exemplo</button></div>
-      ${sec('Onde baixar')}
-      <div class="card tight">${[['Extrato do banco', 'Internet banking → Extrato → exportar OFX ou CSV'], ['Fatura do cartão', 'App do cartão → Faturas → PDF ou CSV'], ['Investimentos (B3)', 'Área do Investidor → Relatórios → Consolidado'], ['Faturas no e-mail', 'Fase 2: o Painel busca o PDF no Gmail e guarda no Drive']].map(([t, d]) => `<div class="row"><span class="badge-ic">${I('file', 20)}</span><div class="grow"><div class="ttl">${t}</div><div class="meta">${d}</div></div></div>`).join('')}</div>
-`;
-  } else if (st === 1) {
-    const rows = D.IMPORT_PREVIEW;
-    const chip = (r) => `<span class="chip ${r.conf === 'duplicada' ? 'st-atrasado' : r.conf === 'sugerida' && !S.importCat ? 'st-avencer' : ''}" style="min-height:22px;font-size:12px">${r.conf === 'duplicada' ? 'duplicado, será ignorado' : r.conf === 'sugerida' ? `${S.importCat || r.c} · ${S.importCat ? 'escolhida por você' : 'sugerida, toque para mudar'}` : r.c}</span>`;
-    const inner = (r) => `<div class="grow"><div class="ttl ellip" style="font-size:14px">${r.n}</div><div class="meta">${dShort(D.addDays(diaNow(), r.d))} · ${chip(r)}</div></div><div class="amt num" style="color:${r.v > 0 ? 'var(--primary)' : 'var(--ink)'}">${r.v > 0 ? '+' : ''}${brl(r.v)}</div>`;
-    body = `<div class="card"><div class="row-flex"><span class="badge-ic">${I('file', 20)}</span><div class="grow"><b>extrato-exemplo.ofx</b><div class="small muted">Conta principal · 48 lançamentos · 1 duplicado</div></div></div></div>
-      ${sec('Prévia')}<div class="card tight">${rows.map((r) => (r.conf === 'sugerida' ? `<button class="row" data-act="importCatSheet">${inner(r)}</button>` : `<div class="row">${inner(r)}</div>`)).join('')}</div>
-      <div class="btnrow" style="margin:6px 16px"><button class="btn ghost" data-act="importBack">Voltar</button><button class="btn" data-act="importNext">Continuar</button></div>`;
-  } else if (st === 2) {
-    body = `<div class="card"><div class="row-flex">${I('check', 22, 'class="ic" style="color:var(--primary)"')}<b>Saldo confere</b></div><p class="small muted" style="margin-top:4px">Saldo final do arquivo ${brl(4180.55)} = saldo calculado ${brl(4180.55)}.</p></div>
-      <div class="card"><div class="row-flex">${I('refresh', 22)}<b>1 duplicado ignorado</b></div><p class="small muted" style="margin-top:4px">Posto Avenida, ${brl(210)}, já veio na importação anterior.</p></div>
-      <div class="card"><div class="row-flex">${I('tag', 22)}<b class="grow">Criar regra nova?</b><button class="switch" role="switch" aria-checked="${S.importRule}" data-act="importRule" aria-label="Criar regra para PAGTO ELETRON TRIBUTO"></button></div><p class="small muted" style="margin-top:4px">“PAGTO ELETRON TRIBUTO” → ${S.importCat || 'Moradia'}. ${S.importRule ? 'Da próxima vez entra sozinho.' : 'Sem regra: na próxima importação ele aparece de novo para você escolher.'}</p></div>
-      <div class="btnrow" style="margin:6px 16px"><button class="btn ghost" data-act="importBack">Voltar</button><button class="btn" data-act="importNext">Importar 47 lançamentos</button></div>`;
-  } else {
-    body = `<div class="card" style="text-align:center;padding:26px 16px"><span class="badge-ic p" style="margin:0 auto 12px;width:64px;height:64px;border-radius:20px">${I('check', 32)}</span><h3>Importação concluída</h3><p class="lead">47 lançamentos na Conta principal. Contas recorrentes e gastos do mês atualizados.</p>
-      <div class="btnrow"><button class="btn ghost" data-act="importReset">Importar outro</button><a class="btn" href="#/dinheiro" data-act="goto" data-arg="dinheiro">Ver Dinheiro</a></div>
-      <button class="btn line block" style="margin-top:12px" data-act="importUndo">${I('refresh', 20)} Desfazer esta importação</button></div>`;
-  }
-  return { title: 'Importar extratos', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Importar extratos', 'Arquivo → conferir → conciliar. Cada importação pode ser desfeita depois.')}${line}${body}` };
+      ${D.REAL ? '<button class="btn ghost block" style="margin-top:8px" data-act="realClear">Apagar deste aparelho</button>' : ''}
+      ${SB.session() ? '<p class="xs muted" style="margin-top:8px">Com o login, a próxima leitura do Open Finance substitui o arquivo.</p>' : ''}</div>`;
+  return { title: 'Open Finance e arquivo', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Open Finance e arquivo', 'O Open Finance é o caminho principal; o arquivo do Painel serve até ele chegar.')}${ofCard}${fileCard}
+    <p class="small muted" style="margin:14px 20px">Extratos e faturas avulsos (OFX, CSV, PDF) ainda não entram pelo app.</p>` };
 }
 
 // ---------- Open Finance pelo Supabase ----------
@@ -955,39 +1162,54 @@ function sbMsg(e) {
 }
 const plain = (h) => String(h).replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 const dataKey = (R) => { try { return JSON.stringify({ ...R, lidoEm: 0 }); } catch { return ''; } };
-const staleSync = () => !fromSB() || !D.REAL.lidoEm || !(Date.now() - Date.parse(D.REAL.lidoEm) < 10 * 60000);
+// Sem a saúde no aparelho também busca, uma vez por abertura: se ela falhar, volta ao intervalo normal de 10 min.
+const staleSync = () => !fromSB() || !D.REAL.lidoEm || (!D.SAUDE && !saudeErr) || !(Date.now() - Date.parse(D.REAL.lidoEm) < 10 * 60000);
+const SESSAO = ['sessao_expirada', 'sem_sessao', 'nao_e_dono'];
 async function syncNow(manual) {
   if (syncBusy || leaving || !SB.session()) return false;
   syncBusy = true; syncErr = null; busyShown = false;
   if (manual || current() === 'dinheiro/sincronizar') render(true);
-  const ep = SB.currentEpoch();
+  const ep = SB.currentEpoch(), mudou = () => leaving || ep !== SB.currentEpoch();
+  let err = null, changed = false;
   try {
     const R = await SB.fetchPainel();
     // Saiu (ou entrou com outra conta) durante a leitura: o resultado não vale mais.
-    if (leaving || ep !== SB.currentEpoch()) { syncBusy = false; if (!leaving) render(true); return false; }
+    if (mudou()) { syncBusy = false; if (!leaving) render(true); return false; }
     const before = D.REAL ? dataKey(D.REAL) : '', novo = !fromSB();
     D.useReal(R); // valida antes de gravar
     realErr = null;
     try { localStorage.setItem(REALK, JSON.stringify(R)); } catch { /* sem espaço: segue só na memória */ }
-    // Marcações da demonstração ou do arquivo (contas pagas, gastos à mão) não valem para o Open Finance.
-    if (novo) { S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.expenses = []; S.card = 0; S.fat = 'aberta'; }
+    // Contas marcadas como pagas no arquivo não valem para o Open Finance (os gastos registrados à mão ficam).
+    if (novo) { S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.card = 0; }
     pruneReal(); save();
-    syncBusy = false;
-    if (manual || busyShown || before !== dataKey(R)) render(true);
-    if (manual) toast(`${I('cloudCheck', 18)} Open Finance de ${fmtSync()} carregado.`);
-    return true;
-  } catch (e) {
-    syncBusy = false;
-    if (leaving) return false;
-    syncErr = e;
+    changed = before !== dataKey(R);
+  } catch (e) { err = e; }
+  // Saúde pela mesma sessão. Uma falha aqui não desfaz o dinheiro: fica a última cópia.
+  if (!mudou() && SB.session() && !(err && SESSAO.includes(err.code))) {
+    try {
+      const H = await SB.fetchSaude();
+      if (mudou()) { syncBusy = false; if (!leaving) render(true); return false; }
+      const before = saudeRaw ? dataKey(saudeRaw) : '';
+      D.useSaude(H); saudeRaw = H; saudeErr = null;
+      try { localStorage.setItem(SAUDEK, JSON.stringify(H)); } catch { /* sem espaço: segue só na memória */ }
+      changed = changed || before !== dataKey(H);
+    } catch (e) { saudeErr = e; if (!err && SESSAO.includes(e.code)) err = e; }
+  }
+  syncBusy = false;
+  if (leaving) return false;
+  if (err) {
+    syncErr = err;
     // A sessão acabou: volta ao login, sem mensagem velha, com o motivo quando o Supabase recusou a sessão.
-    if (!SB.session()) { LG.busy = ''; LG.note = ''; LG.code = ''; LG.step = SB.pending() ? 'code' : 'email'; LG.msg = e.code === 'sessao_expirada' ? sbMsg(e) : ''; }
+    if (!SB.session()) { LG.busy = ''; LG.note = ''; LG.code = ''; LG.step = SB.pending() ? 'code' : 'email'; LG.msg = err.code === 'sessao_expirada' ? sbMsg(err) : ''; }
     render(true);
-    // Um canal só: na tela do Open Finance o erro aparece nela (e é lido uma vez); nas outras, num aviso.
-    if (current() === 'dinheiro/sincronizar') announce(plain(sbMsg(e)));
-    else if (manual || e.code === 'sessao_expirada') toast(esc(plain(sbMsg(e))), 'warn', 6000);
+    // Um canal só: na tela da conexão o erro aparece nela (e é lido uma vez); nas outras, num aviso.
+    if (current() === 'dinheiro/sincronizar') announce(plain(sbMsg(err)));
+    else if (manual || err.code === 'sessao_expirada') toast(esc(plain(sbMsg(err))), 'warn', 6000);
     return false;
   }
+  if (manual || busyShown || changed) render(true);
+  if (manual) toast(saudeErr ? `${I('cloudCheck', 18)} Dinheiro de ${fmtSync()} carregado. A saúde não veio desta vez.` : `${I('cloudCheck', 18)} Dinheiro e saúde de ${fmtSync()} carregados.`, saudeErr ? 'warn' : '', saudeErr ? 6000 : 2600);
+  return true;
 }
 // Erro do login: o foco vai para o campo, que lê o erro pela descrição dele; o aviso falado só entra quando o foco não chegou lá.
 function sayErr(sel) { render(true, sel); const f = main.querySelector(sel); if (!f || document.activeElement !== f) announce(plain(LG.msg)); }
@@ -1010,17 +1232,19 @@ async function sbVerify(code) {
     LG.busy = ''; LG.step = 'email'; LG.msg = ''; LG.code = '';
     render(true, 'h1'); // o formulário some: o foco vai para o título da tela
     const ok = await syncNow(false);
-    if (ok) toast(`${I('cloudCheck', 18)} Entrou. Seus dados do Open Finance estão no Painel.`, '', 6000);
+    if (ok) toast(`${I('cloudCheck', 18)} Entrou. Seus dados de dinheiro e saúde estão no Painel.`, '', 6000);
   } catch (e) {
     LG.busy = ''; LG.msg = sbMsg(e);
     if (e.code === 'otp_expired') LG.code = '';
     sayErr('#sb-code');
   }
 }
+const saudeConta = () => { const H = D.SAUDE, n = (a, um, v) => `${a.length} ${a.length === 1 ? um : v}`; return [n(H.fichas, 'ficha', 'fichas'), n(H.refeicoes, 'refeição', 'refeições'), n(H.medidas, 'medida', 'medidas'), n(H.exames, 'exame', 'exames')].join(', ') + (H.plano ? ' e o plano de treino' : ''); };
+const saudeLine = () => (syncBusy && !D.SAUDE ? 'Buscando a saúde…' : saudeErr ? `A saúde não veio na última leitura: ${sbMsg(saudeErr)}` : D.SAUDE ? `Saúde: ${D.SAUDE.lidoEm && !isNaN(Date.parse(D.SAUDE.lidoEm)) ? `lida em ${dShort(new Date(D.SAUDE.lidoEm))} às ${hhmm(new Date(D.SAUDE.lidoEm))}` : 'lida'}. Plano, fichas, dieta, medidas e exames vêm do Supabase.` : 'Saúde ainda não lida neste aparelho.');
 // Ocupado: o botão continua focável (aria-disabled) para o foco do teclado e do leitor de tela não cair no começo da página.
 const busyAttr = (b) => (b ? ' aria-disabled="true"' : '');
 function Sincronizar() {
-  const s = SB.session(), R = fromSB() ? D.REAL : null, off = S.offline || !navigator.onLine;
+  const s = SB.session(), R = fromSB() ? D.REAL : null, off = !navigator.onLine;
   // Erro ligado ao campo (aria-describedby) e lido uma vez por announce(), não a cada redesenho.
   const err = LG.msg ? `<p class="small" id="sb-err" style="color:var(--danger);margin-top:8px">${LG.msg}</p>` : '';
   const inv = LG.msg ? ' aria-invalid="true" aria-describedby="sb-err"' : '';
@@ -1055,148 +1279,123 @@ function Sincronizar() {
     const C = (R && R.conexoes) || [];
     body = `<div class="card"><div class="row-flex"><span class="badge-ic p">${I('cloudCheck', 20)}</span><div class="grow"><b>Conectado</b><div class="small muted ellip">${esc(SB.email() || '')}</div></div></div>
         <p class="small muted" style="margin-top:8px">${R ? `Bancos sincronizados em ${fmtSync()}. O Open Finance atualiza sozinho uma vez por dia, de manhã.` : syncBusy ? 'Buscando os seus dados…' : D.REAL ? `Ainda sem dados do Open Finance. Até chegarem, o Painel usa o arquivo de ${dShort(realDate())}.` : 'Ainda sem dados neste aparelho.'}</p>
+        <p class="small muted" style="margin-top:6px">${saudeLine()}</p>
         ${syncErr ? `<p class="small" style="color:var(--danger);margin-top:8px">${sbMsg(syncErr)}</p>` : ''}
         <button class="btn block" style="margin-top:12px" data-act="sbSync"${off || leaving ? ' disabled' : busyAttr(syncBusy)}>${I('refresh', 20)} ${syncBusy ? 'Buscando…' : off ? 'Sem internet' : 'Buscar de novo'}</button></div>
       ${C.length ? `${sec('Conexões')}<div class="card tight">${C.map((c) => { const t = c.sinc ? new Date(c.sinc) : null, ok = c.status === 'SUCCESS' && !c.erro; return `<div class="row"><span class="badge-ic">${I('bank', 20)}</span><div class="grow"><div class="ttl">${esc(c.inst || 'Banco')}</div><div class="meta">${t ? `Atualizado ${dShort(t)} às ${hhmm(t)}` : 'Sem data'}${c.consentimento ? ` · consentimento até ${new Date(c.consentimento + 'T12:00').toLocaleDateString('pt-BR')}` : ''}</div></div><span class="chip st-${ok ? 'pago' : 'atrasado'}">${ok ? 'OK' : 'Atenção'}</span></div>`; }).join('')}</div>` : ''}
-      ${R ? `${sec('Neste aparelho')}<div class="card"><p class="small muted" style="margin:0">${(R.transacoes || []).length} lançamentos, ${(R.contas || []).length} contas e ${(R.cartoes || []).length} cartões. Ações, carro, financiamento e participações vêm da foto manual${R.snapshotEm ? ` de ${dShort(new Date(R.snapshotEm + 'T12:00'))}` : ''}.</p></div>` : ''}
+      ${R || D.SAUDE ? `${sec('Neste aparelho')}<div class="card">${R ? `<p class="small muted" style="margin:0">${(R.transacoes || []).length} lançamentos, ${(R.contas || []).length} contas e ${(R.cartoes || []).length} cartões. Ações, carro, financiamento e participações vêm da foto manual${R.snapshotEm ? ` de ${dShort(new Date(R.snapshotEm + 'T12:00'))}` : ''}.</p>` : ''}${D.SAUDE ? `<p class="small muted" style="margin:${R ? '8px' : '0'} 0 0">Saúde: ${saudeConta()}.</p>` : ''}</div>` : ''}
       ${sair('Sair e apagar os dados deste aparelho')}`;
   }
-  return { title: 'Open Finance', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Open Finance', 'Bancos e cartões pelo Supabase, com login só seu.')}${netbar()}${body}
+  return { title: 'Sincronizar', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Sincronizar', 'Dinheiro (Open Finance) e saúde pelo Supabase, com login só seu.')}${netbar()}${body}
     <p class="xs muted" style="margin:14px 20px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} Só a conta dona lê os dados. A sessão e a última leitura ficam só neste aparelho.</p>` };
 }
 
 function Agenda() {
-  const now = new Date(), day = diaNow(), { key, s } = todaySession(), ref = missao(), mb = ref !== 't1' ? bills().find((b) => b.id === ref && !b.pago) : null;
-  const nowHM = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const day = diaNow(), { s, key } = todaySession(), ref = missao(), mb = ref !== 't1' ? bills().find((b) => b.id === ref && !b.pago) : null;
+  const nowHM = hmAgora();
+  const T = top3(), tk = S.dayType || D.tipoDia(key), meals = D.SAUDE ? D.refeicoes(tk) : [];
+  const chips = (x) => ((x.chips || []).length ? `<div class="parse" style="margin-top:2px">${x.chips.map((c) => `<span class="chip" style="min-height:22px;font-size:12px">${esc(c)}</span>`).join('')}</div>` : '');
+  const top = T.map((x, i) => `<div class="quest ${x.done ? 'done' : ''}"><button class="qcheck" aria-pressed="${!!x.done}" data-act="doneTop" data-arg="${esc(x.id)}" aria-label="${esc(x.t)}: ${x.done ? 'feito' : 'marcar como feito'}">${I('check', 28)}</button><div class="grow"><div class="t">${esc(x.t)}</div><div class="d">${(x.done ? x.doneAs === 'missao' : i === 0 && ref === 't1' && !S.quests.missao) ? `Top ${i + 1} · é a Missão de hoje (+20 XP)` : `Top ${i + 1} · +10 XP`}</div>${chips(x)}</div>${x.done ? '' : `<button class="iconbtn" data-act="topInbox" data-arg="${esc(x.id)}" aria-pressed="true" aria-label="Tirar ${esc(x.t)} do Top 3" style="color:var(--xp)">${I('star')}</button>`}</div>`).join('');
   const items = [
-    { h: '07:00', t: 'Resumo do dia', d: 'Notificação: treino, dieta, contas e Top 3', c: 'var(--muted)' },
-    ...D.events().map((e) => ({ h: e.h, t: e.t, d: `${e.h}–${e.fim} · ${e.src}`, c: 'var(--info)' })),
-    { h: '18:30', t: s.nome, d: `${s.resumo} · do plano`, c: 'var(--a-for)' },
-    ...(mb ? [{ h: '—', t: `Pagar ${mb.n.toLowerCase()}`, d: `${brl(mb.v)} · ${relDue(mb)}`, c: 'var(--danger)' }] : []),
-    { h: '21:30', t: 'Hora de desacelerar', d: `Lembrete para deitar às ${D.BEDTIME}`, c: 'var(--a-rec)' },
-  ].sort((a, b) => (a.h === '—' ? -1 : b.h === '—' ? 1 : a.h.localeCompare(b.h)));
-  const top = D.TOP3.map((t) => `<div class="quest ${S.top3[t.id] ? 'done' : ''}"><button class="qcheck" aria-pressed="${!!S.top3[t.id]}" data-act="top3" data-arg="${t.id}" aria-label="${esc(t.t)}: ${S.top3[t.id] ? 'feito' : 'marcar como feito'}">${I('check', 28)}</button><div class="grow"><div class="t">${esc(t.t)}</div><div class="d">${t.area} · +10 XP${t.id === 't1' && ref === 't1' ? ' · é a Missão de hoje (+20 XP)' : ''}</div></div></div>`).join('');
+    { h: '—', t: s.tipo ? s.nome : 'Sem sessão no plano', d: s.tipo ? `${s.resumo || ''} · do plano` : s.resumo || '', c: 'var(--a-for)' },
+    ...(mb ? [{ h: '—', t: `Pagar ${mb.n.split(' · ')[0].toLowerCase()}`, d: `${brl(mb.v)} · ${relDue(mb)}`, c: 'var(--danger)' }] : []),
+    ...S.inbox.filter((x) => x.quando === S.day && !x.done).map((x) => ({ h: hm(x.hora) || '—', t: x.t, d: x.top === S.day ? 'Top 3' : 'tarefa', c: 'var(--a-foc)' })),
+    ...meals.map((m) => ({ h: hm(m.hora) || '—', t: m.nome, d: `${m.hora ? `${m.hora} · ` : ''}${fmtInt(m.kcal)} kcal · ${fmtInt(m.p)} g de proteína`, c: 'var(--a-nut)' })),
+  ].sort((a, b) => (a.h === '—' && b.h !== '—' ? -1 : b.h === '—' && a.h !== '—' ? 1 : a.h.localeCompare(b.h)));
   const week = Array.from({ length: 7 }, (_, i) => {
-    const d = D.addDays(diaNow(), i), q = D.planFor(d), bs = bills().filter((b) => D.iso(b.due) === D.iso(d) && !b.pago);
-    return `<div class="row"><div style="width:52px"><b>${i === 0 ? 'Hoje' : wd(d)}</b><div class="xs muted num">${dShort(d)}</div></div><div class="grow small"><div>${D.SESSION[q.tipo].nome}</div>${bs.map((b) => `<div class="muted">${esc(b.n)} · ${brl(b.v)}</div>`).join('')}${i === 0 ? `<div class="muted">${D.events().length} compromissos</div>` : i % 2 ? `<div class="muted">${(i % 3) + 1} compromissos</div>` : ''}</div></div>`;
+    const d = D.addDays(diaNow(), i), q = D.planFor(d), ss = D.sessao(q), id = D.iso(d), bs = bills().filter((b) => D.iso(b.due) === id && !b.pago);
+    const ts = S.inbox.filter((x) => x.quando === id && !x.done);
+    return `<div class="row"><div style="width:52px"><b>${i === 0 ? 'Hoje' : wd(d)}</b><div class="xs muted num">${dShort(d)}</div></div><div class="grow small"><div>${esc(ss.tipo ? ss.nome : '—')}</div>${bs.map((b) => `<div class="muted">${esc(b.n)} · ${brl(b.v)}</div>`).join('')}${ts.map((x) => `<div class="muted">${x.hora ? `${esc(hm(x.hora) || x.hora)} · ` : ''}${esc(x.t)}</div>`).join('')}</div></div>`;
   }).join('');
+  const caixa = S.inbox.filter((x) => x.top !== S.day && !x.done);
   return {
     title: 'Agenda',
     html: `${hdr('Agenda', dLong(day))}${netbar()}
       <div class="card"><label class="field" style="margin:0"><span>Anotar</span><div class="row-flex"><input class="input" id="inbox" placeholder="ex.: pagar IPVA dia 10 R$ 820 #financas" data-in="inbox" autocomplete="off" value="${esc(S.inboxDraft)}"><button class="btn" data-act="addInbox" aria-label="Anotar">${I('plus')}</button></div></label>
-        <div class="parse" id="parse" aria-hidden="true"></div><p class="xs muted">Entende datas (amanhã, sexta, dia 10), horários (às 9h), #área, !prioridade e valores em R$. Também pelo Atalho “Anotar no Painel” e pela Siri.</p></div>
+        <div class="parse" id="parse" aria-hidden="true"></div><p class="xs muted">Entende datas (amanhã, sexta, dia 10), horários (às 9h), #área, !prioridade e valores em R$.</p></div>
       <div class="seg" role="group" aria-label="Visão" style="margin:10px 16px 0"><button aria-pressed="${S.agView === 'hoje'}" data-act="agview" data-arg="hoje">Hoje</button><button aria-pressed="${S.agView === 'semana'}" data-act="agview" data-arg="semana">Próximos 7 dias</button></div>
-      ${S.agView === 'hoje' ? `${sec('Top 3 de hoje', '<span class="small muted">só 3 contam para o Foco</span>')}<div class="card tight">${top}</div>
-        ${sec('Linha do dia')}<div class="card tight timeline">${items.map((x) => { const past = x.h !== '—' && x.h < nowHM; return `<div class="tl ${past ? 'past' : ''}"><span class="h">${x.h}</span><span class="bul" style="--c:${x.c}"></span><div class="grow"><div class="t">${esc(x.t)}${past ? '<span class="sr"> (já passou)</span>' : ''}</div><div class="meta small muted">${esc(x.d)}</div></div></div>`; }).join('')}</div>`
+      ${S.agView === 'hoje' ? `${sec('Top 3 de hoje', `<span class="small muted num">${T.length}/3</span>`)}<div class="card tight">${top || `<div class="empty"><p>Toque na estrela de uma tarefa da caixa de entrada para pôr no Top 3. A primeira é a Missão do dia.</p></div>`}</div>
+        ${sec('Linha do dia')}<div class="card tight timeline">${items.map((x) => { const past = x.h !== '—' && x.h < nowHM; return `<div class="tl ${past ? 'past' : ''}"><span class="h">${x.h === '—' ? 'Hoje' : x.h}</span><span class="bul" style="--c:${x.c}"></span><div class="grow"><div class="t">${esc(x.t)}${past ? '<span class="sr"> (já passou)</span>' : ''}</div><div class="meta small muted">${esc(x.d)}</div></div></div>`; }).join('')}</div>`
         : `${sec('Próximos 7 dias')}<div class="card tight">${week}</div>`}
-      ${sec('Caixa de entrada', `<span class="small muted num">${S.inbox.length} ite${S.inbox.length === 1 ? 'm' : 'ns'}</span>`)}
-      <div class="card tight">${S.inbox.length ? S.inbox.map((x, i) => `<div class="row"><span class="badge-ic">${I('inbox', 20)}</span><div class="grow"><div class="ttl">${esc(x.t)}</div><div class="parse" style="margin-top:2px">${(x.chips || []).map((c) => `<span class="chip" style="min-height:22px;font-size:12px">${esc(c)}</span>`).join('')}</div></div><button class="iconbtn" data-act="doneInbox" data-arg="${i}" aria-label="Concluir ${esc(x.t)}">${I('check')}</button></div>`).join('') : `<div class="empty"><p>Caixa vazia. Tudo processado.</p></div>`}</div>
-      <div class="card soft"><div class="row-flex">${I('bell', 20)}<b>Notificações de hoje: 3 de 3</b></div><p class="small" style="margin-top:4px">07:00 resumo · 18:00 treino · 21:30 hora de dormir. Nunca entre 22h e 7h.</p></div>`,
+      ${sec('Caixa de entrada', `<span class="small muted num">${caixa.length} ite${caixa.length === 1 ? 'm' : 'ns'}</span>`)}
+      <div class="card tight">${caixa.length ? caixa.map((x) => `<div class="row"><button class="iconbtn" data-act="topInbox" data-arg="${esc(x.id)}" aria-pressed="false" aria-label="Pôr ${esc(x.t)} no Top 3">${I('star')}</button><div class="grow"><div class="ttl" style="white-space:normal">${esc(x.t)}</div>${chips(x)}</div><button class="iconbtn" data-act="doneInbox" data-arg="${esc(x.id)}" aria-label="Concluir ${esc(x.t)}">${I('check')}</button></div>`).join('') : `<div class="empty"><p>Caixa vazia. Anote acima o que precisa fazer.</p></div>`}</div>
+      <p class="small muted" style="margin:14px 20px">${I('calendar', 16, 'style="display:inline;vertical-align:-3px"')} A agenda do Google ou da Apple ainda não está conectada: a linha do dia mostra o plano de treino, as refeições, as contas e as suas tarefas.</p>`,
   };
 }
 
 function Ficha() {
-  const L = lvl(S.xp), sk = streakNow(), cons = consistency();
-  const avg = Math.round(D.ATTRS.reduce((a, x) => a + x.v, 0) / D.ATTRS.length);
-  const B = boss();
+  const L = lvl(S.xp), sk = streakNow(), cons = consistency(), AT = attrs(), nome = nomeDe();
+  const vals = AT.filter((a) => a.v != null), avg = vals.length ? Math.round(vals.reduce((a, x) => a + x.v, 0) / vals.length) : null;
+  const B = boss(), CQ = conquistas();
+  const prox = L.L < 5 ? 5 : L.L < 10 ? 10 : L.L < 15 ? 15 : L.L < 20 ? 20 : L.L < 25 ? 25 : 30;
   return {
     title: 'Ficha',
     html: `${hdr('Ficha', 'Você é o personagem principal', `<a class="iconbtn" href="#/ajustes" aria-label="Integrações e ajustes">${I('sliders')}</a>`)}
-      <div class="card"><div class="row-flex" style="gap:14px"><div class="avatar" style="width:64px;height:64px;font-size:26px;border-radius:20px" aria-hidden="true">Y<span class="lv">${L.L}</span></div>
-        <div class="grow"><div class="mid">${D.PROFILE.nome}</div><div class="small muted">Nível ${L.L} · ${titleFor(L.L)}${S.bossWon ? ' · Guardião da Noite' : ''} · próximo título no nível ${L.L < 5 ? 5 : L.L < 10 ? 10 : L.L < 15 ? 15 : L.L < 20 ? 20 : L.L < 25 ? 25 : 30}</div></div></div>
+      <div class="card"><div class="row-flex" style="gap:14px"><div class="avatar" style="width:64px;height:64px;font-size:26px;border-radius:20px" aria-hidden="true">${inicial()}<span class="lv">${L.L}</span></div>
+        <div class="grow"><div class="mid">${nome ? esc(nome) : '<a href="#/ajustes">Pôr o seu nome</a>'}</div><div class="small muted">Nível ${L.L} · ${titleFor(L.L)}${S.bossWon ? ' · Guardião da Noite' : ''}${L.L < 30 ? ` · próximo título no nível ${prox}` : ''}</div></div></div>
         <div style="margin-top:12px"><div class="row-flex small"><span class="grow">XP para o nível ${L.L + 1}</span><b class="num">${L.into} / ${L.need}</b></div>${bar((L.into / L.need) * 100, null, 'xp lg')}</div>
-        <div class="kpi" style="margin-top:14px"><span>Consistência em 28 dias</span><b style="font-size:28px">${cons}%</b><small>dias com check-in. É o número que mais importa: um dia ruim mexe pouco nele.</small></div>
-        <button class="kpi chama" data-act="chama"><span>Chama</span><b>${S.pausa ? `${I('pause', 20)} em pausa` : `${I('flame', 20)} ${sk} dias`}</b><small>${S.pausa ? 'Modo Pausa ligado: a Chama está congelada.' : brasaFree() ? '1 brasa livre: uma falta nesta semana não apaga a Chama.' : `Brasa usada em ${dShort(dayAt(S.brasaAt))}. Volta em ${dShort(D.addDays(dayAt(S.brasaAt), 7))}.`} Recorde: ${Math.max(S.best, sk)} dias.</small>${I('info', 18, 'class="ic chev"')}</button></div>
-      ${sec('Atributos', `<span class="small muted num">média ${avg} · janela de 28 dias</span>`)}
-      <div class="card tight">${D.ATTRS.map((a) => `<button class="attr" style="--c:${a.cor}" data-act="attr" data-arg="${a.k}" aria-label="${a.nome}: ${a.v} de 100, nota ${rank(a.v)}, ${a.d >= 0 ? 'subiu' : 'caiu'} ${Math.abs(a.d)} em 7 dias. Ver como subir"><span class="code">${a.k}</span><span class="nm">${a.nome}</span>${bar(a.v, a.cor)}<span class="val">${a.v}<span class="rank">${rank(a.v)}</span><small>${a.d >= 0 ? '+' : '−'}${Math.abs(a.d)} em 7 d</small></span></button>`).join('')}</div>
+        <div class="kpi" style="margin-top:14px"><span>Consistência em 28 dias</span><b style="font-size:28px">${pctTxt(cons)}</b><small>Dias com check-in desde ${dShort(dayAt(S.since))}${D.diffDays(diaNow(), dayAt(S.since)) >= 27 ? ' (janela de 28 dias)' : ''}. É o número que mais importa: um dia ruim mexe pouco nele.</small></div>
+        <button class="kpi chama" data-act="chama"><span>Chama</span><b>${S.pausa ? `${I('pause', 20)} em pausa` : `${I('flame', 20)} ${sk} dia${sk === 1 ? '' : 's'}`}</b><small>${S.pausa ? 'Modo Pausa ligado: a Chama está congelada.' : brasaFree() ? '1 brasa livre: uma falta nesta semana não apaga a Chama.' : `Brasa usada em ${dShort(dayAt(S.brasaAt))}. Volta em ${dShort(D.addDays(dayAt(S.brasaAt), 7))}.`} Recorde: ${diasTxt(Math.max(S.best, sk))}.</small>${I('info', 18, 'class="ic chev"')}</button></div>
+      ${sec('Atributos', `<span class="small muted num">média ${avg ?? '—'} · pelo que você registra</span>`)}
+      <div class="card tight">${AT.map((a) => `<button class="attr" style="--c:${a.cor}" data-act="attr" data-arg="${a.k}" aria-label="${a.nome}: ${a.v == null ? 'sem dados ainda' : `${a.v} de 100, nota ${rank(a.v)}${a.d == null ? '' : `, ${a.d >= 0 ? 'subiu' : 'caiu'} ${Math.abs(a.d)} em 7 dias`}`}. Ver como subir"><span class="code">${a.k}</span><span class="nm">${a.nome}</span>${bar(a.v || 0, a.cor)}<span class="val">${a.v ?? '—'}<span class="rank">${rank(a.v)}</span><small>${a.v == null ? 'sem dados' : deltaTxt(a.d)}</small></span></button>`).join('')}</div>
       ${sec('Chefe do mês')}
       <div class="card"><div class="row-flex">${I('crown', 24, 'class="ic" style="color:var(--a-rec)"')}<div class="grow"><b>${B.nome}</b><div class="small muted">${B.regra}</div></div></div>
         ${B.won ? `<div class="done-line" style="margin-top:12px"><span class="tick">${I('check', 20)}</span><div class="grow"><b>Vencido neste mês</b><div class="small muted">+500 XP e o título “Guardião da Noite”. Um chefe novo chega no dia 1º.</div></div></div>` : `<div style="margin-top:12px"><div class="row-flex small"><span class="grow">Vida do chefe</span><b class="num">${B.hp} / ${B.max}</b><span class="muted num">· faltam ${B.faltam} dias</span></div>${bar((B.hp / B.max) * 100, 'var(--a-rec)', 'lg')}</div>`}
-        <p class="small muted" style="margin-top:8px">${B.won ? '' : `${B.hoje ? 'A noite de hoje já foi um golpe. ' : ''}Começou com ${B.start} de ${B.max} (90%: o primeiro golpe é seu). Vencer dá +500 XP e o título “Guardião da Noite”. Se ele fugir, nada se perde e a revanche vem mais fraca. `}Alternativa deste mês: ${B.alt}.</p></div>
-      ${sec('Missões da semana', `<span class="small muted">bônus de +${D.WEEKLY_BONUS} XP ao fechar as 3</span>`)}
-      <div class="card">${L.L >= 7 ? `<p class="small" style="margin:0 0 4px">${I('target', 16, 'style="display:inline;vertical-align:-3px;color:var(--primary)"')} O Cerco aeróbico mira seu atributo mais fraco: <b>${weakest().k} ${weakest().v}</b>.</p>` : ''}${weekly().map((q) => `<div style="margin:10px 0"><div class="row-flex"><b class="small grow">${q.t}</b><span class="chip xp">${q.xp} XP</span></div><div class="small muted">${q.d}</div><div class="row-flex" style="margin-top:6px"><div class="grow">${bar((q.p / q.of) * 100)}</div><span class="small muted num">${q.p}/${q.of}</span></div></div>`).join('')}</div>
-      ${sec('Conquistas', `<span class="small muted num">${D.ACHIEVEMENTS.filter((a) => a.ok).length}/${D.ACHIEVEMENTS.length}</span>`)}
-      <div class="card"><div class="ach">${D.ACHIEVEMENTS.map((a) => `<div class="${a.ok ? '' : 'off'}"><div class="medal">${I(a.ic, 26)}</div><b>${a.n}</b><div class="muted">${a.ok ? a.d : a.p}</div></div>`).join('')}</div></div>
-      ${sec('Próximos desbloqueios')}
-      <div class="card tight">${[[7, 'Missões semanais escolhidas pelo seu atributo mais fraco'], [10, 'Projeção de independência financeira'], [12, 'Crônica do mês: um resumo narrado do que você fez']].map(([n, t]) => { const ok = L.L >= n; return `<div class="row"><span class="badge-ic ${ok ? 'p' : ''}">${I(ok ? 'check' : 'lock', 20)}</span><div class="grow"><div class="ttl">Nível ${n}${ok ? ' · liberado' : ''}</div><div class="meta">${t}</div></div></div>`; }).join('')}</div>`,
+        ${B.won ? '' : `<p class="small muted" style="margin-top:8px">${B.hoje ? 'A noite de hoje já foi um golpe. ' : ''}Começa cada mês com ${B.start} de ${B.max} (o primeiro golpe é seu). Vencer dá +500 XP e o título “Guardião da Noite”. Se ele fugir, nada se perde.</p>`}</div>
+      ${sec('Missões da semana', `<span class="small muted">bônus de +${D.WEEKLY_BONUS} XP ao fechar as duas</span>`)}
+      <div class="card">${weekly().map((q) => `<div style="margin:10px 0"><div class="row-flex"><b class="small grow">${q.t}</b><span class="chip xp">${q.ok ? 'feita' : `${q.xp} XP`}</span></div><div class="small muted">${q.d}</div><div class="row-flex" style="margin-top:6px"><div class="grow">${bar(q.of ? (q.p / q.of) * 100 : 0)}</div><span class="small muted num">${q.p}/${q.of ?? '—'}${q.un ? ' ' + q.un : ''}</span></div></div>`).join('')}</div>
+      ${sec('Conquistas', `<span class="small muted num">${CQ.filter((a) => a.ok).length}/${CQ.length}</span>`)}
+      <div class="card"><div class="ach">${CQ.map((a) => `<div class="${a.ok ? '' : 'off'}"><div class="medal">${I(a.ic, 26)}</div><b>${a.n}</b><div class="muted">${a.ok ? `${a.d} · ${dShort(dayAt(S.conq[a.k]))}` : esc(a.p)}</div></div>`).join('')}</div></div>`,
   };
 }
 
-const weakest = () => D.ATTRS.reduce((a, x) => (x.v < a.v ? x : a));
 function Ajustes() {
+  const ss = SB.session(), H = D.SAUDE;
   const integ = [
-    ['health', 'Apple Health', 'Atalho grátis “PainelSync”: sono, passos, treinos, VFC e frequência de repouso. Roda ao abrir o celular.', 'Conectado · há 2 h', 'pago'],
-    ['calendar', 'Google Agenda', 'Leitura pelo endereço privado da agenda (iCal). Só leitura na fase 1.', 'Conectado', 'pago'],
-    ['bank', 'Open Finance (Meu Pluggy)', 'Até 5 bancos, grátis para uso pessoal. Atualiza uma vez por dia; o Painel lê pelo Supabase com login por código no e-mail.', SB.session() ? (fromSB() ? 'Conectado' : 'Entrou, sem dados') : 'Entrar', SB.session() && fromSB() ? 'pago' : 'agendado'],
-    ['file', 'Google Drive', 'Pasta Painel/ com faturas, extratos e exames originais.', 'Conectado', 'pago'],
-    ['note', 'Notion', 'Migração única do diário, treinos, medidas e exames atuais.', 'Fase 1', 'agendado'],
-    ['pulse', 'Strava', 'Fora do plano: a API exige assinatura. Os treinos chegam pelo Apple Health.', 'Não usar', 'atrasado'],
+    ['bank', 'Open Finance (Meu Pluggy)', 'Bancos e cartões pelo Supabase. O Pluggy atualiza uma vez por dia, de manhã.', ss ? (fromSB() ? `Lido ${fmtSync()}` : 'Entrou, sem dados') : 'Entrar', ss && fromSB() ? 'pago' : 'avencer', true],
+    ['heart', 'Saúde no Supabase', H ? `${esc(H.fonte || 'Plano, fichas, dieta, medidas e exames')}. Só a sua conta lê.` : 'Plano, fichas, dieta, medidas e exames, só para a sua conta.', H ? 'Conectado' : ss ? 'Sem dados' : 'Entrar', H ? 'pago' : 'avencer', true],
+    ['health', 'Apple Health', 'Sono, passos, treinos, VFC e frequência de repouso. Ainda não conectado: o sono vem do check-in.', 'Não conectado', 'avencer'],
+    ['calendar', 'Agenda (Google ou Apple)', 'Ainda não conectada. A linha do dia mostra o plano, as refeições, as contas e as suas tarefas.', 'Não conectada', 'avencer'],
+    ['pulse', 'Strava', 'Fora do plano: a API exige assinatura.', 'Não usar', 'atrasado'],
   ];
-  const N = [['briefing', 'Resumo do dia', '07:00'], ['treino', 'Lembrete de treino', '18:00'], ['dormir', 'Hora de desacelerar', '21:30'], ['contas', 'Contas no dia do vencimento', 'no resumo']];
   return {
     title: 'Integrações e ajustes',
     html: `${backbar('ficha', 'Ficha')}${hdr('Integrações e ajustes')}
-      ${sec('Integrações')}<div class="card tight">${integ.map(([ic, n, d, st, cls]) => { const inner = `<span class="badge-ic">${I(ic, 20)}</span><div class="grow"><div class="ttl">${n}</div><div class="meta">${d}</div></div><span class="chip st-${cls}">${st}</span>`; return ic === 'bank' ? `<a class="row" href="#/dinheiro/sincronizar">${inner}</a>` : `<div class="row">${inner}</div>`; }).join('')}</div>
-      ${sec('Notificações', '<span class="small muted">no máximo 3 por dia</span>')}
-      <div class="card tight">${N.map(([k, n, h]) => `<div class="row"><div class="grow"><div class="ttl">${n}</div><div class="meta">${h}</div></div><button class="switch" role="switch" aria-checked="${S.notif[k]}" data-act="notif" data-arg="${k}" aria-label="${n}"></button></div>`).join('')}
-        <div class="row"><div class="grow"><div class="ttl">Silêncio</div><div class="meta">22:00 às 07:00, sempre</div></div>${I('moon', 20, 'class="ic muted"')}</div></div>
-      <div style="margin:10px 16px"><button class="btn line block" data-act="testNotif">${I('bell', 20)} Testar notificação</button><p class="xs muted" style="margin-top:6px">No iPhone, notificações funcionam depois de adicionar o Painel à Tela de Início.</p></div>
+      ${sec('Integrações')}<div class="card tight">${integ.map(([ic, n, d, st, cls, link]) => { const inner = `<span class="badge-ic">${I(ic, 20)}</span><div class="grow"><div class="ttl">${n}</div><div class="meta" style="white-space:normal">${d}</div></div><span class="chip st-${cls}">${st}</span>`; return link ? `<a class="row" href="#/dinheiro/sincronizar">${inner}</a>` : `<div class="row">${inner}</div>`; }).join('')}</div>
+      ${sec('Você')}<div class="card"><label class="field" style="margin:0"><span>Como quer ser chamado</span><input class="input" id="aj-nome" data-in="nome" value="${esc(S.nome || '')}" autocomplete="given-name" maxlength="30"></label><p class="xs muted" style="margin-top:6px">Fica só neste aparelho.</p></div>
+      ${sec('Notificações')}<div style="margin:10px 16px"><button class="btn line block" data-act="testNotif">${I('bell', 20)} Testar notificação</button><p class="xs muted" style="margin-top:6px">Os lembretes automáticos ainda não existem: por enquanto, só o teste e o número de missões no ícone. No iPhone, funciona com o Painel na Tela de Início.</p></div>
       ${sec('Aparência')}<div class="card"><div class="seg" role="group" aria-label="Tema">${[['system', 'Sistema'], ['light', 'Claro'], ['dark', 'Escuro']].map(([k, l]) => `<button aria-pressed="${S.theme === k}" data-act="theme" data-arg="${k}">${l}</button>`).join('')}</div></div>
-      ${sec('Pausa')}<div class="card tight"><div class="row"><div class="grow"><div class="ttl">Modo Pausa</div><div class="meta">Doente ou viajando: congela a Chama e tira os dias das médias. Até 30 dias por vez.</div></div><button class="switch" role="switch" aria-checked="${S.pausa}" data-act="pausa" aria-label="Modo Pausa"></button></div></div>
+      ${sec('Pausa')}<div class="card tight"><div class="row"><div class="grow"><div class="ttl">Modo Pausa</div><div class="meta" style="white-space:normal">Doente ou viajando: congela a Chama e tira os dias da consistência.</div></div><button class="switch" role="switch" aria-checked="${S.pausa}" data-act="pausa" aria-label="Modo Pausa"></button></div></div>
       ${sec('Dados e privacidade')}<div class="card tight">
-        <div class="row"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><div class="ttl">Seus dados</div><div class="meta">No aparelho (funciona offline) e no Supabase com acesso só seu. O app real fica num endereço próprio, não neste do GitHub.</div></div></div>
-        <button class="row" data-act="toastInfo" data-arg="No app real: baixa um arquivo com tudo (JSON e CSV)."><span class="badge-ic">${I('upload', 20)}</span><div class="grow"><div class="ttl">Exportar tudo</div><div class="meta">JSON e CSV, quando quiser</div></div>${I('chevR', 20, 'class="ic muted"')}</button></div>
-      ${sec('Wireframe')}<div class="card tight">
-        <button class="row" data-act="map"><span class="badge-ic">${I('map', 20)}</span><div class="grow"><div class="ttl">Mapa de telas e estados</div></div>${I('chevR', 20, 'class="ic muted"')}</button>
-        <a class="row" href="#/estados"><span class="badge-ic">${I('eye', 20)}</span><div class="grow"><div class="ttl">Estados vazio, offline e carregando</div></div>${I('chevR', 20, 'class="ic muted"')}</a>
+        <div class="row"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><div class="ttl">Seus dados</div><div class="meta" style="white-space:normal">O que você registra aqui (check-ins, treinos, tarefas, gastos) fica só neste aparelho. Dinheiro e saúde vêm do Supabase, que só a sua conta lê, e a última leitura fica guardada aqui para abrir sem internet.</div></div></div>
+        <button class="row" data-act="exportar"><span class="badge-ic">${I('upload', 20)}</span><div class="grow"><div class="ttl">Exportar o que está neste aparelho</div><div class="meta">Um arquivo JSON com XP, check-ins, treinos e tarefas</div></div>${I('chevR', 20, 'class="ic muted"')}</button>
         <button class="row" data-act="restartOnb"><span class="badge-ic">${I('sparkle', 20)}</span><div class="grow"><div class="ttl">Ver as boas-vindas de novo</div></div>${I('chevR', 20, 'class="ic muted"')}</button>
-        <button class="row" data-act="resetDemo"><span class="badge-ic">${I('refresh', 20)}</span><div class="grow"><div class="ttl">Zerar a demonstração</div><div class="meta">Volta XP, check-in e marcações ao início</div></div></button></div>
-      <p class="xs muted" style="margin:14px 20px">${fromSB() ? `Wireframe. Dinheiro usa o Open Finance (Supabase) de ${dShort(realDate())}, com cópia neste aparelho; o resto é fictício.` : D.REAL ? `Wireframe. Dinheiro usa os seus dados de ${dShort(realDate())}, guardados só neste aparelho; o resto é fictício.` : 'Wireframe com dados fictícios.'} Versão ${VERSION}.</p>`,
-  };
-}
-
-function Estados() {
-  return {
-    title: 'Estados',
-    html: `${backbar('ajustes', 'Ajustes')}${hdr('Estados das telas', 'Como o app se comporta sem dados, sem internet e carregando.')}
-      ${sec('Carregando')}<div class="card" aria-busy="true"><div class="skel" style="width:40%"></div><div class="skel" style="height:30px;width:70%"></div><div class="skel"></div><div class="skel" style="width:85%"></div></div>
-      <p class="small muted" style="margin:0 20px">Quase nunca aparece: os dados ficam no aparelho e a tela abre na hora. Só a primeira sincronização mostra isto.</p>
-      ${sec('Sem internet')}<div class="netbar" style="margin-top:10px">${I('wifiOff', 20)}<span>Sem conexão. Tudo o que você registrar fica salvo no aparelho e sincroniza depois (3 pendentes).</span></div>
-      ${sec('Primeiro uso')}<div class="card"><div class="empty"><span class="badge-ic">${I('wallet', 28)}</span><b>Nenhum lançamento ainda</b><p>Importe o primeiro extrato e o Painel monta seus gastos, contas recorrentes e saldo.</p><a class="btn" href="#/dinheiro/importar">Importar extrato</a></div></div>
-      ${sec('Dados antigos')}<div class="card stale"><div class="row-flex"><b class="grow">PAT · Patrimônio <span class="muted num">64</span></b><span class="chip">${I('clock', 14)} névoa</span></div><p class="small muted" style="margin-top:4px">Sem importação há 21 dias. O valor fica cinza em vez de inventar uma mudança, e a Missão do dia vira “Importar extratos”.</p></div>
-      ${sec('Integração com problema')}<div class="card"><div class="row-flex">${I('health', 22, 'class="ic" style="color:var(--warn)"')}<div class="grow"><b>Apple Health sem dados há 3 dias</b><div class="small muted">O Atalho roda quando o celular está desbloqueado. Abra o app Atalhos e confira a automação.</div></div></div><button class="btn ghost block" style="margin-top:12px" data-act="toastInfo" data-arg="No app real: passo a passo com prints da automação.">Ver como corrigir</button></div>`,
+        <button class="row" data-act="resetLocal"><span class="badge-ic">${I('refresh', 20)}</span><div class="grow"><div class="ttl">Recomeçar neste aparelho</div><div class="meta">Apaga XP, check-ins, treinos e marcações daqui. O Supabase não muda.</div></div></button></div>
+      <p class="xs muted" style="margin:14px 20px">Painel ${VERSION}.</p>`,
   };
 }
 
 function Onboarding() {
-  const st = S.onbStep || 0, total = 4;
+  const st = Math.min(S.onbStep || 0, 2), total = 3;
   const dots = `<p class="sr">Passo ${st + 1} de ${total}</p><div class="dots" aria-hidden="true">${Array.from({ length: total }, (_, i) => `<i class="${i <= st ? 'on' : ''}"></i>`).join('')}</div>`;
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
   let body = '';
   if (st === 0) {
     body = `<div class="big-ic">${I('shield', 40)}</div><h1 tabindex="-1">Seu painel. Você é o personagem principal.</h1>
-      <p class="lead">Saúde, dinheiro e agenda num lugar só. Cada coisa que você faz no dia vira XP e sobe seus atributos.</p>
-      <label class="field"><span>Como quer ser chamado?</span><input class="input" value="${esc(D.PROFILE.nome)}" autocomplete="given-name"></label>
-      <div class="field"><span id="onb-q1">O que importa mais agora? <span class="muted small">(pode marcar mais de um)</span></span><div class="picks" role="group" aria-labelledby="onb-q1">${['Treinar com constância', 'Dormir melhor', 'Organizar as finanças', 'Dar conta do dia'].map((t, i) => `<button type="button" class="pick" aria-pressed="${i < 2}" data-act="togglePick">${t}</button>`).join('')}</div></div>
+      <p class="lead">Saúde, dinheiro e tarefas num lugar só. Cada coisa que você faz no dia vira XP e sobe seus atributos. Os números começam do zero e crescem com o que você registra.</p>
+      <label class="field"><span>Como quer ser chamado?</span><input class="input" id="onb-nome" data-in="nome" value="${esc(S.nome || '')}" autocomplete="given-name" maxlength="30"></label>
       <div class="foot"><button class="btn block" data-act="onbNext">Começar</button></div>`;
   } else if (st === 1) {
-    const q = [['watch', 'Usa Apple Watch?'], ['scale', 'Tem balança inteligente?'], ['ios', 'O iPhone está no iOS 18.4 ou mais novo?']];
-    body = `<div class="big-ic">${I('phone', 40)}</div><h1 tabindex="-1">Seus aparelhos</h1><p class="lead">Isso decide o que entra sozinho e o que você confirma com um toque.</p>
-      ${q.map(([k, t]) => `<div class="field"><span>${t}</span><div class="seg" role="group" aria-label="${t}"><button aria-pressed="${S.devices[k] === true}" data-act="dev" data-arg="${k}:1">Sim</button><button aria-pressed="${S.devices[k] === false}" data-act="dev" data-arg="${k}:0">Não</button><button aria-pressed="${S.devices[k] === undefined}" data-act="dev" data-arg="${k}:">Não sei</button></div></div>`).join('')}
-      <div class="field"><span id="onb-q2">Quantos bancos e cartões você usa?</span><div class="picks" role="radiogroup" aria-labelledby="onb-q2">${['1–2', '3–5', '6+'].map((t, i) => `<button type="button" class="pick" role="radio" aria-checked="${i === 1}" tabindex="${i === 1 ? 0 : -1}" data-act="radio" data-arg="${t}">${t}</button>`).join('')}</div></div>
-      <div class="foot"><button class="btn block" data-act="onbNext">Continuar</button><button class="btn ghost block" data-act="onbBack">Voltar</button></div>`;
-  } else if (st === 2) {
-    body = `<div class="big-ic">${I('squarePlus', 40)}</div><h1 tabindex="-1">Coloque na Tela de Início</h1><p class="lead">Assim o Painel abre como app, funciona sem internet e pode mandar lembretes.</p>
+    body = `<div class="big-ic">${I('squarePlus', 40)}</div><h1 tabindex="-1">Coloque na Tela de Início</h1><p class="lead">Assim o Painel abre como app e funciona sem internet.</p>
       ${standalone ? `<div class="card soft" style="margin:20px 0 0"><div class="row-flex">${I('check', 22)}<b>Já está instalado.</b></div></div>` : ios ? `<ol class="steps"><li><span class="n">1</span><span>Toque em ${I('share', 18, 'style="display:inline;vertical-align:-3px"')} <b>Compartilhar</b> no Safari</span></li><li><span class="n">2</span><span>Escolha <b>Adicionar à Tela de Início</b></span></li><li><span class="n">3</span><span>Abra o Painel pelo ícone novo</span></li></ol>` : `<ol class="steps"><li><span class="n">1</span><span>No iPhone, abra este endereço no <b>Safari</b></span></li><li><span class="n">2</span><span>Toque em ${I('share', 18, 'style="display:inline;vertical-align:-3px"')} <b>Compartilhar</b> → <b>Adicionar à Tela de Início</b></span></li><li><span class="n">3</span><span>No computador, use o ícone de instalar na barra de endereço</span></li></ol>${deferredPrompt ? '<button class="btn line block" style="margin-top:12px" data-act="install">Instalar neste aparelho</button>' : ''}`}
-      ${ios && !standalone ? `<p class="small muted" style="margin-top:14px">No iPhone os lembretes só podem ser ativados no app instalado. Depois de adicionar, abra o Painel pelo ícone novo: ele pergunta por lá.</p>` : ''}
+      ${ios && !standalone ? `<p class="small muted" style="margin-top:14px">No iPhone as notificações só funcionam no app instalado. Depois de adicionar, abra o Painel pelo ícone novo: ele pergunta por lá.</p>` : ''}
       <div class="foot">${ios && !standalone ? `<button class="btn block" data-act="onbDone">Concluir e abrir pelo ícone</button><button class="btn ghost block" data-act="onbDone">Continuar no Safari por enquanto</button>` : `<button class="btn block" data-act="onbNext">${standalone ? 'Continuar' : 'Já fiz isso'}</button><button class="btn ghost block" data-act="onbNext">Depois</button>`}</div>`;
   } else {
     const canNotify = 'Notification' in window;
-    body = `<div class="big-ic">${I('bell', 40)}</div><h1 tabindex="-1">Lembretes que ajudam</h1><p class="lead">No máximo 3 por dia e nunca entre 22h e 7h.</p>
-      <ul class="steps"><li><span class="n">${I('sun', 18)}</span><span><b>07:00</b> resumo: treino, dieta, contas e Top 3</span></li><li><span class="n">${I('dumbbell', 18)}</span><span><b>18:00</b> lembrete do treino do dia</span></li><li><span class="n">${I('moon', 18)}</span><span><b>21:30</b> hora de desacelerar</span></li></ul>
+    body = `<div class="big-ic">${I('bell', 40)}</div><h1 tabindex="-1">Notificações</h1><p class="lead">Com a permissão, o ícone do Painel mostra quantas missões faltam hoje. Lembretes automáticos ainda não existem.</p>
       ${canNotify ? '' : '<p class="small muted" style="margin-top:14px">Este navegador não mostra notificações. No iPhone, elas funcionam no app instalado na Tela de Início.</p>'}
-      <div class="foot">${canNotify ? `<button class="btn block" data-act="enableNotif">Ativar lembretes</button><button class="btn ghost block" data-act="onbDone">Agora não</button>` : '<button class="btn block" data-act="onbDone">Concluir</button>'}</div>`;
+      <div class="foot">${canNotify ? `<button class="btn block" data-act="enableNotif">Permitir</button><button class="btn ghost block" data-act="onbDone">Agora não</button>` : '<button class="btn block" data-act="onbDone">Concluir</button>'}</div>`;
   }
   return { title: 'Boas-vindas', chrome: 'bare', html: `<div class="onb">${dots}${body}</div>` };
 }
@@ -1204,36 +1403,17 @@ function Onboarding() {
 const ROUTES = {
   onboarding: Onboarding, hoje: Hoje, saude: Saude, 'saude/treino': Treino, 'saude/campanha': Campanha, 'saude/dieta': Dieta, 'saude/exames': Exames,
   dinheiro: Dinheiro, 'dinheiro/contas': Contas, 'dinheiro/cartoes': Cartoes, 'dinheiro/patrimonio': Patrimonio, 'dinheiro/importar': Importar, 'dinheiro/sincronizar': Sincronizar,
-  agenda: Agenda, ficha: Ficha, ajustes: Ajustes, estados: Estados,
+  agenda: Agenda, ficha: Ficha, ajustes: Ajustes,
 };
-const TAB_OF = (r) => (r.startsWith('saude') ? 'saude' : r.startsWith('dinheiro') ? 'dinheiro' : r === 'agenda' ? 'agenda' : ['ficha', 'ajustes', 'estados'].includes(r) ? 'ficha' : 'hoje');
-const MAP = [
-  ['Começo', [['onboarding', 'Boas-vindas e instalação', 'sparkle'], ['hoje', 'Hoje', 'sun']]],
-  ['Saúde', [['saude', 'Visão geral', 'heart'], ['saude/treino', 'Registro de treino', 'dumbbell'], ['saude/campanha', 'Campanha de 24 semanas', 'target'], ['saude/dieta', 'Dieta do dia', 'utensils'], ['saude/exames', 'Exames e medidas', 'flask']]],
-  ['Dinheiro', [['dinheiro', 'Visão geral', 'wallet'], ['dinheiro/contas', 'Contas a pagar', 'receipt'], ['dinheiro/cartoes', 'Cartões e faturas', 'card'], ['dinheiro/patrimonio', 'Patrimônio', 'pie'], ['dinheiro/importar', 'Importar extratos', 'upload'], ['dinheiro/sincronizar', 'Open Finance (login)', 'link']]],
+const TAB_OF = (r) => (r.startsWith('saude') ? 'saude' : r.startsWith('dinheiro') ? 'dinheiro' : r === 'agenda' ? 'agenda' : ['ficha', 'ajustes'].includes(r) ? 'ficha' : 'hoje');
+// Navegação lateral no computador.
+const NAV = [
+  ['Hoje', [['hoje', 'Hoje', 'sun']]],
+  ['Saúde', [['saude', 'Visão geral', 'heart'], ['saude/treino', 'Treino', 'dumbbell'], ['saude/campanha', 'Plano de treino', 'target'], ['saude/dieta', 'Dieta do dia', 'utensils'], ['saude/exames', 'Exames e medidas', 'flask']]],
+  ['Dinheiro', [['dinheiro', 'Visão geral', 'wallet'], ['dinheiro/contas', 'Contas a pagar', 'receipt'], ['dinheiro/cartoes', 'Cartões e faturas', 'card'], ['dinheiro/patrimonio', 'Patrimônio', 'pie'], ['dinheiro/sincronizar', 'Sincronizar', 'link']]],
   ['Assessor', [['agenda', 'Agenda e tarefas', 'calendar']]],
-  ['Personagem', [['ficha', 'Ficha do personagem', 'shield'], ['ajustes', 'Integrações e ajustes', 'sliders'], ['estados', 'Estados das telas', 'eye']]],
+  ['Personagem', [['ficha', 'Ficha do personagem', 'shield'], ['ajustes', 'Integrações e ajustes', 'sliders']]],
 ];
-
-const NOTES = {
-  onboarding: ['Boas-vindas', 'Quatro passos curtos, todos puláveis.', ['Primeiro a promessa (“você é o personagem principal”), depois só o que muda o app: aparelhos, instalação e lembretes.', 'No iPhone, notificação só funciona com o app na Tela de Início. Por isso a instalação vem antes do pedido de permissão, e o pedido sai de um botão.', 'As respostas sobre Apple Watch, balança e iOS decidem o que entra sozinho e o que vira um toque de confirmação.', 'O nível 2 chega no primeiro dia (progresso dado de partida).'], 'M1'],
-  hoje: ['Hoje', 'Abrir, ver o dia e registrar em menos de 30 segundos.', ['Check-in já preenchido (último peso, sono do Apple Health): na maioria dos dias é 1 toque em Salvar.', 'Três missões fixas, sempre as mesmas: Corpo, Combustível, Missão, cada uma com o XP à vista. A Missão é escolhida de manhã (a conta mais urgente ou o Top 1) e não muda durante o dia.', 'Energia (sono, VFC, FC de repouso) adapta o treino em vez de tirar XP: amarela reduz o esforço, vermelha troca por recuperação com o mesmo XP.', 'Consistência em 28 dias é o número principal; a Chama perdoa uma falta por semana (brasa) e congela no Modo Pausa.', 'Dinheiro resumido num número: quanto dá para gastar até o pagamento, com a data.', 'À noite aparece “Fechar o dia” com o plano de amanhã. Use o seletor de estados para ver manhã, feito e noite.'], 'M1'],
-  saude: ['Saúde', 'Tendências, não números soltos.', ['Peso mostrado como tendência suavizada (média móvel exponencial). A variação diária não ganha cor de bom ou ruim.', 'Sono com alvo de 7 h e barras mais fracas nas noites abaixo do alvo.', 'O plano de 24 semanas do Notion vira a Campanha, com 4 atos de 6 semanas.', 'Fonte: Apple Health por um Atalho grátis que envia os dados ao abrir o celular. Strava fica fora (a API exige assinatura).'], 'M1 · automação no M3'],
-  'saude/treino': ['Registro de treino', 'Feito para usar na academia, com uma mão.', ['Carga e repetições já preenchidas com a sugestão da progressão dupla: bateu o topo da faixa em todas as séries, sobe a carga.', 'Concluir a série dispara o descanso com contagem. Botões de 48 px, sem teclado na maior parte do tempo.', 'Modo foco: sem barra de abas, para não sair sem querer.', 'Recorde pessoal (carga estimada acima da sua melhor marca) dá +25 XP, uma vez por dia. XP de treino: uma sessão por dia, no valor do plano; reposição nunca vale mais que o planejado.'], 'M1'],
-  'saude/campanha': ['Campanha de 24 semanas', 'O plano periodizado como uma temporada.', ['Ato I Fundação (adaptação), II Construção (hipertrofia), III Intensificação (força), IV Pico (condicionamento).', 'Cada ato termina com semana leve (“Acampamento”) e um Teste do Ato.', 'O BJJ aparece como desbloqueio com critérios claros, não como nível ou faixa.', 'Recomeço a cada 6 semanas: um novo ato é um bom momento para retomar se a semana foi ruim.'], 'M1'],
-  'saude/dieta': ['Dieta do dia', 'Marcar o que comeu do plano, sem contar caloria por caloria.', ['O tipo de dia (forte, treino, leve) vem do plano de treino e muda as porções.', 'Proteína é a missão: a partir de 90% da meta já conta.', 'Comer abaixo da faixa não dá XP, para o jogo não incentivar comer menos.', 'Refeição fora do plano: busca na Tabela TACO (offline) e depois no Open Food Facts.'], 'M1'],
-  'saude/exames': ['Exames e medidas', 'Informação, nunca diagnóstico.', ['Cada marcador mostra o valor dentro da faixa de referência do próprio laboratório.', 'Fora da faixa aparece em âmbar, sem vermelho e sem alarme.', 'O PDF original fica na pasta do Google Drive; o app guarda só o link e os valores.', 'Medidas são uma missão mensal, não diária.'], 'M3'],
-  dinheiro: ['Dinheiro', 'Um número para o dia, detalhes quando quiser.', ['“Livre para gastar até o pagamento” = saldo − contas até o pagamento − fatura que vence antes. Toque para ver a conta.', 'Contas dos próximos 7 dias com o status sempre em texto, não só em cor.', 'Reserva de emergência como “Escudo da Reserva”: cada aporte reforça. Só existe um chefe por mês, na Ficha.', 'Gastos por categoria contra a média de 6 meses. Só pessoa física; as empresas ficam fora.'], 'M2'],
-  'dinheiro/contas': ['Contas a pagar', 'Calendário e lista no mesmo lugar.', ['Pontos por dia no calendário, com legenda. Tocar no dia filtra a lista.', 'Quatro status: paga, agendada (débito automático ou Pix Automático), a vencer, atrasada.', 'Recorrentes detectadas no extrato (3 ocorrências, intervalo de ~30 dias, valor parecido) + DDA + cadastro manual.', 'Lembretes D-3 e D-0 dentro do resumo das 07:00, sem notificação extra.'], 'M1 manual · M2 automático'],
-  'dinheiro/cartoes': ['Cartões e faturas', 'Fatura do jeito que o banco cobra.', ['Fechada, aberta e próxima numa tela só, com fechamento, vencimento e melhor dia de compra.', 'Parcelas “3/10” reconhecidas na importação e projetadas nos meses seguintes.', '“Comprometido” soma a fatura aberta e as parcelas futuras para mostrar o limite real.', 'Alerta de rotativo ou parcelamento de fatura (fase 2).'], 'M2'],
-  'dinheiro/patrimonio': ['Patrimônio', 'Visão de contador, quando quiser.', ['Resumo com alocação e evolução de 12 meses, ou o balanço patrimonial completo (ativo, passivo, PL).', 'Foto mensal no dia 1º; a âncora oficial é o IRPF (bens e direitos em 31/12).', 'Veículo pela FIPE, FGTS pelo extrato, investimentos pela posição da B3 ou da corretora.', 'Projeção de independência financeira libera no nível 10.'], 'M2'],
-  'dinheiro/sincronizar': ['Open Finance', 'Login por código no e-mail; os dados vêm do banco do Supabase.', ['Sem senha: o Supabase manda um código de 6 dígitos para o e-mail da conta.', 'Só a conta dona lê os dados (RLS no banco). Outra conta entra, mas não vê nada.', 'A última leitura fica guardada no aparelho para abrir sem internet; ao abrir o app, ele busca de novo se passou de 10 minutos.', 'Sair apaga a sessão e a cópia deste aparelho; no Supabase nada muda.'], 'M2'],
-  'dinheiro/importar': ['Importar extratos', 'O caminho principal até o Open Finance entrar.', ['Ordem de preferência: OFX, depois CSV ou XLSX, depois PDF.', 'O arquivo é lido no aparelho. Prévia com categorias por regra, duplicados marcados e conciliação de saldo antes de gravar.', 'Cada importação é um lote que pode ser desfeito.', 'Meu Pluggy (grátis, uso pessoal, 5 bancos) entra na fase 2, depois que a importação estiver sólida.'], 'M2'],
-  agenda: ['Agenda e tarefas', 'O assessor: o que fazer e quando.', ['Captura rápida em português: “pagar IPVA dia 10 R$ 820 #financas” vira tarefa com data, área e valor (e sugere conta a pagar). Experimente digitar.', 'Só 3 prioridades por dia contam para o atributo Foco, para tarefas pequenas não inflarem o placar.', 'Linha do dia junta agenda do Google, treino do plano, contas e hora de dormir.', 'Notificações: no máximo 3 por dia, silêncio das 22h às 7h.'], 'M1'],
-  ficha: ['Ficha do personagem', 'Você, em 6 atributos.', ['FOR força, VIG cardio, REC sono, NUT nutrição, PAT patrimônio, FOC organização. Todos de 0 a 100 numa janela de 28 dias, com nota de S a E.', 'Toque num atributo para ver como ele é calculado e o que faz subir.', 'Consistência em 28 dias vem antes da Chama. A Chama perdoa: 1 falta livre por semana (“brasa”) e Modo Pausa.', 'Sem punição: XP nunca cai, chefe que foge não tira nada, nada se compra.'], 'M1'],
-  ajustes: ['Integrações e ajustes', 'O que conecta e como.', ['Apple Health por Atalho grátis (o app exportador pago é opcional, só depois de testar).', 'Google Agenda pelo endereço privado iCal (só leitura). Gravar blocos na agenda fica para depois.', 'Open Finance pelo Meu Pluggy na fase 2. Strava fora.', 'Teste de notificação real: funciona no navegador do computador e no iPhone com o app instalado.'], 'M1–M3'],
-  estados: ['Estados', 'O app nunca fica em branco.', ['Offline: tudo grava no aparelho e sincroniza depois, com contagem de pendentes.', 'Primeiro uso: cada tela vazia diz qual é o próximo passo.', 'Dados antigos ficam cinza (“névoa”) em vez de inventar números.', 'Problema de integração aparece com o conserto, não só com o erro.'], 'M1'],
-};
 
 // ---------- Folhas (bottom sheets) ----------
 // Chave estável de um controle, para devolver o foco depois que a tela é redesenhada.
@@ -1353,73 +1533,70 @@ function showUpdate() {
   app.appendChild(d); app.classList.add('has-upd'); fitRestbar();
 }
 
-function mapHtml() {
-  return `${demoControls()}${MAP.map(([g, items]) => `<h3 class="small muted" style="margin:16px 0 4px;text-transform:uppercase;letter-spacing:.06em">${g}</h3><div class="card tight" style="margin:0">${items.map(([r, l, ic]) => `<a class="row" href="#/${r}" data-act="closeSheetNav"><span class="badge-ic">${I(ic, 20)}</span><span class="ttl grow">${l}</span>${I('chevR', 20, 'class="ic muted"')}</a>`).join('')}</div>`).join('')}`;
-}
-function demoControls() {
-  return `<div class="field" style="margin-top:6px"><span>Estado da tela Hoje</span><div class="seg" role="group" aria-label="Estado da tela Hoje">${[['auto', 'Real'], ['manha', 'Manhã'], ['feito', 'Feito'], ['noite', 'Noite']].map(([k, l]) => `<button aria-pressed="${S.demo === k}" data-act="demo" data-arg="${k}">${l}</button>`).join('')}</div></div>
-    <div class="row" style="border:0;min-height:52px"><div class="grow"><div class="ttl">Simular sem internet</div></div><button class="switch" role="switch" aria-checked="${S.offline}" data-act="offline" aria-label="Simular sem internet"></button></div>
-    <div class="seg" role="group" aria-label="Tema">${[['system', 'Sistema'], ['light', 'Claro'], ['dark', 'Escuro']].map(([k, l]) => `<button aria-pressed="${S.theme === k}" data-act="theme" data-arg="${k}">${l}</button>`).join('')}</div>`;
-}
 
 function safeSheet() {
   const M = money();
-  openSheet(M.livre < 0 ? 'Falta para as contas' : 'Livre para gastar', `<p class="small muted" style="margin:0 0 8px">${D.REAL ? `Até o fim do mês, ${dShort(M.payday)} (${rel(M.payday)}). Com os dados reais a conta fecha no último dia do mês.` : `Até o pagamento em ${dShort(M.payday)} (${rel(M.payday)}).`}</p>
+  openSheet(M.livre < 0 ? 'Falta para as contas' : 'Livre para gastar', `<p class="small muted" style="margin:0 0 8px">Até o fim do mês, ${dShort(M.payday)} (${rel(M.payday)}).</p>
     <table class="bp"><tr><td>Saldo em conta</td><td>${brl(M.saldo)}</td></tr>
-    <tr><td>− Contas até ${dShort(M.payday)} (${M.due.length}${D.REAL ? '' : ', com o aporte da reserva'})<div class="xs muted">${M.due.map((b) => esc(b.n.split(' · ')[0])).join(', ') || 'nenhuma'}</div></td><td>${brl(-M.contas)}</td></tr>
-    ${semCartao() ? '' : `<tr><td>− Fatura do ${esc(card0())}${M.faturaAntes ? `, vence ${dShort(M.fb.due)}` : M.fb.pago ? ', já paga' : `: vence ${dShort(M.fb.due)}, depois do pagamento`}</td><td>${brl(-M.faturaAntes)}</td></tr>`}
+    <tr><td>− Contas até ${dShort(M.payday)} (${M.due.length})<div class="xs muted">${M.due.map((b) => esc(b.n.split(' · ')[0])).join(', ') || 'nenhuma'}</div></td><td>${brl(-M.contas)}</td></tr>
+    ${semCartao() ? '' : `<tr><td>− Fatura do ${esc(card0())}${M.faturaAntes ? `, vence ${dShort(M.fb.due)}` : M.fb.pago ? ', já paga' : `: vence ${dShort(M.fb.due)}, depois do fim do mês`}</td><td>${brl(-M.faturaAntes)}</td></tr>`}
     <tr class="tot"><td>${M.livre < 0 ? 'Falta' : 'Livre'}</td><td>${brl(M.livre)}</td></tr></table>
-    <p class="small muted" style="margin-top:12px">Pagar uma conta não muda esse número: sai do saldo e da lista ao mesmo tempo. ${semCartao() ? '' : M.fb.pago ? 'A fatura aberta já foi paga: compras novas no cartão vão para a próxima, que vence depois do pagamento, e não mexem neste número.' : 'Gastar no cartão reduz, porque aumenta a fatura que vence antes do pagamento.'} Use “Registrar → Gasto” para ver.</p>`);
+    <p class="small muted" style="margin-top:12px">Pagar uma conta não muda esse número: sai do saldo e da lista ao mesmo tempo. ${semCartao() ? '' : M.fb.pago ? 'A fatura aberta já foi paga: compras novas no cartão vão para a próxima e não mexem neste número.' : 'Gastar no cartão reduz, porque aumenta a fatura que vence antes do fim do mês.'} Use “Registrar → Gasto” para ver.</p>`);
 }
 function energiaSheet() {
-  const h = S.checkin ? S.checkin.s : S.sleep, E = energia(h), Z = zoneOf(E);
-  openSheet('Energia', `<div class="row-flex">${ring(E, Z, 72)}<div><b class="zpill zone-${Z}">${ZNAME[Z]}</b><p class="small muted">Calculada de manhã. Nunca aumenta nem diminui XP.</p></div></div>
-    <table class="bp" style="margin-top:12px"><tr><td>Sono da noite (55%)</td><td>${h >= 9 ? '9 h+' : h < 5 ? '< 5 h' : h + ' h'}</td></tr><tr><td>Variabilidade cardíaca vs sua média de 30 dias (25%)</td><td>normal</td></tr><tr><td>FC de repouso vs sua média de 30 dias (20%)</td><td>normal</td></tr></table>
-    <div class="card tight" style="margin:14px 0 0">${[['verde', '67 ou mais', 'Treino planejado. Três dias verdes seguidos sugerem tentar +2,5 kg.'], ['amarelo', '34 a 66', 'Mesmo treino, esforço máximo 8 e uma série a menos.'], ['vermelho', '33 ou menos', 'Troca por recuperação, com o mesmo XP. Dois dias seguidos sugerem semana leve.']].map(([z, r, t]) => `<div class="row zone-${z}"><span class="zpill" style="width:86px">${ZNAME[z]}</span><div class="grow"><div class="ttl small">${r}</div><div class="meta">${t}</div></div></div>`).join('')}</div>
-    <p class="xs muted" style="margin-top:10px">Na demonstração, mude as horas de sono no check-in para ver a zona mudar.</p>`);
+  const h = sleepNow(), Z = zoneOf(h), P = D.SAUDE && D.SAUDE.plano, regras = P ? P.lista('sono') : [];
+  openSheet('Energia', `<div class="row-flex">${ring(h == null ? 0 : lin(h, 4, 8), Z, 72, h == null ? '—' : hShort(h))}<div><b class="zpill zone-${Z}">${ZNAME[Z]}</b><p class="small muted">${h == null ? 'Sem check-in hoje.' : `${hTxt(h)} de sono, pelo check-in de hoje.`} Nunca aumenta nem diminui XP.</p></div></div>
+    <div class="card tight" style="margin:14px 0 0">${[['verde', '7 h ou mais', 'Treino completo, como no plano.'], ['amarelo', 'De 6 a 7 h', 'Mesmo treino, com uma série a menos por exercício.'], ['vermelho', 'Menos de 6 h', 'Só caminhada leve ou mobilidade, com o mesmo XP.']].map(([z, r, t]) => `<div class="row zone-${z}"><span class="zpill" style="width:86px">${ZNAME[z]}</span><div class="grow"><div class="ttl small">${r}</div><div class="meta" style="white-space:normal">${t}</div></div></div>`).join('')}</div>
+    ${regras.length ? `<h3 class="small muted" style="margin:16px 0 4px;text-transform:uppercase;letter-spacing:.06em">Do seu plano</h3><ul class="small" style="padding-left:20px;margin:0">${regras.map((x) => `<li style="margin:4px 0">${txtBr(x)}</li>`).join('')}</ul>` : ''}
+    <p class="xs muted" style="margin-top:10px">Variabilidade cardíaca e frequência de repouso entram na conta quando o Apple Health for conectado.</p>`);
 }
 function attrSheet(k) {
-  const a = D.ATTRS.find((x) => x.k === k);
-  openSheet(`${a.k} · ${a.nome}`, `<div style="--c:${a.cor}"><div class="row-flex"><div class="big" style="color:var(--c)">${a.v}</div><span class="rank" style="width:32px;height:32px;font-size:15px">${rank(a.v)}</span><span class="small muted right">${a.d >= 0 ? '+' : '−'}${Math.abs(a.d)} em 7 dias</span></div><div style="margin-top:8px">${bar(a.v, a.cor, 'lg')}</div></div>
+  const a = attrs().find((x) => x.k === k); if (!a) return;
+  openSheet(`${a.k} · ${a.nome}`, `<div style="--c:${a.cor}"><div class="row-flex"><div class="big" style="color:var(--c)">${a.v ?? '—'}</div><span class="rank" style="width:32px;height:32px;font-size:15px">${rank(a.v)}</span><span class="small muted right">${a.v == null ? 'sem dados ainda' : deltaTxt(a.d)}</span></div><div style="margin-top:8px">${bar(a.v || 0, a.cor, 'lg')}</div></div>
     <h3 class="small muted" style="margin:16px 0 4px;text-transform:uppercase;letter-spacing:.06em">O que mede</h3><p>${a.mede}</p>
     <h3 class="small muted" style="margin:16px 0 4px;text-transform:uppercase;letter-spacing:.06em">Como subir</h3><ul style="padding-left:20px;margin:0">${a.subir.map((s) => `<li style="margin:4px 0">${s}</li>`).join('')}</ul>
-    <p class="small muted" style="margin-top:14px">Fonte: ${a.fonte}. Notas: S ≥ 90 · A ≥ 75 · B ≥ 60 · C ≥ 40 · D ≥ 20.</p>`);
+    <p class="small muted" style="margin-top:14px">Fonte: ${a.fonte}. A conta começa no primeiro dia de uso, com no mínimo 7 dias. Notas: S ≥ 90 · A ≥ 75 · B ≥ 60 · C ≥ 40 · D ≥ 20.</p>`);
 }
 function billSheet(id) {
   const b = bills().find((x) => x.id === id); if (!b) return;
   openSheet(esc(b.n), `<div class="big">${brl(b.v)}</div><div class="row-flex" style="margin-top:6px">${stChip(b.st)}<span class="small muted">${relDue(b)}</span></div>
-    <table class="bp" style="margin-top:12px"><tr><td>Forma de pagamento</td><td>${b.met}</td></tr><tr><td>Categoria</td><td>${b.cat}</td></tr><tr><td>Lembretes</td><td>3 dias antes e no dia</td></tr></table>
-    ${b.pago ? `<p class="small muted" style="margin-top:14px">${b.met === 'Cartão' ? `Cobrada no ${esc(card0())}: entra na fatura, que é a conta a pagar.` : 'Paga. O lançamento do extrato é ligado a esta conta automaticamente.'}</p>${S.paid[b.id] ? `<div class="btnrow"><button class="btn line" data-act="unpayBill" data-arg="${b.id}">${I('refresh', 20)} Desfazer pagamento</button></div>` : ''}` : `<div class="btnrow"><button class="btn" data-act="payBill" data-arg="${b.id}" data-autofocus>${I('check', 20)} Marcar como paga</button></div><p class="xs muted" style="margin-top:8px">${b.st === 'atrasado' ? 'Venceu, então não dá os +15 XP de conta em dia. Marcar agora tira a conta da lista e do resumo de amanhã.' : 'Paga até o vencimento: +15 XP e o atributo Foco sobe.'}${b.id === missao() && !S.quests.missao ? ' É a Missão de hoje: +20 XP.' : ''}</p>`}`);
+    <table class="bp" style="margin-top:12px"><tr><td>Forma de pagamento</td><td>${esc(b.met || '')}</td></tr><tr><td>Categoria</td><td>${esc(b.cat || '')}</td></tr></table>
+    ${b.pago ? `<p class="small muted" style="margin-top:14px">${b.met === 'Cartão' ? `Cobrada no ${esc(card0())}: entra na fatura, que é a conta a pagar.` : b.porExtrato ? 'Paga: o pagamento já apareceu no extrato.' : 'Marcada como paga por você. Sai da marcação quando o extrato mostrar o pagamento.'}</p>${S.paid[b.id] ? `<div class="btnrow"><button class="btn line" data-act="unpayBill" data-arg="${esc(b.id)}">${I('refresh', 20)} Desfazer pagamento</button></div>` : ''}` : `<div class="btnrow"><button class="btn" data-act="payBill" data-arg="${esc(b.id)}" data-autofocus>${I('check', 20)} Marcar como paga</button></div><p class="xs muted" style="margin-top:8px">${b.st === 'atrasado' ? 'Venceu, então não dá os +15 XP de conta em dia. Marcar agora tira a conta da lista.' : 'Paga até o vencimento: +15 XP.'}${b.id === missao() && !S.quests.missao ? ' É a Missão de hoje: +20 XP.' : ''}</p>`}`);
+}
+function examSheet(n) {
+  const L = ((D.SAUDE && D.SAUDE.exames) || []).filter((e) => e.n === n); if (!L.length) return;
+  const last = L[L.length - 1], nums = L.filter((e) => Number.isFinite(e.v));
+  openSheet(esc(n), `${last.cat || last.lab ? `<p class="small muted" style="margin:0">${[last.cat, last.lab].filter(Boolean).map(esc).join(' · ')}</p>` : ''}
+    ${nums.length >= 2 ? timeChart(nums.map((e) => ({ d: dayAt(e.d), v: e.v })), { label: `${n}: de ${fmtNum(nums[0].v)} para ${fmtNum(nums[nums.length - 1].v)}`, fmt: fmtNum, color: 'var(--a-rec)' }) : ''}
+    <table class="bp" style="margin-top:12px">${L.slice().reverse().map((e) => `<tr><td>${dAno(dayAt(e.d))}${refTxt(e) ? `<div class="xs muted">${refTxt(e)}</div>` : ''}${e.notas ? `<div class="xs muted">${esc(e.notas)}</div>` : ''}</td><td>${exVal(e)} ${exFlag(e)}</td></tr>`).join('')}</table>
+    <p class="xs muted" style="margin-top:10px">Referência do laboratório de cada data. Não é diagnóstico.</p>`, 'exs');
 }
 function quickAdd() {
-  const items = [['openCheckin', 'Check-in', 'scale'], ['nav:saude/treino', 'Treino', 'dumbbell'], ['nav:saude/dieta', 'Refeição', 'utensils'], ['expense', 'Gasto', 'wallet'], ['nav:dinheiro/contas', 'Conta a pagar', 'receipt'], ['task', 'Tarefa ou nota', 'note'], ['nav:saude/exames', 'Medidas', 'target'], ['nav:dinheiro/importar', 'Extrato', 'upload']];
-  openSheet('Registrar', `<div class="qa">${items.map(([a, l, ic]) => `<button data-act="qa" data-arg="${a}">${I(ic)}<span>${l}</span></button>`).join('')}</div><p class="xs muted" style="margin-top:12px">Também pela Siri e pelo botão de Ação do iPhone, com o Atalho “Anotar no Painel”.</p>`, 'qa');
+  const items = [['openCheckin', 'Check-in', 'scale'], ['nav:saude/treino', 'Treino', 'dumbbell'], ['nav:saude/dieta', 'Refeição', 'utensils'], ['expense', 'Gasto', 'wallet'], ['task', 'Tarefa ou nota', 'note'], ['nav:dinheiro/contas', 'Contas', 'receipt']];
+  openSheet('Registrar', `<div class="qa">${items.map(([a, l, ic]) => `<button data-act="qa" data-arg="${a}">${I(ic)}<span>${l}</span></button>`).join('')}</div>`, 'qa');
 }
 const radios = (label, id, opts, sel, labels = {}) => `<div class="field"><span id="${id}">${label}</span><div class="picks" role="radiogroup" aria-labelledby="${id}">${opts.map((c) => `<button type="button" class="pick" role="radio" aria-checked="${c === sel}" tabindex="${c === sel ? 0 : -1}" data-act="radio" data-arg="${esc(c)}" data-val="${esc(c)}">${esc(labels[c] || c)}</button>`).join('')}</div></div>`;
 function expenseSheet() {
   const cats = ['Mercado', 'Alimentação fora', 'Transporte', 'Saúde', 'Lazer', 'Compras'];
   openSheet('Gasto rápido', `<label class="field"><span>Valor</span><input class="input" id="ex-v" inputmode="decimal" placeholder="R$ 0,00" style="font-size:24px;font-weight:750" data-autofocus value="${esc(S.draftExpense)}"></label>
     ${radios('Categoria', 'ex-cat', cats, 'Mercado')}
-    ${semCartao() ? radios('Pago com', 'ex-met', ['Pix', 'Dinheiro'], 'Pix') : radios('Pago com', 'ex-met', ['Cartão Alfa', 'Pix', 'Dinheiro'], 'Cartão Alfa', { 'Cartão Alfa': card0() })}
+    ${semCartao() ? radios('Pago com', 'ex-met', ['Pix', 'Dinheiro'], 'Pix') : radios('Pago com', 'ex-met', [CARD, 'Pix', 'Dinheiro'], CARD, { [CARD]: card0() })}
     <button class="btn block" style="margin-top:16px" data-act="saveExpense">Salvar gasto</button><p class="xs muted" style="margin-top:8px">${S.paid.fatura && !semCartao() ? `No ${esc(card0())} vai para a próxima fatura (a aberta já foi paga) e não muda o “livre para gastar”. Pix e dinheiro saem do saldo na hora.` : 'Entra na hora no “livre para gastar”.'} Quando o extrato chegar, o lançamento é ligado a este gasto e não duplica.</p>`, 'ex');
 }
 function chamaSheet() {
   const sk = streakNow();
-  openSheet('Chama', `<div class="row-flex">${I('flame', 28, 'class="ic flame"')}<div class="big">${sk} dias</div></div>
-    <p class="small" style="margin-top:8px">Dias seguidos com check-in. Recorde: ${Math.max(S.best, sk)} dias.</p>
+  openSheet('Chama', `<div class="row-flex">${I('flame', 28, 'class="ic flame"')}<div class="big">${sk} dia${sk === 1 ? '' : 's'}</div></div>
+    <p class="small" style="margin-top:8px">Dias seguidos com check-in. Recorde: ${diasTxt(Math.max(S.best, sk))}.</p>
     <table class="bp" style="margin-top:12px"><tr><td>Brasa (1 falta livre a cada 7 dias)</td><td>${brasaFree() ? 'disponível' : `volta em ${dShort(D.addDays(dayAt(S.brasaAt), 7))}`}</td></tr><tr><td>Modo Pausa (doente ou viajando)</td><td>${S.pausa ? 'ligado' : 'desligado'}</td></tr></table>
-    <p class="small muted" style="margin-top:12px">Se você faltar e tiver brasa, a Chama não apaga: fica âmbar no dia seguinte. Sem brasa, ela recomeça do zero, mas XP, nível e atributos nunca caem. A consistência em 28 dias é o número principal porque um dia ruim mexe pouco nela.</p>
+    <p class="small muted" style="margin-top:12px">Se você faltar e tiver brasa, a Chama não apaga: fica âmbar no dia seguinte. Sem brasa, ela recomeça do zero, mas XP e nível nunca caem. A consistência em 28 dias é o número principal porque um dia ruim mexe pouco nela.</p>
     <div class="btnrow"><a class="btn line" href="#/ajustes" data-act="closeSheetNav">${I('pause', 20)} Modo Pausa em Ajustes</a></div>`);
 }
 function confirmSheet(title, text, yes, yesArg, no = 'Continuar') {
   openSheet(title, `<p class="small">${text}</p><div class="btnrow"><button class="btn" data-act="${yes}" data-arg="${yesArg}">Concluir assim mesmo</button><button class="btn ghost" data-act="closeSheet" data-autofocus>${no}</button></div>`, 'cf');
 }
-function importCatSheet() {
-  const opts = ['Moradia', 'Transporte', 'Impostos e taxas', 'Saúde', 'Outros'];
-  openSheet('Categoria do lançamento', `<p class="small muted" style="margin:0">PAGTO ELETRON TRIBUTO · ${brl(96.10)}</p>${radios('Categoria', 'imp-cat', opts, S.importCat || 'Moradia')}<button class="btn block" style="margin-top:12px" data-act="importCatSave">Usar esta categoria</button>`, 'ic');
-}
 
 // ---------- Ações ----------
+const newId = (p) => `${p}${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
 const A = {
   sbSync: () => syncNow(true),
   sbResend: () => { if (!resendWait()) sbSend(LG.email, true); },
@@ -1427,30 +1604,40 @@ const A = {
   // Sair: nada que esteja em andamento (leitura ou renovação da sessão) pode gravar de volta depois disso.
   sbLogout: async () => {
     if (leaving) return;
-    if (!confirm('Sair deste aparelho? A sessão e a cópia dos dados daqui são apagadas. No Supabase nada muda.')) return;
+    if (!confirm('Sair deste aparelho? A sessão e a cópia do dinheiro e da saúde daqui são apagadas. No Supabase nada muda.')) return;
     leaving = true; render(true); announce('Saindo…');
-    try { localStorage.removeItem(REALK); } catch { /* nada a apagar */ }
-    S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.expenses = []; save();
+    try { localStorage.removeItem(REALK); localStorage.removeItem(SAUDEK); } catch { /* nada a apagar */ }
+    S.paid = {}; S.paidAmt = {}; S.paidAt = {}; save();
     const r = await SB.signOut();
     try { sessionStorage.setItem('painel-saiu', r === true || r === 'ok' ? '1' : r === 'sem-rede' ? 'sem-rede' : 'erro'); } catch { /* sem aviso depois */ }
     location.reload();
   },
   closeSheet: () => closeSheet(),
   closeSheetNav: (_, el, e) => { const href = el?.getAttribute?.('href'); if (href) { e.preventDefault(); navFromSheet(href); } else closeSheet(true, false); },
-  map: () => openSheet('Mapa do wireframe', mapHtml(), 'map'),
   back: (_, el, e) => { e.preventDefault(); history.back(); },
   quest: (k) => {
     if (k === 'missao') {
-      // Conta: pagar ou desfazer sempre pela folha da conta, com o mesmo XP de qualquer lugar.
+      // Conta: pagar ou desfazer sempre pela folha da conta. Top 1: marca a tarefa, com o mesmo XP de qualquer lugar.
       const ref = missao();
-      if (ref === 't1') { A.top3('t1'); return; }
-      billSheet(ref); return;
+      if (ref !== 't1') {
+        const b = bills().find((x) => x.id === ref);
+        if (b && b.pago && !S.paid[ref]) { setQuest('missao', !S.quests.missao); render(true); return; } // paga fora do app
+        billSheet(ref); return;
+      }
+      const t = top1();
+      if (t && t.done && t.doneAs !== 'missao' && !S.quests.missao) { t.doneAs = 'missao'; S.xp = Math.max(0, S.xp - 10); setQuest('missao', true); render(true); return; }
+      if (t) { A.doneTop(t.id); return; }
+      toast('Escolha o Top 1 na Agenda: toque na estrela de uma tarefa.', '', 4200); go('#/agenda'); return;
     }
     if (k === 'corpo' && !S.quests.corpo) S.corpoKey = corpoDefault();
     if (k === 'comb') S.combByMeals = false;
     setQuest(k, !S.quests[k]); render(true);
   },
-  wstep: (d) => { const el = document.getElementById('ci-w'); const v = parseFloat((el.value || '0').replace(',', '.')) + parseFloat(d); el.value = n1(Math.max(30, Math.min(250, v))); },
+  wstep: (d) => {
+    const el = document.getElementById('ci-w'), lw = lastWeight();
+    const cur = parseFloat((el.value || '').replace(',', '.')), base = Number.isFinite(cur) ? cur : lw ? lw.v : 80;
+    el.value = n1(Math.max(30, Math.min(250, base + (Number.isFinite(cur) ? parseFloat(d) : 0))));
+  },
   sleep: (v, el) => {
     S.sleep = parseFloat(v);
     el.closest('[role="radiogroup"]').querySelectorAll('[role="radio"]').forEach((b) => { const on = b === el; b.setAttribute('aria-checked', on); b.tabIndex = on ? 0 : -1; });
@@ -1458,9 +1645,10 @@ const A = {
     save(); if (S.checkin) { render(true); setTimeout(checkBoss, 600); }
   },
   saveCheckin: () => {
-    const el = document.getElementById('ci-w'); const w = parseFloat((el?.value || '').replace(',', '.'));
-    if (!(w > 30 && w < 250)) { toast('Confira o peso: use algo como 86,4.'); el?.focus(); return; }
-    const first = !S.checkin; S.demo = 'auto'; S.checkin = { w, s: S.sleep }; S.weight = w;
+    const el = document.getElementById('ci-w'), raw = (el?.value || '').trim(), w = raw ? parseFloat(raw.replace(',', '.')) : null;
+    if (w != null && !(w > 30 && w < 250)) { toast('Confira o peso: use algo como 82,5, ou deixe vazio.'); el?.focus(); return; }
+    if (fin(S.sleep) == null) { toast('Escolha as horas de sono.'); sheetRoot.querySelector('#sheet [role="radio"][tabindex="0"]')?.focus() || main.querySelector('[role="radio"][tabindex="0"]')?.focus(); return; }
+    const first = !S.checkin; S.checkin = { w, s: S.sleep }; if (w != null) S.weight = w;
     // XP fixo: dormir pouco não tira XP (o sono alimenta Recuperação e o chefe).
     if (first) addXP(20, S.sleep >= 7 ? 'Check-in feito · golpe no chefe' : 'Check-in feito'); else { touch(); toast('Check-in atualizado'); }
     setTimeout(checkBoss, 900);
@@ -1473,18 +1661,17 @@ const A = {
     if (inline && current() === 'hoje') { closingByPop = false; closeSheet(true, false); inline.scrollIntoView({ block: 'center' }); inline.focus({ preventScroll: true }); return; }
     openSheet('Check-in', `${checkinForm()}<button class="btn block" style="margin-top:16px" data-act="saveCheckin">Salvar check-in</button>`, 'ci');
   },
-  closeDay: () => { S.closed = true; save(); toast(`${I('moon', 18)} Dia fechado. Amanhã, resumo às 07:00.`); render(true, '#ev-t'); },
-  demo: (k) => { S.demo = k; save(); renderChrome(); if (current() === 'hoje') { render(true); refreshSheet(); } else if (sheetRoot.querySelector('.sheet:not([inert])')) navFromSheet('#/hoje'); else go('#/hoje'); },
-  offline: () => { S.offline = !S.offline; if (!S.offline && S.pending) { toast(`${I('cloudCheck', 18)} Sincronizado: ${S.pending} registro${S.pending > 1 ? 's' : ''}`); S.pending = 0; } save(); render(true); refreshSheet(); renderChrome(); },
-  theme: (k) => { S.theme = k; save(); applyTheme(); render(true); refreshSheet(); renderChrome(); },
+  closeDay: () => { S.closed = true; save(); toast(`${I('moon', 18)} Dia fechado. Bom descanso.`); render(true, '#ev-t'); },
+  theme: (k) => { S.theme = k; save(); applyTheme(); render(true); renderChrome(); },
   energia: () => energiaSheet(),
   safe: () => safeSheet(),
   attr: (k) => attrSheet(k),
   bill: (id) => billSheet(id),
+  exame: (n) => examSheet(n),
   chama: () => chamaSheet(),
   payBill: (id) => {
     const b = bills().find((x) => x.id === id); if (!b || b.pago) return;
-    S.paid[id] = true; S.paidAmt[id] = b.v; S.paidAt[id] = { m: D.iso(diaNow()).slice(0, 7), t: new Date().toISOString(), due: D.iso(b.due), n: billName(b) };
+    S.paid[id] = true; S.paidAmt[id] = b.v; S.paidAt[id] = { m: D.iso(diaNow()).slice(0, 7), t: new Date().toISOString(), due: D.iso(b.due), n: billName(b), xp: b.st !== 'atrasado' ? 15 : 0 };
     lastFocusKey = focusKey(lastFocus) || lastFocusKey;
     closeSheet(true);
     if (b.st !== 'atrasado') addXP(15, 'Conta paga em dia'); else { touch(); toast(`${I('check', 18)} Conta marcada como paga`); }
@@ -1493,10 +1680,11 @@ const A = {
   },
   unpayBill: (id) => {
     if (!S.paid[id]) return;
+    const at = S.paidAt[id];
+    const xp = at && Number.isFinite(at.xp) ? at.xp : 0; // o que foi dado ao marcar (marcação de antes do XP zerado: nada)
     delete S.paid[id]; delete S.paidAmt[id]; delete S.paidAt[id];
     if (id === 'fatura') S.expenses.forEach((x) => { if (x.fat === 'proxima') x.fat = 'aberta'; }); // sem pagamento, voltam para a fatura aberta
-    const b = bills().find((x) => x.id === id);
-    if (b && b.st !== 'atrasado') S.xp = Math.max(0, S.xp - 15);
+    S.xp = Math.max(0, S.xp - xp);
     if (id === missao()) setQuest('missao', false);
     touch(); closeSheet(true); toast('Pagamento desfeito'); render(true);
   },
@@ -1507,142 +1695,157 @@ const A = {
     const row = el.closest('tr'); const ins = row.querySelectorAll('input');
     st.kg = parseFloat(ins[0].value.replace(',', '.')) || 0; st.reps = parseInt(ins[1].value, 10) || 0;
     S.sets[k] = st; if (!S.wStart) S.wStart = Date.now();
-    const sec = parseInt(el.dataset.rest, 10);
+    const sec = parseInt(el.dataset.rest, 10) || 90;
     unlockAudio();
-    if (st.ok) { S.rest = { end: Date.now() + sec * 1000 }; announce(`Série concluída. Descanso de ${sec >= 120 ? sec / 60 + ' minutos' : sec + ' segundos'} iniciado.`); } else S.rest = null;
+    if (st.ok) { S.rest = { end: Date.now() + sec * 1000 }; announce(`Série concluída. Descanso de ${sec >= 120 && sec % 60 === 0 ? sec / 60 + ' minutos' : sec + ' segundos'} iniciado.`); } else S.rest = null;
     touch(); render(true);
   },
   skipRest: () => { S.rest = null; save(); render(true, '.restbar .btn'); },
-  startWorkout: () => { S.wStart = Date.now(); save(); toast(`${I('timer', 18)} Cronômetro iniciado`); render(true); },
+  startWorkout: () => { if (!S.wStart) S.wStart = Date.now(); save(); toast(`${I('timer', 18)} Cronômetro iniciado`); render(true); },
   finishWorkout: (k, el, e, force) => {
-    const sel = k, { key } = todaySession();
-    const Z = zoneOf(energia(S.checkin ? S.checkin.s : S.sleep)), cut = Z === 'amarelo' || Z === 'vermelho';
-    if (['A', 'B', 'C'].includes(sel) && !force && setsDone(sel, cut) === 0) {
-      confirmSheet('Concluir sem séries marcadas?', 'Nenhuma série foi marcada como feita. Se você treinou e só não marcou, pode concluir assim mesmo: o treino conta como feito, sem recorde.', 'finishForce', sel, 'Continuar treino');
+    const sel = k, { key, p } = todaySession();
+    const cut = ['amarelo', 'vermelho'].includes(zoneNow()), FL = FORCA.has(sel) ? fichaList(sel, p) : null;
+    if (FL && FL.list.length && !force && setsDone(sel, FL.list, cut) === 0) {
+      confirmSheet('Concluir sem séries marcadas?', 'Nenhuma série foi marcada como feita. Se você treinou e só não marcou, pode concluir assim mesmo: o treino conta como feito, sem cargas guardadas.', 'finishForce', sel, 'Continuar treino');
       return;
     }
     const fromSheet = !!history.state?.sheet; closingByPop = true; closeSheet(true, false); closingByPop = false;
-    // XP do plano de hoje: reposição nunca vale mais que o planejado, e só uma sessão por dia dá XP.
+    // Cargas da sessão: a última de cada exercício vira a base da próxima sugestão; recorde só depois da primeira vez.
     let pr = false;
-    if (['A', 'B', 'C'].includes(sel)) {
-      D.WORKOUTS[sel].forEach((ex) => ex.reps.forEach((_, i) => {
-        const st = S.sets[`${sel}-${ex.id}-${i}`];
-        if (st && st.ok && st.reps >= ex.rr[0] && e1rm(st.kg, st.reps) > best1rm(ex) + 0.01) { S.best1rm[ex.id] = e1rm(st.kg, st.reps); pr = true; }
-      }));
+    if (FL) {
+      FL.list.forEach((ex, j) => {
+        const feitos = []; for (let i = 0; i < 8; i++) { const st = S.sets[setKey(sel, j, ex, i)]; if (st && st.ok) feitos.push(st); }
+        if (!feitos.length) return;
+        S.lastSets[ex.id] = { kg: Math.max(...feitos.map((x) => x.kg || 0)), reps: feitos.map((x) => x.reps || 0), d: S.day };
+        const b = Math.max(...feitos.map((x) => (x.kg > 0 && x.reps > 0 ? e1rm(x.kg, x.reps) : 0))), prev = S.best1rm[ex.id];
+        if (b > 0) { if (prev != null && b > prev + 0.01) pr = true; if (prev == null || b > prev) S.best1rm[ex.id] = b; }
+      });
       Object.keys(S.sets).forEach((x) => { if (x.startsWith(sel + '-')) delete S.sets[x]; });
     }
+    const minutos = sel === 'Z2' ? z2Min() : 0;
     S.rest = null; S.wStart = null;
-    const label = sel === 'REST' ? 'Mobilidade feita' : sel === 'REC' ? 'Recuperação feita' : `${D.SESSION[sel].nome} concluído${sel !== key ? ' (reposição)' : ''}`;
+    const label = sel === 'REST' ? 'Mobilidade feita' : sel === 'REC' ? 'Recuperação feita' : sel === 'LIVRE' ? 'Treino feito' : `${sessOf(p, sel).nome} concluído${sel !== key && key !== 'LIVRE' ? ' (reposição)' : ''}`;
     if (!S.quests.corpo) {
       S.corpoKey = sel; setQuest('corpo', true, label);
+      if (sel === 'Z2') S.corpoMin = minutos;
       if (pr && !S.prToday) { S.prToday = true; setTimeout(() => addXP(25, 'Recorde pessoal'), 800); }
     } else {
-      if (['REC', 'REST'].includes(S.corpoKey) && !['REC', 'REST'].includes(sel)) S.corpoKey = sel; // a sessão feita conta na semana
-      toast(`${label}. O XP de treino é de uma sessão por dia${pr ? '; o recorde fica salvo na ficha' : ''}.`, '', 3600);
+      // Já ganhou o XP de hoje: a sessão feita (não a recuperação) é a que conta na semana.
+      if (['REC', 'REST', 'LIVRE'].includes(S.corpoKey) && !['REC', 'REST'].includes(sel)) { S.corpoKey = sel; S.corpoMin = minutos; setTimeout(checkWeekly, 600); }
+      toast(`${label}. O XP de treino é de uma sessão por dia${pr ? '; o recorde fica guardado' : ''}.`, '', 3600);
     }
     // Volta para o Hoje sem deixar o treino concluído no caminho do “voltar”.
     save();
-    // Saindo de uma folha: primeiro desfaz a entrada da folha, depois troca o treino pelo Hoje.
     if (fromSheet) { afterPop = () => go('#/hoje', true); history.back(); } else go('#/hoje', true);
   },
   finishForce: (k) => A.finishWorkout(k, null, null, true),
-  daytype: (k) => { S.dayType = k; save(); render(true); },
+  daytype: (k) => { if (!D.DIAS[k]) return; S.dayType = k; save(); render(true); },
   meal: (id) => {
+    const { key } = todaySession(), meals = D.refeicoes(S.dayType || D.tipoDia(key)), pr = D.prot();
     S.meals[id] = !S.meals[id];
-    const p = D.MEALS.filter((m) => S.meals[m.id]).reduce((a, m) => a + m.p, 0);
+    const p = meals.filter((m) => S.meals[m.id]).reduce((a, m) => a + m.p, 0);
     // +3 XP por refeição só na primeira marcação do dia: desmarcar e marcar de novo não paga outra vez.
     if (S.meals[id] && !S.mealXp[id]) { S.mealXp[id] = true; addXP(3, 'Refeição registrada'); } else touch();
-    if (p >= D.PROT.conta && !S.quests.comb) setQuest('comb', true);
-    else if (p < D.PROT.conta && S.quests.comb && S.combByMeals) setQuest('comb', false);
-    if (S.quests.comb && p >= D.PROT.conta) S.combByMeals = true;
+    if (pr) {
+      if (p >= pr.conta && !S.quests.comb) setQuest('comb', true);
+      else if (p < pr.conta && S.quests.comb && S.combByMeals) setQuest('comb', false);
+      if (S.quests.comb && p >= pr.conta) S.combByMeals = true;
+    }
     render(true);
   },
   card: (i) => { S.card = +i; save(); render(true); },
-  fat: (k) => { S.fat = k; save(); render(true); },
   bp: (k) => { S.bp = k; save(); render(true); },
   calnav: (d) => { S.calOff += +d; S.calSel = null; save(); render(true); },
   calsel: (id) => { S.calSel = S.calSel === id ? null : id; save(); render(true); },
   billf: (k) => { S.billFilter = k; save(); render(true); },
-  importNext: () => {
-    S.importStep = Math.min(3, S.importStep + 1); save();
-    if (S.importStep === 3) {
-      // +50 uma vez por mês: importar de novo no mesmo mês atualiza, mas não paga outra vez.
-      const first = !S.importAt || S.importAt.slice(0, 7) !== monthKey(diaNow());
-      S.importAt = D.iso(diaNow()); S.importXp = first;
-      if (first) addXP(50, 'Importação do mês'); else { touch(); toast(`${I('check', 18)} Importação concluída. O bônus do mês já foi.`); }
-    }
-    render(false, '#imp-step');
-  },
-  importBack: () => { S.importStep = Math.max(0, S.importStep - 1); save(); render(false, '#imp-step'); },
-  importReset: () => { S.importStep = 0; save(); render(false, '#imp-step'); },
-  importUndo: () => { if (S.importXp) { S.importXp = false; S.xp = Math.max(0, S.xp - 50); S.importAt = null; } S.importStep = 0; S.importCat = null; touch(); toast(`${I('refresh', 18)} Importação desfeita: 47 lançamentos removidos.`); render(false, '#imp-step'); },
-  importCatSheet: () => importCatSheet(),
-  importCatSave: () => { const v = sheetRoot.querySelector('[aria-labelledby="imp-cat"] [aria-checked="true"]'); S.importCat = v ? v.dataset.val : null; save(); closeSheet(true); render(true); },
-  importRule: () => { S.importRule = !S.importRule; save(); render(true); },
   agview: (k) => { S.agView = k; save(); render(true); },
-  top3: (id) => {
-    const on = !S.top3[id]; S.top3[id] = on;
-    // Top 1 e Missão são a mesma tarefa: paga uma vez só, os +20 da Missão.
-    if (id === 't1' && missao() === 't1') setQuest('missao', on);
-    else if (on) addXP(10, 'Top 3: um a menos'); else { S.xp = Math.max(0, S.xp - 10); touch(); }
+  // Estrela: põe ou tira uma tarefa do Top 3 de hoje (no máximo 3).
+  topInbox: (id) => {
+    const x = S.inbox.find((y) => y.id === id); if (!x || x.done) return;
+    if (x.top === S.day) { x.top = null; x.topAt = null; }
+    else { if (top3().length >= 3) { toast('O Top 3 já está cheio. Conclua ou tire uma tarefa.', '', 3600); return; } x.top = S.day; x.topAt = Date.now(); }
+    save(); render(true, `[data-act="topInbox"][data-arg="${CSS.escape(id)}"]`);
+  },
+  // Concluir uma tarefa do Top 3: +10 XP, ou a Missão (+20) quando é o Top 1. Fica na lista até a virada do dia.
+  doneTop: (id) => {
+    const x = S.inbox.find((y) => y.id === id); if (!x) return;
+    const on = !x.done;
+    if (on) {
+      // Vale como foi marcada: a Missão (Top 1) ou +10 do Top 3. Trocar a ordem depois não muda o que ela deu.
+      const isMissao = missao() === 't1' && top1() && top1().id === id && !S.quests.missao;
+      x.done = S.day; x.doneAs = isMissao ? 'missao' : 'top';
+      if (isMissao) setQuest('missao', true); else addXP(10, 'Top 3: um a menos');
+    } else {
+      const as = x.doneAs; x.done = null; x.doneAs = null;
+      if (as === 'missao') setQuest('missao', false); else { S.xp = Math.max(0, S.xp - 10); touch(); }
+    }
     render(true);
   },
   addInbox: () => {
     const el = document.getElementById('inbox'); const v = el.value.trim(); if (!v) { el.focus(); return; }
-    const p = parseInbox(v); S.inbox.unshift({ t: p.title || v, chips: p.chips.map((c) => c.t) }); S.inboxDraft = ''; touch();
-    toast(p.amount ? `${I('receipt', 18)} Anotado. Tem valor: no app real vira sugestão de conta a pagar.` : `${I('inbox', 18)} Anotado na caixa de entrada`);
+    const p = parseInbox(v), tm = p.chips.find((c) => c.k === 'time');
+    S.inbox.unshift({ id: newId('n'), t: p.title || v, chips: p.chips.map((c) => c.t), quando: p.date ? D.iso(p.date) : null, hora: tm ? tm.t : null }); S.inboxDraft = ''; touch();
+    toast(`${I('inbox', 18)} Anotado na caixa de entrada`);
     render(true, '#inbox');
   },
-  doneInbox: (i) => {
-    S.inbox.splice(+i, 1);
+  doneInbox: (id) => {
+    const i = S.inbox.findIndex((x) => x.id === id); if (i < 0) return;
+    S.inbox.splice(i, 1);
     // Tarefas pequenas valem pouco e têm teto, para não inflar o placar (o Top 3 é o que conta).
     if (S.inboxXp < 5) { S.inboxXp += 1; addXP(2, 'Tarefa concluída'); } else { touch(); toast(`${I('check', 18)} Tarefa concluída`); }
-    render(true, S.inbox.length ? `[data-act="doneInbox"][data-arg="${Math.min(+i, S.inbox.length - 1)}"]` : '#inbox');
+    const rest = S.inbox.filter((x) => x.top !== S.day && !x.done);
+    render(true, rest.length ? `[data-act="doneInbox"][data-arg="${CSS.escape(rest[Math.min(i, rest.length - 1)].id)}"]` : '#inbox');
   },
-  notif: (k) => { S.notif[k] = !S.notif[k]; save(); render(true); },
-  pausa: () => { S.pausa = !S.pausa; save(); toast(S.pausa ? `${I('pause', 18)} Modo Pausa ligado. A Chama fica congelada e os dias saem das médias.` : 'Modo Pausa desligado'); render(true); },
+  pausa: () => { S.pausa = !S.pausa; save(); toast(S.pausa ? `${I('pause', 18)} Modo Pausa ligado. A Chama fica congelada e os dias saem da consistência.` : 'Modo Pausa desligado'); render(true); },
   testNotif: () => testNotif(),
   enableNotif: async () => { await testNotif(true); A.onbDone(); },
   restartOnb: () => { S.onbStep = 0; save(); location.hash = '#/onboarding'; },
   pendentes: () => pendentesSheet(),
-  realClear: () => { if (!confirm('Apagar os seus dados reais deste aparelho? O arquivo no seu computador continua lá.')) return; try { localStorage.removeItem(REALK); } catch { /* nada a apagar */ } S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.expenses = []; save(); location.reload(); },
-  resetDemo: () => { const keep = { theme: S.theme, onboarded: true }; S = Object.assign(defaults(), keep, { day: D.iso(diaNow()) }); S.hist = seedHist(S); bossMonth(S); save(); toast('Demonstração zerada'); if (current() !== 'hoje') go('#/hoje', true); else render(false); renderChrome(); },
-  onbNext: () => { S.onbStep = Math.min(3, (S.onbStep || 0) + 1); save(); render(false, 'h1'); },
-  onbBack: () => { S.onbStep = Math.max(0, (S.onbStep || 0) - 1); save(); render(false, 'h1'); },
-  onbDone: () => { const first = !S.onboarded; S.onboarded = true; S.onbStep = 0; save(); try { navigator.storage?.persist?.(); } catch { /* opcional */ } go('#/hoje', true); if (first) setTimeout(() => toast(`${I('star')} <span>Tudo pronto. A demonstração simula duas semanas de uso.</span>`, 'lvl', 3600), 400); },
-  dev: (a) => { const [k, v] = a.split(':'); if (v === '') delete S.devices[k]; else S.devices[k] = v === '1'; save(); render(true); },
+  realClear: () => { if (!confirm('Apagar os seus dados de dinheiro deste aparelho? O arquivo no seu computador continua lá.')) return; try { localStorage.removeItem(REALK); } catch { /* nada a apagar */ } S.paid = {}; S.paidAmt = {}; S.paidAt = {}; save(); location.reload(); },
+  resetLocal: () => {
+    if (!confirm('Recomeçar neste aparelho? XP, check-ins, treinos, tarefas, gastos anotados e marcações daqui são apagados. O Supabase não muda.')) return;
+    const keep = { theme: S.theme, onboarded: true, nome: S.nome };
+    S = Object.assign(defaults(), keep, { day: D.iso(diaNow()), since: D.iso(diaNow()) }); bossMonth(S); save();
+    toast('Recomeçado neste aparelho'); if (current() !== 'hoje') go('#/hoje', true); else render(false); renderChrome();
+  },
+  exportar: () => {
+    try {
+      const blob = new Blob([JSON.stringify({ app: 'Painel', versao: VERSION, exportadoEm: new Date().toISOString(), estado: S }, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `painel-aparelho-${D.iso(new Date())}.json`;
+      document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      toast(`${I('check', 18)} Arquivo baixado`);
+    } catch { toast('Não consegui gerar o arquivo neste navegador.', 'warn', 4000); }
+  },
+  onbNext: () => { S.onbStep = Math.min(2, (S.onbStep || 0) + 1); save(); render(false, 'h1'); },
+  onbDone: () => { const first = !S.onboarded; S.onboarded = true; S.onbStep = 0; save(); try { navigator.storage?.persist?.(); } catch { /* opcional */ } go('#/hoje', true); if (first) setTimeout(() => toast(`${I('star')} <span>Tudo pronto. Faça o primeiro check-in.</span>`, 'lvl', 3600), 400); },
   install: async () => { if (!deferredPrompt) return; deferredPrompt.prompt(); await deferredPrompt.userChoice; deferredPrompt = null; render(true); },
-  togglePick: (_, el) => el.setAttribute('aria-pressed', el.getAttribute('aria-pressed') !== 'true'),
   radio: (_, el) => el.closest('[role="radiogroup"]').querySelectorAll('[role="radio"]').forEach((b) => { const on = b === el; b.setAttribute('aria-checked', on); b.tabIndex = on ? 0 : -1; }),
-  qa: (a) => { if (a.startsWith('nav:')) navFromSheet('#/' + a.slice(4)); else if (a === 'openCheckin') A.openCheckin(); else if (a === 'expense') expenseSheet(); else if (a === 'task') { navFromSheet('#/agenda'); setTimeout(() => document.getElementById('inbox')?.focus(), 80); } },
+  qa: (a) => { if (a.startsWith('nav:')) navFromSheet('#/' + a.slice(4)); else if (a === 'openCheckin') A.openCheckin(); else if (a === 'expense') expenseSheet(); else if (a === 'task') { S.agView = 'hoje'; navFromSheet('#/agenda'); setTimeout(() => document.getElementById('inbox')?.focus(), 80); } },
   saveExpense: () => {
     const el = document.getElementById('ex-v'); const v = parseMoney(el.value);
     if (!(v > 0 && v < 100000)) { toast('Digite o valor, por exemplo 45,90'); el.focus(); return; }
     const pick = (id) => sheetRoot.querySelector(`[aria-labelledby="${id}"] [aria-checked="true"]`)?.dataset.val;
-    const x = { id: 'x' + Date.now().toString(36), v: Math.round(v * 100) / 100, cat: pick('ex-cat') || 'Mercado', met: pick('ex-met') || (semCartao() ? 'Pix' : 'Cartão Alfa'), d: D.iso(diaNow()), t: new Date().toISOString() };
+    const x = { id: newId('x'), v: Math.round(v * 100) / 100, cat: pick('ex-cat') || 'Mercado', met: pick('ex-met') || (semCartao() ? 'Pix' : CARD), d: D.iso(diaNow()), t: new Date().toISOString() };
     x.ja = sameDebits(x.v, x.d); // lançamentos do mesmo valor que já estavam no extrato não são este gasto
-    if (x.met === 'Cartão Alfa') x.fat = S.paid.fatura ? 'proxima' : 'aberta'; // fatura já paga: o gasto novo vai para a próxima
+    if (x.met === CARD) x.fat = S.paid.fatura ? 'proxima' : 'aberta'; // fatura já paga: o gasto novo vai para a próxima
     S.expenses.push(x); S.draftExpense = ''; touch(); closeSheet(true);
-    toast(`${I('check', 18)} <span>${brl(x.v)} em ${esc(x.cat.toLowerCase())}. Livre: ${brl0(money().livre)}.</span><button class="link" data-act="delExpense" data-arg="${x.id}">Desfazer</button>`, '', 6000);
+    toast(`${I('check', 18)} <span>${brl(x.v)} em ${esc(x.cat.toLowerCase())}.${D.REAL ? ` Livre: ${brl0(money().livre)}.` : ''}</span><button class="link" data-act="delExpense" data-arg="${x.id}">Desfazer</button>`, '', 6000);
     render(true);
   },
   delExpense: (id, el) => {
     const i = S.expenses.findIndex((x) => x.id === id); if (i < 0) return;
     const fromToast = !!el?.closest('.toast');
     const y = S.expenses[i];
-    if (y.met === 'Cartão Alfa' && (y.fat || 'aberta') === 'aberta' && S.paid.fatura) { toast('Esse gasto está na fatura que você já marcou como paga. Para apagar, desfaça o pagamento da fatura primeiro.', '', 4200); return; }
+    if (y.met === CARD && (y.fat || 'aberta') === 'aberta' && S.paid.fatura) { toast('Esse gasto está na fatura que você já marcou como paga. Para apagar, desfaça o pagamento da fatura primeiro.', '', 4200); return; }
     const [x] = S.expenses.splice(i, 1); touch();
     if (fromToast) el.closest('.toast').remove();
-    toast(`${I('refresh', 18)} Gasto de ${brl(x.v)} apagado. Livre: ${brl0(money().livre)}.`);
+    toast(`${I('refresh', 18)} Gasto de ${brl(x.v)} apagado.${D.REAL ? ` Livre: ${brl0(money().livre)}.` : ''}`);
     render(true);
     if (fromToast) restFocus();
   },
-  toastInfo: (msg) => toast(esc(msg), '', 3600),
   reload: () => location.reload(),
   updClose: () => { document.getElementById('upd')?.remove(); app.classList.remove('has-upd'); fitRestbar(); restFocus(); },
   voltar: (r, el, e) => { e?.preventDefault(); if (navStack[hIdx - 1]) history.back(); else go('#/' + r, true); },
-  goto: (r, el, e) => { e?.preventDefault(); go('#/' + r, true); }, // “Voltar”/“Ver Dinheiro” de telas de fim: não deixam a tela no caminho do voltar
-  syncInfo: () => toast((S.offline || !navigator.onLine) ? `${I('wifiOff', 18)} Sem conexão. ${S.pending} registro${S.pending === 1 ? '' : 's'} esperando para sincronizar.` : `${I('cloudCheck', 18)} Tudo sincronizado. Último envio agora há pouco.`, '', 3200),
 };
 
 // Região viva única (fora das telas) para avisos pontuais ao leitor de tela.
@@ -1655,59 +1858,63 @@ async function testNotif(fromOnb) {
   let p = Notification.permission;
   if (p === 'default') { try { p = await Notification.requestPermission(); } catch { p = 'denied'; } }
   if (p !== 'granted') { toast(fromOnb ? 'Tudo bem. Dá para ativar depois em Ajustes.' : 'Permissão negada. Ative nas configurações do navegador.', '', 3600); return; }
-  const opts = { body: 'Cardio zona 2 às 18:30 · 2.150 kcal · 1 conta vence amanhã', icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'resumo' };
-  try { const reg = await navigator.serviceWorker?.getRegistration(); if (reg) await reg.showNotification('Bom dia, Yuri', opts); else new Notification('Bom dia, Yuri', opts); toast(`${I('bell', 18)} Notificação enviada`); } catch { toast('Não foi possível mostrar a notificação aqui.'); }
+  const opts = { body: 'Notificação de teste do Painel. Os lembretes automáticos ainda não existem.', icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'teste' };
+  try { const reg = await navigator.serviceWorker?.getRegistration(); if (reg) await reg.showNotification('Painel', opts); else new Notification('Painel', opts); toast(`${I('bell', 18)} Notificação enviada`); } catch { toast('Não foi possível mostrar a notificação aqui.'); }
 }
 
 function parseInbox(txt) {
   // Limites de palavra que entendem acentos (o \b do JavaScript não entende "amanhã" ou "às").
   const W = (src) => new RegExp(`(?<![\\p{L}\\d])(?:${src})(?![\\p{L}\\d])`, 'iu');
   const chips = []; let t = txt; let amount = null; let date = null;
-  const take = (m) => { t = t.replace(m[0], ' '); };
+  const take = (m) => { t = t.slice(0, m.index) + ' ' + t.slice(m.index + m[0].length); };
   const am = t.match(/R\$\s?(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+(?:,\d{1,2})?)/i);
   if (am) { amount = parseFloat(am[1].replace(/\./g, '').replace(',', '.')); chips.push({ t: brl(amount), k: 'money' }); take(am); }
-  [...t.matchAll(/#([\p{L}\d_]+)/gu)].forEach((m) => { chips.push({ t: '#' + m[1], k: 'tag' }); take(m); });
+  const tags = [...t.matchAll(/#([\p{L}\d_]+)/gu)];
+  tags.forEach((m) => chips.push({ t: '#' + m[1], k: 'tag' }));
+  tags.reverse().forEach(take); // de trás para a frente, para as posições valerem
   const pr = t.match(/!([1-3])/); if (pr) { chips.push({ t: `prioridade ${pr[1]}`, k: 'pr' }); take(pr); }
   const now = diaNow();
-  const rec = t.match(W('tod[oa]s?\\s+(?:as\\s+|os\\s+)?(?:dia\\s+\\d{1,2}|segundas?|terças?|quartas?|quintas?|sextas?|sábados?|domingos?|dias|m[eê]s)'));
-  if (rec) { chips.push({ t: `repete: ${rec[0].toLowerCase()}`, k: 'rec' }); take(rec); }
+  // "todo dia 10", "toda segunda": tarefas que se repetem ainda não existem, então vale só a próxima data.
+  const rec = t.match(/(?<![\p{L}\d])tod[oa]s?\s+(?:as\s+|os\s+)?(?=dia\s+\d|segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)/iu);
+  if (rec) take(rec);
   const dm = t.match(W('hoje|depois de amanh[ãa]|amanh[ãa]'));
   const dmy = t.match(W('(\\d{1,2})/(\\d{1,2})'));
   const dd = t.match(W('dia\\s+(\\d{1,2})'));
-  const dw = t.match(W('(domingo|segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado)(?:-feira)?'));
+  const dw = t.match(W('(domingo|segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado)s?(?:-feira)?'));
   const days = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+  const noMes = (y, m, d) => new Date(y, m, Math.min(d, new Date(y, m + 1, 0).getDate())); // dia 31 em abril → 30/04
+  const dmyOk = dmy && +dmy[1] >= 1 && +dmy[1] <= 31 && +dmy[2] >= 1 && +dmy[2] <= 12, ddOk = dd && +dd[1] >= 1 && +dd[1] <= 31;
   if (dm) { const w = dm[0].toLowerCase(); date = D.addDays(now, w === 'hoje' ? 0 : w.startsWith('depois') ? 2 : 1); take(dm); }
-  else if (dmy) { date = new Date(now.getFullYear(), +dmy[2] - 1, +dmy[1]); if (date < D.startOfDay(now)) date.setFullYear(date.getFullYear() + 1); take(dmy); }
-  else if (dd) { date = new Date(now.getFullYear(), now.getMonth(), +dd[1]); if (date < D.startOfDay(now)) date.setMonth(date.getMonth() + 1); take(dd); }
+  else if (dmyOk) { date = noMes(now.getFullYear(), +dmy[2] - 1, +dmy[1]); if (date < D.startOfDay(now)) date = noMes(now.getFullYear() + 1, +dmy[2] - 1, +dmy[1]); take(dmy); }
+  else if (ddOk) { date = noMes(now.getFullYear(), now.getMonth(), +dd[1]); if (date < D.startOfDay(now)) date = noMes(now.getFullYear(), now.getMonth() + 1, +dd[1]); take(dd); }
   else if (dw) { const name = dw[1].toLowerCase().replace('terca', 'terça').replace('sabado', 'sábado'); let k = (days.indexOf(name) - now.getDay() + 7) % 7; if (k === 0) k = 7; date = D.addDays(now, k); take(dw); }
   if (date) chips.unshift({ t: `${D.diffDays(date, now) <= 1 ? cap(rel(date)) : wd(date)}, ${dShort(date)}`, k: 'date' });
   const tm = t.match(W('(?:às|as)\\s+(\\d{1,2})(?:[:h](\\d{2}))?h?|(\\d{1,2})[:h](\\d{2})|(\\d{1,2})h'));
   if (tm) { const hh = tm[1] || tm[3] || tm[5], mm = tm[2] || tm[4] || '00'; if (+hh < 24 && +mm < 60) { chips.splice(date ? 1 : 0, 0, { t: `${hh.padStart(2, '0')}:${mm}`, k: 'time' }); take(tm); } }
-  if (amount && /pagar|conta|boleto|fatura|ipva|iptu|condom/i.test(txt)) chips.push({ t: 'sugere: conta a pagar', k: 'bill' });
   const title = t.replace(/\s{2,}/g, ' ').replace(/\s+([,.;])/g, '$1').trim();
   return { title: title ? cap(title) : '', chips, amount, date };
 }
 
 // ---------- Entradas ----------
 let parseT = null;
+const setVal = (el) => { const k = el.dataset.arg, st = S.sets[k] || {}; if (el.dataset.in === 'setkg') st.kg = parseFloat(el.value.replace(',', '.')) || 0; else st.reps = parseInt(el.value, 10) || 0; S.sets[k] = st; save(); };
 document.addEventListener('input', (e) => {
   if (e.target.id === 'ex-v') { S.draftExpense = e.target.value; save(); }
   const el = e.target.closest('[data-in]'); if (!el) return;
   if (el.dataset.in === 'sbcode') { LG.code = el.value; return; }
   if (el.dataset.in === 'sbemail') { LG.email = el.value; return; }
-  if (el.dataset.in === 'setkg' || el.dataset.in === 'setreps') { const k = el.dataset.arg, st = S.sets[k] || {}; if (el.dataset.in === 'setkg') st.kg = parseFloat(el.value.replace(',', '.')) || 0; else st.reps = parseInt(el.value, 10) || 0; S.sets[k] = st; save(); }
-  if (el.dataset.in === 'inbox') { S.inboxDraft = el.value; save(); }
+  if (el.dataset.in === 'nome') { S.nome = el.value.trim().slice(0, 30); save(); return; }
+  if (el.dataset.in === 'setkg' || el.dataset.in === 'setreps') setVal(el);
   if (el.dataset.in === 'inbox') {
-    const p = parseInbox(el.value); document.getElementById('parse').innerHTML = el.value.trim() ? [`<span class="chip p">${esc(p.title || '…')}</span>`, ...p.chips.map((c) => `<span class="chip ${c.k === 'bill' ? 'xp' : ''}">${esc(c.t)}</span>`)].join('') : '';
+    S.inboxDraft = el.value; save();
+    const p = parseInbox(el.value); document.getElementById('parse').innerHTML = el.value.trim() ? [`<span class="chip p">${esc(p.title || '…')}</span>`, ...p.chips.map((c) => `<span class="chip">${esc(c.t)}</span>`)].join('') : '';
     clearTimeout(parseT); if (el.value.trim() && p.chips.length) parseT = setTimeout(() => announce(`Entendido: ${[p.title, ...p.chips.map((c) => c.t)].filter(Boolean).join(', ')}`), 1200);
   }
 });
 document.addEventListener('change', (e) => {
   const el = e.target.closest('[data-in]'); if (!el) return;
-  const k = el.dataset.arg;
-  if (el.dataset.in === 'setkg' || el.dataset.in === 'setreps') { const st = S.sets[k] || {}; if (el.dataset.in === 'setkg') st.kg = parseFloat(el.value.replace(',', '.')) || 0; else st.reps = parseInt(el.value, 10) || 0; S.sets[k] = st; save(); }
-  if (el.dataset.in === 'realfile' && el.files?.length) { loadRealFile(el.files[0]); el.value = ''; return; }
-  if (el.dataset.in === 'file' && el.files?.length) { toast(`${I('file', 18)} ${esc(el.files[0].name)}: no wireframe, a prévia usa o arquivo de exemplo.`, '', 3600); A.importNext(); }
+  if (el.dataset.in === 'setkg' || el.dataset.in === 'setreps') setVal(el);
+  if (el.dataset.in === 'realfile' && el.files?.length) { loadRealFile(el.files[0]); el.value = ''; }
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'inbox') { e.preventDefault(); A.addInbox(); } });
 document.addEventListener('submit', (e) => {
@@ -1773,11 +1980,12 @@ function fitRestbar() {
 }
 window.addEventListener('resize', fitRestbar);
 
+
 // ---------- Render ----------
-const VERSION = '0.4.1';
+const VERSION = '0.5.0';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
-const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/campanha': 'Campanha', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Importar', 'dinheiro/sincronizar': 'Open Finance', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes', estados: 'Estados' };
+const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/campanha': 'Plano', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Open Finance e arquivo', 'dinheiro/sincronizar': 'Sincronizar', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes' };
 let lastRoute = null, curTab = 'hoje', shownIdx = null;
 function render(keep, focusSel) {
   if (syncBusy) busyShown = true; // a tela mostra "Buscando…": no fim da leitura ela é desenhada de novo
@@ -1798,12 +2006,11 @@ function render(keep, focusSel) {
       navStack[hIdx] = { r, tab: curTab, y: 0 };
     }
     navMode = 'none'; shownIdx = hIdx; navFromMain = false; saveNav();
-    if (lastRoute === 'dinheiro/importar' && S.importStep === 3) { S.importStep = 0; save(); }
   }
   let scr;
   try { scr = ROUTES[r](); } catch (err) {
     console.error(err);
-    scr = { title: 'Erro', html: `${hdr('Algo deu errado')}<div class="card"><p class="lead">Esta tela não abriu com os dados salvos neste aparelho.</p><button class="btn block" style="margin-top:12px" data-act="resetDemo">Zerar a demonstração</button></div>` };
+    scr = { title: 'Erro', html: `${hdr('Algo deu errado')}<div class="card"><p class="lead">Esta tela não abriu com o que está salvo neste aparelho.</p><p class="small muted" style="margin-top:8px">Recomeçar apaga só o progresso guardado aqui (XP, check-ins, marcações). Os dados do Supabase voltam na próxima sincronização.</p><button class="btn block" style="margin-top:12px" data-act="resetLocal">Recomeçar neste aparelho</button></div>` };
   }
   main.innerHTML = scr.html;
   app.classList.toggle('focus', scr.chrome === 'focus');
@@ -1822,19 +2029,16 @@ function render(keep, focusSel) {
   lastRoute = r;
   updateBadge(); keepAwake();
 }
+// Navegação lateral (tela larga): as mesmas telas das abas, com as subtelas à vista.
 function renderChrome() {
   const r = current();
-  const side = document.querySelector('.side'), notes = document.querySelector('.notes');
-  const sfk = side && side.contains(document.activeElement) ? focusKey(document.activeElement) : null;
-  if (side) side.innerHTML = `<div class="brand"><img src="icons/icon-192.png" alt="">Painel</div><p class="small muted" style="margin-top:6px">Wireframe navegável · dados fictícios</p>
-    ${MAP.map(([g, items]) => `<h2>${g}</h2><nav aria-label="${g}">${items.map(([k, l, ic]) => `<a href="#/${k}" ${k === r ? 'aria-current="page"' : ''}>${I(ic, 18)}${l}</a>`).join('')}</nav>`).join('')}
-    <div class="demo"><b class="small">Controles da demonstração</b>${demoControls()}</div>`;
+  const side = document.querySelector('.side');
+  if (!side) return;
+  const sfk = side.contains(document.activeElement) ? focusKey(document.activeElement) : null;
+  side.innerHTML = `<div class="brand"><img src="icons/icon-192.png" alt="">Painel</div>
+    ${NAV.map(([g, items]) => `<h2>${g}</h2><nav aria-label="${g}">${items.map(([k, l, ic]) => `<a href="#/${k}" ${k === r ? 'aria-current="page"' : ''}>${I(ic, 18)}${l}</a>`).join('')}</nav>`).join('')}`;
   if (sfk) side.querySelector(sfk)?.focus({ preventScroll: true });
-  const n = NOTES[r];
-  if (notes && n) notes.innerHTML = `<div class="panel"><h2 style="margin-top:0">Notas de UX</h2><h3>${n[0]}</h3><p class="tagline">${n[1]}</p><ul>${n[2].map((x) => `<li>${x}</li>`).join('')}</ul><span class="ms">Entrega: ${n[3]}</span>
-    <p class="foot">Tudo aqui é fictício e fica só neste navegador. Abra no iPhone pelo Safari e adicione à Tela de Início para testar como app, offline e com notificações.</p></div>`;
 }
-function refreshSheet() { const m = document.getElementById('map'); if (m && !m.inert) { const y = m.scrollTop, k = focusKey(document.activeElement); openSheet('Mapa do wireframe', mapHtml(), 'map', k); const n = document.getElementById('map'); n.classList.add('open'); sheetRoot.querySelector('.scrim')?.classList.add('open'); n.scrollTop = y; } }
 const darkMQ = matchMedia('(prefers-color-scheme: dark)');
 function applyTheme() {
   if (S.theme === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = S.theme;
@@ -1852,7 +2056,7 @@ setInterval(() => {
   const wt = document.getElementById('wT'); if (wt && S.wStart) wt.textContent = fmtT(Math.floor((Date.now() - S.wStart) / 1000));
   // Contagem até poder pedir outro código (o Supabase recusa antes de 60 s).
   const rs = document.getElementById('sb-resend');
-  if (rs && !LG.busy) { const w = resendWait(), off = S.offline || !navigator.onLine, t = w ? `Mandar outro em ${Math.ceil(w / 1000)} s` : 'Mandar outro'; rs.disabled = !!w || off; if (rs.textContent !== t) rs.textContent = t; }
+  if (rs && !LG.busy) { const w = resendWait(), off = !navigator.onLine, t = w ? `Mandar outro em ${Math.ceil(w / 1000)} s` : 'Mandar outro'; rs.disabled = !!w || off; if (rs.textContent !== t) rs.textContent = t; }
 }, 500);
 
 window.addEventListener('online', () => { render(true); if (SB.session() && staleSync()) syncNow(false); });
@@ -1893,8 +2097,8 @@ document.querySelector('.tabbar').addEventListener('click', (e) => {
 
 applyTheme();
 const STANDALONE = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-// No iPhone o app instalado tem armazenamento próprio: a primeira abertura pelo ícone pede os lembretes lá.
-if (!S.onboarded && (!location.hash || STANDALONE)) { if (STANDALONE && (S.onbStep || 0) < 2) { S.onbStep = 2; save(); } go('#/onboarding', true); }
+// No iPhone o app instalado tem armazenamento próprio: a primeira abertura pelo ícone começa as boas-vindas lá.
+if (!S.onboarded && (!location.hash || STANDALONE)) go('#/onboarding', true);
 // Voltou do app de e-mail com um código pedido há pouco: abre direto na etapa do código.
 else if (!hashLogin && !SB.session() && SB.pending() && current() === 'hoje') go('#/dinheiro/sincronizar', true);
 if (pruneReal()) save();
@@ -1909,7 +2113,7 @@ try {
   const saiu = sessionStorage.getItem('painel-saiu');
   if (saiu) { sessionStorage.removeItem('painel-saiu'); toast(saiu === '1' ? 'Saiu deste aparelho. A sessão e os dados daqui foram apagados.' : saiu === 'sem-rede' ? 'Saiu e apagou os dados deste aparelho. Sem internet, a sessão não foi encerrada no Supabase.' : 'Saiu e apagou os dados deste aparelho. O Supabase não confirmou o fim da sessão lá.', saiu === '1' ? '' : 'warn', 6000); }
 } catch { /* sem sessão da aba */ }
-if (SB.session() && (hashLogin === 'ok' || staleSync())) syncNow(false).then((ok) => { if (ok && hashLogin === 'ok') toast(`${I('cloudCheck', 18)} Entrou. Seus dados do Open Finance estão no Painel.`, '', 5000); });
+if (SB.session() && (hashLogin === 'ok' || staleSync())) syncNow(false).then((ok) => { if (ok && hashLogin === 'ok') toast(`${I('cloudCheck', 18)} Entrou. Seus dados de dinheiro e saúde estão no Painel.`, '', 5000); });
 // Outra aba, ou o app instalado e o navegador no Android, mexeram na sessão ou nos dados.
 SB.onChange((what) => {
   // Saiu ou entrou outra conta: a tela, os dados e as marcações desta aba não valem mais.
@@ -1919,6 +2123,11 @@ SB.onChange((what) => {
 window.addEventListener('storage', (e) => {
   // Outra aba gravou o estado (contas pagas, gastos, missões): esta passa a usar o mesmo, em vez de gravar o antigo por cima.
   if (e.key === KEY && e.newValue) { S = load(); render(true); return; }
+  if (e.key === SAUDEK) {
+    if (!e.newValue) { location.reload(); return; }
+    try { const H = JSON.parse(e.newValue); D.useSaude(H); saudeRaw = H; saudeErr = null; render(true); } catch { /* fica com o que já está na tela */ }
+    return;
+  }
   if (e.key !== REALK) return;
   if (!e.newValue) { location.reload(); return; } // dados apagados em outra aba (saída ou "apagar deste aparelho")
   // Quem gravou os dados já ajustou e gravou o estado; aqui só na memória, até o estado dela chegar.

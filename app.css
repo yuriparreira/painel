@@ -61,7 +61,7 @@ h1[tabindex="-1"]:focus, h2[tabindex="-1"]:focus { outline: none; }
 
 /* ---------- Palco (desktop) e aparelho ---------- */
 .stage { min-height: 100%; }
-.side, .notes { display: none; }
+.side { display: none; }
 .device { position: relative; }
 .app { position: relative; height: 100vh; height: 100dvh; overflow: hidden; background: var(--bg); }
 @media (min-width: 600px) and (max-width: 1039px) {
@@ -70,25 +70,17 @@ h1[tabindex="-1"]:focus, h2[tabindex="-1"]:focus { outline: none; }
 }
 @media (min-width: 1040px) {
   body { background: var(--stage); }
-  .stage { display: grid; grid-template-columns: 250px 390px minmax(260px, 340px); gap: 28px; justify-content: center; align-items: start; padding: 28px 20px; }
-  .side, .notes { display: block; position: sticky; top: 28px; max-height: calc(100vh - 56px); overflow: auto; }
+  .stage { display: grid; grid-template-columns: 250px 390px; gap: 28px; justify-content: center; align-items: start; padding: 28px 20px; }
+  .side { display: block; position: sticky; top: 28px; max-height: calc(100vh - 56px); overflow: auto; }
   .device { position: sticky; top: 28px; width: 390px; height: min(844px, calc(100vh - 56px)); border-radius: 44px; box-shadow: 0 0 0 10px #1B211C, 0 30px 80px rgb(0 0 0 / .28); overflow: hidden; }
   .app { height: 100%; }
 }
-.side h2, .notes h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 18px 0 6px; font-weight: 700; }
+.side h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 18px 0 6px; font-weight: 700; }
 .side .brand { display: flex; gap: 10px; align-items: center; font-weight: 750; font-size: 18px; }
 .side .brand img { width: 32px; height: 32px; border-radius: 9px; }
 .side nav a { display: flex; align-items: center; gap: 8px; padding: 7px 10px; margin: 1px 0; border-radius: 10px; color: var(--ink); text-decoration: none; font-size: 14px; }
 .side nav a:hover { background: var(--surface-2); }
 .side nav a[aria-current="page"] { background: var(--primary-soft); color: var(--primary); font-weight: 650; }
-.side .demo { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-top: 12px; }
-.notes .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
-.notes h3 { font-size: 20px; line-height: 1.25; margin-bottom: 4px; }
-.notes ul { padding-left: 18px; margin: 6px 0 0; }
-.notes li { margin: 6px 0; font-size: 14px; line-height: 1.45; }
-.notes .tagline { font-size: 14px; color: var(--muted); }
-.notes .ms { display: inline-block; margin-top: 12px; font-size: 12px; font-weight: 700; color: var(--primary); background: var(--primary-soft); padding: 4px 10px; border-radius: 999px; }
-.notes .foot { font-size: 12px; color: var(--muted); margin-top: 14px; line-height: 1.5; }
 
 /* ---------- Estrutura do app ---------- */
 .main { position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding-left: var(--safe-l); padding-right: var(--safe-r); padding-bottom: calc(var(--tab-h) + var(--safe-b) + 96px); scroll-behavior: auto; scroll-padding-top: 12px; scroll-padding-bottom: calc(var(--tab-h) + var(--safe-b) + 84px + var(--updh, 0px)); }
