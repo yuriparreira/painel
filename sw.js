@@ -1,5 +1,5 @@
 // Service worker do wireframe: guarda o app no aparelho para abrir sem internet.
-const VERSION = 'painel-wf-0.3.0';
+const VERSION = 'painel-wf-0.3.1';
 const SHELL = ['./', './index.html', './app.css', './app.js', './data.js', './icons.js', './manifest.webmanifest',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 

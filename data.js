@@ -338,7 +338,7 @@ export function useReal(R) {
     ativo: [
       { g: 'Circulante', itens: circ },
       { g: 'Investimentos', itens: [['Ações', inv['Ações'] || 0], ['ETFs', inv.ETF || 0], ['FIIs', inv.FII || 0]].filter((x) => x[1]).map(([n, v]) => [`${n} (B3, ${invRef})`, v]) },
-      { g: 'Não circulante', itens: (R.bens || []).map((b) => [`${b.n} (custo, até a FIPE)`, b.valor]) },
+      { g: 'Não circulante', itens: [...(R.participacoes || []).map((p) => [`Participação: ${p.n} (${String(p.pct).replace('.', ',')}%)`, p.v]), ...(R.bens || []).map((b) => [`${b.n} (custo, até a FIPE)`, b.valor])] },
     ],
     passivo: [
       { g: 'Curto prazo', itens: passivo.filter((p) => !p.longo).map((p) => [p.n, p.saldoDevedor]) },

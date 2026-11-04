@@ -764,7 +764,7 @@ function Patrimonio() {
         <div class="grid2"><div class="card"><div class="small muted">Ativo</div><div class="mid">${brlK(ta)}</div></div><div class="card"><div class="small muted">Passivo</div><div class="mid">${brlK(tp)}</div></div></div>
         ${lvl(S.xp).L >= 10 ? `<div class="card soft"><div class="row-flex">${I('trend', 20)}<b>Projeção de independência</b></div><p class="small" style="margin-top:4px">${D.SAVINGS.taxa == null ? 'Precisa da sua renda mensal para calcular a taxa de poupança.' : `Com poupança de ${D.SAVINGS.taxa}% e retorno real de 4% a.a., o patrimônio cobre seus gastos em cerca de 21 anos.`}</p></div>` : `<div class="card soft"><div class="row-flex">${I('lock', 20)}<b>Projeção de independência</b><span class="chip right">nível 10</span></div><p class="small" style="margin-top:4px">Em quantos anos o patrimônio cobre seus gastos, com a sua taxa de poupança. Libera no nível 10.</p></div>`}`
         : `<div class="card">${table(A, 'Ativo', ta)}</div><div class="card">${table(P, 'Passivo', tp)}<table class="bp"><tr class="tot"><td>Patrimônio líquido</td><td>${brl0(pl)}</td></tr></table></div>`}
-      ${D.REAL ? `<p class="small muted" style="margin:14px 20px">${esc(N.balanco || '')} Só pessoa física: as empresas ficam fora.</p>${(D.REAL.pendentes || []).length ? `<div style="margin:0 16px"><button class="btn line block" data-act="pendentes">Ver o que falta (${D.REAL.pendentes.length})</button></div>` : ''}` : `<p class="small muted" style="margin:14px 20px">Veículo pela tabela FIPE, investimentos pela última posição importada, FGTS pelo extrato. Só pessoa física: as empresas ficam fora.</p>`}`,
+      ${D.REAL ? `<p class="small muted" style="margin:14px 20px">${esc(N.balanco || '')} ${(D.REAL.participacoes || []).length ? 'Empresas só pela sua participação; as contas delas ficam fora.' : 'Só pessoa física: as empresas ficam fora.'}</p>${(D.REAL.pendentes || []).length ? `<div style="margin:0 16px"><button class="btn line block" data-act="pendentes">Ver o que falta (${D.REAL.pendentes.length})</button></div>` : ''}` : `<p class="small muted" style="margin:14px 20px">Veículo pela tabela FIPE, investimentos pela última posição importada, FGTS pelo extrato. Só pessoa física: as empresas ficam fora.</p>`}`,
   };
 }
 
@@ -1488,7 +1488,7 @@ function fitRestbar() {
 window.addEventListener('resize', fitRestbar);
 
 // ---------- Render ----------
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
 const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/campanha': 'Campanha', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Importar', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes', estados: 'Estados' };
