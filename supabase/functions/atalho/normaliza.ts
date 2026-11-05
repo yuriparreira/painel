@@ -21,7 +21,7 @@ const H = 3600e3;
 export const diaLocal = (t: number) => new Date(t - 3 * H).toISOString().slice(0, 10);
 const somaDias = (iso: string, n: number) => new Date(Date.parse(iso + 'T12:00:00Z') + n * 24 * H).toISOString().slice(0, 10);
 const meiaNoite = (iso: string) => Date.parse(`${iso}T00:00:00${OFF}`);
-const semAcento = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
+const semAcento = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
 // ---------- Datas ----------
 const MESES: Record<string, number> = {
@@ -43,7 +43,7 @@ export function data(v: unknown): { t: number; aprox: boolean } | null {
 function dataBruta(v: unknown): { t: number; aprox: boolean } | null {
   if (typeof v !== 'string' && typeof v !== 'number') return null;
   if (typeof v === 'number') return Number.isFinite(v) && v > 1e9 ? { t: v > 1e12 ? v : v * 1000, aprox: false } : null;
-  const s = v.trim().replace(/ | /g, ' ');
+  const s = v.trim().replace(/\u202f|\u00a0/g, ' ');
   if (!s) return null;
   let m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:[.,]\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})$/i.exec(s);
   if (m) {
@@ -87,7 +87,7 @@ export function numero(v: unknown, tipo: string): number | null {
   const ok = (n: number) => Number.isFinite(n) && n >= lo && n <= hi;
   if (typeof v === 'number') return ok(v) ? v : null;
   if (typeof v !== 'string') return null;
-  let s = v.trim().toLowerCase().replace(/ | |\s/g, '');
+  let s = v.trim().toLowerCase().replace(/\u202f|\u00a0|\s/g, '');
   let fator = 1;
   if (/lb$|libras?$/.test(s)) fator = 0.45359237;
   if (/kj$/.test(s)) fator = 1 / 4.184;
