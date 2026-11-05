@@ -5,3 +5,7 @@ verify_jwt = true
 [functions.pluggy-webhook]
 # A Pluggy não manda JWT do Supabase; a função confere o cabeçalho x-painel-token.
 verify_jwt = false
+
+[functions.atalho]
+# O atalho do iPhone não manda JWT do Supabase; a função confere o token gerado no app (só o hash fica no banco).
+verify_jwt = false

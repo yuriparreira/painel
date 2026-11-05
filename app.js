@@ -1,16 +1,20 @@
 // Painel. JavaScript puro, sem dependências, roteamento por hash.
 // Só dados seus: dinheiro do Open Finance (Supabase) ou do arquivo do Painel, saúde do Supabase (saude_painel) e o que
-// você registra aqui. A cópia fica só neste navegador; o repositório não guarda dado pessoal nenhum.
+// você registra aqui. Com o login, o que você registra também fica na nuvem (nuvem.js), igual no celular e no
+// computador; sem login, só neste navegador. O repositório não guarda dado pessoal nenhum.
 import { I } from './icons.js';
 import * as D from './data.js';
 // Se o aparelho ainda guarda só os arquivos de uma versão sem o sync.js (sem internet, antes da atualização
 // terminar), o app abre sem o login em vez de ficar em branco.
 const sbOff = async () => { const e = new Error('offline'); e.code = 'offline'; throw e; };
-const SB_OFF = { consumeHash: () => null, session: () => null, email: () => null, pending: () => null, clearPending() {}, currentEpoch: () => 0, onChange() {}, sendCode: sbOff, verifyCode: sbOff, fetchPainel: sbOff, fetchSaude: sbOff, signOut: async () => 'ok' };
+const SB_OFF = { consumeHash: () => null, session: () => null, email: () => null, pending: () => null, clearPending() {}, currentEpoch: () => 0, onChange() {}, sendCode: sbOff, verifyCode: sbOff, fetchPainel: sbOff, fetchSaude: sbOff, lerEstado: sbOff, salvarEstado: sbOff, novoToken: sbOff, ATALHO_URL: '', signOut: async () => 'ok' };
 // Antes da espera abaixo: o navegador pode oferecer a instalação enquanto o sync.js ainda chega.
 let deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; try { if (current() === 'onboarding') render(true); } catch { /* ainda abrindo */ } });
 const SB = await import('./sync.js').catch(() => SB_OFF);
+// Sem o nuvem.js (cópia antiga no aparelho), o app abre como antes: tudo só neste navegador.
+const NUV = await import('./nuvem.js').catch(() => null);
+const nuvemOn = () => !!(NUV && SB.session());
 
 // Volta do link mágico do e-mail: a sessão sai do endereço antes do roteador ler o hash.
 const hashLogin = SB.consumeHash();
@@ -110,11 +114,51 @@ function rollover(s, today) {
     else s.streak = 0; // a Chama recomeça (sem Chama acesa, a brasa fica guardada); XP nunca cai
   }
   s.best = Math.max(s.best, s.streak);
-  Object.keys(s.hist).forEach((d) => { if (D.diffDays(dayAt(today), dayAt(d)) > 60) delete s.hist[d]; });
+  chama(s, today);
+  Object.keys(s.hist).forEach((d) => { if (D.diffDays(dayAt(today), dayAt(d)) > 400) delete s.hist[d]; });
   Object.keys(s.dias).forEach((d) => { if (D.diffDays(dayAt(today), dayAt(d)) > 400) delete s.dias[d]; });
   Object.keys(s.semXp).forEach((d) => { if (D.diffDays(dayAt(today), dayAt(d)) > 60) delete s.semXp[d]; });
   s.inbox = s.inbox.filter((x) => !x.done); // tarefas concluídas saem na virada
   Object.assign(s, { checkin: null, sleep: null, quests: { corpo: false, comb: false, missao: false }, perfect: false, closed: false, sets: {}, meals: {}, wStart: null, rest: null, dayType: null, wSel: null, missaoRef: null, corpoKey: null, corpoMin: 0, combByMeals: false, mealXp: {}, inboxXp: 0, prToday: false, qxp: {} });
+}
+// A Chama, a brasa e o recorde refeitos a partir do histórico, dia a dia desde o primeiro: o mesmo histórico dá a mesma
+// Chama em qualquer aparelho, mesmo quando o check-in de um dia chega depois pela nuvem. Dias sem histórico antes do
+// primeiro (que nenhum aparelho fechou) não mudam a conta. Quando o histórico pode ter sido podado (começa depois do
+// primeiro dia e há mais de 58 dias: a 0.5.0 guardava 60, esta guarda 400), fica a conta que a virada já fez.
+function chama(s, ate = s.day) {
+  if (!isoOk(ate) || !s.hist || typeof s.hist !== 'object') return;
+  const ks = Object.keys(s.hist).filter((d) => isoOk(d) && d < ate).sort();
+  if (!ks.length || (isoOk(s.since) && s.since < ks[0] && D.diffDays(dayAt(ate), dayAt(ks[0])) > 58)) return;
+  let streak = 0, brasaAt = null, best = 0;
+  for (let d = ks[0], i = 0; d < ate && i < 800; d = D.iso(D.addDays(dayAt(d), 1)), i++) {
+    const v = d in s.hist ? s.hist[d] : s.pausa ? 'p' : 0;
+    if (v === 1) { streak += 1; best = Math.max(best, streak); }
+    else if (v === 'p') { /* pausa congela a Chama */ }
+    else if (streak > 0 && (!brasaAt || D.diffDays(dayAt(d), dayAt(brasaAt)) >= 7)) brasaAt = d;
+    else streak = 0;
+  }
+  s.streak = streak; s.brasaAt = brasaAt; s.best = Math.max(Number.isFinite(s.best) ? s.best : 0, best, streak);
+}
+// Um dia que ficou para trás sem ser fechado neste aparelho (o outro aparelho virou o dia antes, ou este virou sem a
+// nuvem): o que se fez nele (check-in, missões, treino) vira histórico, noite boa e registro do dia, sem apagar o
+// que já estava lá. velhos: { dia: { chave: [quando, aparelho, valor em JSON, dia] } }, da junção da nuvem.
+function fecharVelhos(s, velhos) {
+  let mudou = false;
+  for (const d of Object.keys(velhos).filter(isoOk).sort()) {
+    if (!(isoOk(s.day) && d < s.day) || (isoOk(s.since) && d < s.since)) continue;
+    const V = velhos[d], P = (k) => { try { return V[k] && V[k][2] != null ? JSON.parse(V[k][2]) : undefined; } catch { return undefined; } };
+    const ci = P('checkin'), T = {
+      checkin: ci && typeof ci === 'object' && fin(ci.s) != null ? { s: ci.s, w: fin(ci.w) } : null,
+      quests: { corpo: P('quests|corpo') === true, comb: P('quests|comb') === true, missao: P('quests|missao') === true },
+      corpoKey: typeof P('corpoKey') === 'string' ? P('corpoKey') : null, corpoMin: fin(P('corpoMin')) || 0,
+    };
+    if (T.checkin && s.hist[d] !== 1) { s.hist[d] = 1; mudou = true; }
+    if (T.checkin && T.checkin.s >= 7 && s.bossMonth === d.slice(0, 7) && !s.good[d]) { s.good[d] = 1; mudou = true; }
+    const e = logHoje(T);
+    if (e) { const cur = s.dias[d] && typeof s.dias[d] === 'object' ? s.dias[d] : {}, u = { ...e, ...cur }; if (JSON.stringify(u) !== JSON.stringify(cur)) { s.dias[d] = u; mudou = true; } }
+  }
+  if (mudou) chama(s);
+  return mudou;
 }
 // Mantém só valores com o mesmo formato do padrão: um dado salvo corrompido não pode travar o app.
 function sane(stored) {
@@ -177,15 +221,23 @@ function load() {
   const today = D.iso(diaNow());
   const mig = v1 && migrate(s, today);
   if (!isoOk(s.since)) s.since = today;
-  s.inbox.forEach((x, i) => { if (!x.id) x.id = `n${i}${Date.now().toString(36)}`; });
-  const rolled = !!s.day && s.day !== today;
+  arruma(s);
+  // Com a nuvem, a virada do dia espera a leitura dela (checkDay): o outro aparelho pode já ter virado o dia.
+  // O dia só vira para frente: um dia à frente do relógio (fuso ou relógio do outro aparelho) fica como está.
+  const stale = isoOk(s.day) && s.day < today, rolled = stale && !nuvemOn();
   if (rolled) rollover(s, today);
-  s.day = today;
+  if (!isoOk(s.day) || rolled) s.day = today;
   bossMonth(s);
-  s.expenses.forEach((x, i) => { if (x && !x.id) x.id = `x${i}${Date.now().toString(36)}`; });
   if (rolled || mig || fresh) {
     try { localStorage.setItem(KEY, JSON.stringify(s)); if (mig) localStorage.removeItem(OLDKEY); } catch { /* modo privado */ }
   }
+  return s;
+}
+// Ids que faltam e a ordem das tarefas (o, mais nova em cima), que a nuvem usa para montar a lista igual nos aparelhos.
+function arruma(s) {
+  const t = Date.now();
+  s.inbox.forEach((x, i) => { if (!x.id) x.id = `n${i}${t.toString(36)}`; if (!Number.isFinite(x.o)) x.o = t - i; });
+  s.expenses.forEach((x, i) => { if (x && !x.id) x.id = `x${i}${t.toString(36)}`; });
   return s;
 }
 // Chefe do mês: começa com 18 de 20 de vida a cada mês e cada noite boa (7 h ou mais no check-in) é um golpe.
@@ -196,12 +248,38 @@ function bossMonth(s) {
   s.bossSeed = 0; s.bossMonth = m;
 }
 let S = load();
-// O app instalado no iPhone volta da memória sem recarregar: confere a virada do dia ao voltar.
+let NV = null; // a nuvem (criada mais abaixo, com a sessão)
+// O app instalado no iPhone volta da memória sem recarregar: confere a virada do dia ao voltar. Com a nuvem, lê antes
+// (até 4 s): se o outro aparelho já virou o dia, este fica com o dia dele em vez de virar de novo com dados velhos.
+// Devolve true enquanto o dia está velho (o toque de ontem não vale no dia novo).
+let virando = null;
+let pesoRasc = null; // peso digitado no check-in e ainda não salvo: um redesenho (mudança vinda da nuvem) não apaga
 function checkDay() {
-  const t = D.iso(diaNow()); if (S.day === t) return false;
-  rollover(S, t); S.day = t; bossMonth(S); pruneReal(); save(); setTimeout(checkBoss, 1200); closeSheet(true, false); toast(`${I('sun', 18)} Novo dia. Missões zeradas.`); render(false); return true;
+  const t = D.iso(diaNow());
+  if (!isoOk(S.day)) { S.day = t; save(); return false; }
+  if (S.day >= t) return false;
+  if (virando) return true;
+  if (!NV || !nuvemOn()) { virarDia(); return true; }
+  splash(true);
+  virando = Promise.race([NV.puxar(), new Promise((res) => setTimeout(res, 4000))]).catch(() => {}).then(() => { virando = null; splash(false); virarDia(); });
+  return true;
 }
-function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { /* modo privado: segue sem salvar */ } }
+function virarDia() {
+  const t = D.iso(diaNow());
+  if (isoOk(S.day) && S.day < t) { rollover(S, t); S.day = t; }
+  pesoRasc = null; bossMonth(S); pruneReal(); save(); setTimeout(checkBoss, 1200); closeSheet(true, false); toast(`${I('sun', 18)} Novo dia. Missões zeradas.`); render(false);
+}
+function splash(on) {
+  let el = document.getElementById('nv-splash');
+  if (!on) { el?.remove(); return; }
+  if (el) return;
+  el = document.createElement('div'); el.id = 'nv-splash'; el.className = 'nv-splash'; el.setAttribute('role', 'status');
+  el.innerHTML = `<div>${I('refresh', 28)}<p>Dia novo. Buscando o que você fez no outro aparelho…</p></div>`;
+  document.body.appendChild(el);
+}
+function saveLocal() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { /* modo privado: segue sem salvar */ } }
+// Grava aqui e, com a nuvem, sobe em 2 segundos.
+function save() { saveLocal(); NV?.mudou(); }
 const touch = save;
 
 // ---------- Regras do jogo ----------
@@ -211,7 +289,7 @@ const titleFor = (L) => (L >= 30 ? 'Lenda' : L >= 25 ? 'Mestre' : L >= 20 ? 'Eli
 const rank = (v) => (v == null ? '—' : v >= 90 ? 'S' : v >= 75 ? 'A' : v >= 60 ? 'B' : v >= 40 ? 'C' : v >= 20 ? 'D' : 'E');
 const SLEEP = [['<5', 4.5], ['5', 5], ['6', 6], ['7', 7], ['8', 8], ['9+', 9]];
 // Zona do dia pelas horas de sono do check-in: 7 h ou mais, treino completo; de 6 a 7 h, uma série a menos; menos de
-// 6 h, só caminhada leve ou mobilidade. Sem check-in, sem zona. VFC e FC de repouso entram com o Apple Health.
+// 6 h, só caminhada leve ou mobilidade. Sem check-in, sem zona (o Apple Health já deixa a opção marcada no check-in).
 const zoneOf = (h) => (fin(h) == null ? 'nd' : h >= 7 ? 'verde' : h >= 6 ? 'amarelo' : 'vermelho');
 const ZNAME = { verde: 'Verde', amarelo: 'Amarelo', vermelho: 'Vermelho', nd: 'Sem check-in' };
 const sleepNow = () => (S.checkin ? fin(S.checkin.s) : null);
@@ -362,6 +440,20 @@ function setQuest(k, on, why) {
 
 // ---------- Registros: o que você marcou aqui, mais o diário do Supabase ----------
 const notionDia = (d) => { const x = D.SAUDE && D.SAUDE.diario.find((r) => r.d === d); if (!x) return null; const e = {}; if (fin(x.sono) != null) e.s = x.sono; if (fin(x.peso) != null) e.w = x.peso; return Object.keys(e).length ? e : null; };
+// Apple Health pelo atalho do iPhone: a linha do diário do dia (com ah, a hora em que chegou) e o sono da noite,
+// arredondado para baixo na opção do check-in (6,6 h fica 6: nunca sobe de zona por arredondamento).
+const ahDia = (d) => { const x = D.SAUDE && D.SAUDE.diario.find((r) => r.d === d); return x && x.ah ? x : null; };
+const ahSono = () => { const x = ahDia(S.day); return x && fin(x.sono) != null && x.sono > 0 ? x.sono : null; };
+const ahPick = () => { const h = ahSono(); return h == null ? null : SLEEP.map((x) => x[1]).filter((v) => v <= h).pop() ?? 4.5; };
+const atalhoEm = () => (D.SAUDE && D.SAUDE.atalhoEm) || {};
+// Há quanto tempo: "agora", "há 5 min", "há 3 h", "há 2 dias".
+const haQuanto = (iso) => { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)); return m < 2 ? 'agora' : m < 60 ? `há ${m} min` : m < 36 * 60 ? `há ${Math.round(m / 60)} h` : `há ${Math.round(m / 1440)} dias`; };
+const recente = (iso) => !!iso && Date.now() - Date.parse(iso) < 36 * 36e5;
+// Eventos do Calendário do iPhone que tocam o dia d (um evento de vários dias aparece em todos); o horário só no dia
+// em que ele começa.
+const eventosDe = (d) => ((D.SAUDE && D.SAUDE.agenda) || []).filter((e) => e.d <= d && d <= e.ate);
+const evH = (e, d) => (!e.diaTodo && e.h && e.d === d ? e.h : null);
+const evSub = (e, d) => [evH(e, d) ? (e.fim && e.ate === d ? `${e.h}–${e.fim}` : e.h) : e.diaTodo ? (e.ate > e.d ? `dia inteiro, até ${dShort(dayAt(e.ate))}` : 'dia inteiro') : e.ate > d ? `até ${dShort(dayAt(e.ate))}${e.fim ? ` às ${e.fim}` : ''}` : e.fim ? `até ${e.fim}` : '', e.local, e.cal].filter(Boolean).join(' · ');
 function logDia(d) { const loc = d === S.day ? logHoje(S) : S.dias[d] || null; const n = notionDia(d); return loc && n ? { ...n, ...loc } : loc || n; }
 // Primeiro dia com registro: o dia em que o app começou a contar, ou o primeiro do diário do Supabase, se for antes.
 function inicio() { const c = [S.since, ...((D.SAUDE && D.SAUDE.diario) || []).map((x) => x.d)].filter(isoOk).sort()[0]; return c ? D.startOfDay(dayAt(c)) : D.startOfDay(diaNow()); }
@@ -491,7 +583,7 @@ function backbar(href, label) {
 function sec(title, link = '') { return `<div class="sec"><h2>${title}</h2>${link}</div>`; }
 function netbar() {
   if (navigator.onLine) return '';
-  return `<div class="netbar" role="status">${I('wifiOff', 20)}<span>Sem internet. O que você registrar fica salvo neste aparelho; dinheiro e saúde ficam com a última leitura.</span></div>`;
+  return `<div class="netbar" role="status">${I('wifiOff', 20)}<span>Sem internet. O que você registrar fica salvo neste aparelho${nvJunto() ? ' e sobe para a nuvem quando a internet voltar' : ''}; dinheiro e saúde ficam com a última leitura.</span></div>`;
 }
 // Estado da sincronização com o Supabase: abre a tela da conexão.
 function syncBtn() {
@@ -626,13 +718,14 @@ function Hoje() {
       ${S.closed ? `<p class="small b" style="margin-top:10px;color:var(--primary)">Dia fechado. Bom descanso.</p>` : `<button class="btn block" style="margin-top:12px" data-act="closeDay">Fechar o dia</button>`}
     </section>` : '';
 
-  // Linha do dia: o que já existe no Painel (agenda do Google ou da Apple ainda não conectada)
+  // Linha do dia: o que já existe no Painel e os eventos do Calendário do iPhone (atalho)
   const meals = D.SAUDE ? D.refeicoes(tk) : [];
   const slots = [
     { h: 'Hoje', t: corpo.t, c: 'var(--a-for)' },
     ...(mbill && !mbill.pago ? [{ h: 'Hoje', t: miss.t, c: 'var(--danger)' }] : []),
     ...top3().filter((x) => !x.done).map((x) => ({ h: hm(x.hora) || 'Top 3', t: x.t, c: 'var(--a-foc)' })),
     ...S.inbox.filter((x) => x.quando === S.day && x.top !== S.day && !x.done).map((x) => ({ h: hm(x.hora) || 'Hoje', t: x.t, c: 'var(--info)' })),
+    ...eventosDe(S.day).map((e) => ({ h: evH(e, S.day) || 'Hoje', t: e.t, c: 'var(--ev)' })),
     ...meals.map((m) => ({ h: hm(m.hora) || '—', t: m.nome, c: 'var(--a-nut)' })),
   ];
   const isHm = (x) => /^\d\d:\d\d$/.test(x.h);
@@ -687,12 +780,13 @@ function pesos() {
 const lastWeight = () => { const P = pesos(); return P[P.length - 1] || null; };
 
 function checkinForm() {
-  const w = S.checkin ? S.checkin.w : null, s = S.checkin ? S.checkin.s : S.sleep, lw = lastWeight();
+  const ah = ahSono(), w = S.checkin ? S.checkin.w : null, s = S.checkin ? S.checkin.s : S.sleep ?? ahPick(), lw = lastWeight();
+  const src = ah != null ? `Apple Health: ${n1(ah)} h` : atalhoEm().saude ? 'o Apple Health ainda não mandou esta noite' : 'Apple Health não conectado';
   return `<div class="ci-label">Peso <span class="src">${lw ? `último: ${n1(lw.v)} kg em ${dQuando(lw.d)}` : 'opcional'}</span></div>
     <div class="stepper"><button type="button" data-act="wstep" data-arg="-0.1" aria-label="Diminuir 100 gramas">${I('minus')}</button>
-      <input id="ci-w" type="text" inputmode="decimal" value="${w != null ? n1(w) : ''}" placeholder="${lw ? n1(lw.v) : '—'}" aria-label="Peso em quilos, vazio se não se pesou" data-in="weight"><span class="u">kg</span>
+      <input id="ci-w" type="text" inputmode="decimal" value="${w != null ? n1(w) : pesoRasc != null ? esc(pesoRasc) : ''}" placeholder="${lw ? n1(lw.v) : '—'}" aria-label="Peso em quilos, vazio se não se pesou" data-in="weight"><span class="u">kg</span>
       <button type="button" data-act="wstep" data-arg="0.1" aria-label="Aumentar 100 gramas">${I('plus')}</button></div>
-    <div class="ci-label" id="sl-l">Sono, em horas <span class="src">Apple Health não conectado</span></div>
+    <div class="ci-label" id="sl-l">Sono, em horas <span class="src">${src}</span></div>
     <div class="picks six" role="radiogroup" aria-labelledby="sl-l">${SLEEP.map(([l, v]) => `<button type="button" class="pick" role="radio" aria-checked="${s === v}" tabindex="${s === v || (s == null && v === 7) ? 0 : -1}" data-act="sleep" data-arg="${v}" aria-label="${l === '<5' ? 'menos de 5' : l === '9+' ? '9 ou mais' : l} horas">${l}</button>`).join('')}</div>`;
 }
 
@@ -745,10 +839,25 @@ function Saude() {
       <a class="card cardlink" href="#/saude/treino" data-act="openTreino"><span class="badge-ic p">${I(key === 'Z2' ? 'pulse' : key === 'REST' || key === 'LIVRE' || red ? 'walk' : 'dumbbell')}</span><div class="grow"><div class="muted small">Hoje</div><b>${esc(sessTxt)}</b><div class="small muted">${esc(sessSub || '')}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
       ${nextGym && nextGym.i > 0 ? `<a class="card cardlink" href="#/saude/treino" data-act="openTreino" data-arg="${nextGym.q.tipo}"><span class="badge-ic">${I('dumbbell')}</span><div class="grow"><div class="muted small">Próximo treino de força · ${nextGym.i === 1 ? 'amanhã' : wd(D.addDays(diaNow(), nextGym.i))}</div><b>${esc(D.sessao(nextGym.q).nome)}</b></div>${I('chevR', 24, 'class="ic chev"')}</a>` : ''}
       ${sec('Peso', H ? '<a href="#/saude/exames">Medidas</a>' : '')}${peso}
+      ${ahCard()}
       ${sec('Sono · 7 dias')}${sono}
       ${H ? planos : `${sec('Plano')}${semSaude()}`}
-      <p class="small muted" style="margin:14px 20px">${I('note', 16, 'style="display:inline;vertical-align:-3px"')} ${H && H.fonte ? `${esc(H.fonte)}. ` : ''}Apple Health ainda não conectado: o sono vem do check-in.</p>`,
+      <p class="small muted" style="margin:14px 20px">${I('note', 16, 'style="display:inline;vertical-align:-3px"')} ${H && H.fonte ? `${esc(H.fonte)}. ` : ''}${atalhoEm().saude ? `Apple Health recebido ${haQuanto(atalhoEm().saude)} pelo atalho do iPhone; o check-in vale mais que ele no dia em que os dois existem.` : 'Apple Health ainda não conectado: o sono vem do check-in. O atalho do iPhone (em Sincronizar) traz sono, passos, peso e mais.'}</p>`,
   };
+}
+
+// O que o Apple Health mandou (sono da última noite, passos, energia ativa, exercício, VFC e FC de repouso). Sem treinos:
+// eles não passam pelo atalho.
+function ahCard() {
+  const H = D.SAUDE, rows = H ? H.diario.filter((x) => x.ah) : [];
+  if (!rows.length) return '';
+  const ult = (k) => { for (let i = rows.length - 1; i >= 0; i--) if (fin(rows[i][k]) != null) return rows[i]; return null; };
+  const quando = (r) => (r.d === S.day ? 'hoje' : r.d === D.iso(D.addDays(dayAt(S.day), -1)) ? 'ontem' : dShort(dayAt(r.d)));
+  const k = (n, key, fmt) => { const r = ult(key); return `<div class="kpi"><span>${n}</span><b class="num">${r ? fmt(r[key]) : '—'}</b><small>${r ? quando(r) : 'sem dado'}</small></div>`; };
+  return `${sec('Apple Health', `<span class="small muted">${haQuanto(atalhoEm().saude || rows[rows.length - 1].ah)}</span>`)}<div class="card"><div class="kpis" style="margin-top:0">
+    ${k('Sono', 'sono', (v) => `${n1(v)} h`)}${k('Passos', 'passos', fmtInt)}${k('Energia ativa', 'kcalAtiva', (v) => `${fmtInt(v)} kcal`)}
+    ${k('Exercício', 'exMin', (v) => `${fmtInt(v)} min`)}${k('VFC', 'hrv', (v) => `${fmtInt(v)} ms`)}${k('FC de repouso', 'fc', (v) => `${fmtInt(v)} bpm`)}</div>
+    <p class="xs muted" style="margin-top:8px">Pelo atalho Painel Sync do iPhone, que só lê o Saúde com o celular desbloqueado. Treinos não passam: o Corpo conta o que você marca aqui.</p></div>`;
 }
 
 // Ficha do dia (ou da sessão escolhida) já convertida em exercícios com séries e faixa de repetições.
@@ -954,7 +1063,8 @@ function loadRealFile(f) {
       localStorage.setItem(REALK, JSON.stringify(R));
       try { sessionStorage.setItem('painel-real-ok', '1'); } catch { /* sem aviso */ }
       // Contas marcadas como pagas em outros dados não valem para este arquivo (os gastos anotados à mão ficam).
-      S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.card = 0; save();
+      // Com a nuvem, as marcações são do Open Finance dos outros aparelhos: ficam.
+      if (!nvEntrou()) { S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.card = 0; save(); }
       location.reload();
     } catch (e) {
       toast(`Não consegui ler ${esc(f.name)}. Use o painel-dados.json gerado no seu computador.`, 'warn', 6000);
@@ -1128,7 +1238,36 @@ function Importar() {
 const pend0 = SB.pending();
 // busy: '' | 'send' | 'verify'. code e email guardam o que foi digitado, para não sumir quando a tela é redesenhada.
 const LG = { email: (pend0 || {}).email || '', step: pend0 ? 'code' : 'email', busy: '', msg: '', note: '', code: '' };
-let syncBusy = false, syncErr = null, busyShown = false, leaving = false;
+let syncBusy = false, syncErr = null, busyShown = false, leaving = false, nvSaindo = false;
+// A nuvem: lê ao abrir, ao voltar para o app e a cada minuto com a tela aberta; sobe 2 s depois de cada mudança e
+// na hora em que o app sai da tela.
+const aparelhoNome = () => { const u = navigator.userAgent; return /iPhone/.test(u) ? 'iPhone' : /iPad/.test(u) ? 'iPad' : /Android/.test(u) ? 'Android' : /Windows/.test(u) ? 'Windows' : /Mac/.test(u) ? 'Mac' : 'Navegador'; };
+const NVK = 'painel-nuvem-v1';
+let nvRender = 0;
+if (NUV) {
+  NV = NUV.criarNuvem({
+    chave: NVK, getS: () => S, D0: defaults, ligada: () => !!SB.session() && !leaving, epoca: () => SB.currentEpoch(),
+    ler: (rev) => SB.lerEstado(rev), salvar: (doc, base, ap, ka) => SB.salvarEstado(doc, base, ap, ka), rotulo: aparelhoNome,
+    // Chegou mudança do outro aparelho: o estado novo passa pela mesma conferência do que é lido do armazenamento.
+    fechar: (s, velhos) => fecharVelhos(s, velhos),
+    aoAplicar: () => {
+      S = arruma(sane(S));
+      if (!isoOk(S.day)) S.day = D.iso(diaNow());
+      chama(S); saveLocal();
+      clearTimeout(nvRender);
+      nvRender = setTimeout(() => {
+        if (S.onboarded && current() === 'onboarding') go('#/hoje', true);
+        else if (!virando) render(true);
+      }, 0);
+    },
+    aoStatus: () => { if (sheetRoot.querySelector('.sheet')) return; for (const sel of ['#nv-card', '#aj-nv']) if (main.querySelector(sel)) swapPart(sel); },
+  });
+}
+// Este aparelho está com a nuvem: tem login e já juntou os dados dele com os de lá.
+const nvJunto = () => !!(NV && nuvemOn() && NV.entrou());
+// Este aparelho já juntou com a nuvem, mesmo com a sessão vencida agora: o que mudar aqui vai para lá no próximo login.
+const nvEntrou = () => !!(NV && NV.entrou());
+const nvPuxar = (ms = 0) => { if (NV && nuvemOn() && !virando && Date.now() - NV.lido() >= ms) NV.puxar(); };
 const RESEND_MS = 60000; // o Supabase só manda outro código para o mesmo e-mail depois de 60 s
 const resendWait = () => { const p = SB.pending(); return p ? Math.max(0, RESEND_MS - (Date.now() - p.at)) : 0; };
 const SBMSG = {
@@ -1160,6 +1299,8 @@ function sbMsg(e) {
   if (c === 'over_email_send_rate_limit') { const m = /(\d+)\s*second/.exec((e && e.message) || ''); if (m) return `O Supabase limita os e-mails de código. Espere ${m[1]} segundos e peça de novo.`; }
   return SBMSG[c] || `Não deu certo${c ? ` (${esc(String(c).slice(0, 40))})` : ''}. Tente de novo.`;
 }
+const nvErrMsg = (e) => (!e ? '' : e.code === 'offline' ? 'Sem internet: fica salvo aqui e sobe quando a internet voltar.' : e.code === 'timeout' ? 'A nuvem demorou para responder. Fica salvo aqui e sobe na próxima vez.' : e.code === 'doc_grande' ? 'Os registros passaram do tamanho que a nuvem aceita.' : SESSAO_NV.includes(e.code) ? sbMsg(e) : `A nuvem não gravou: ${sbMsg(e)}`);
+const SESSAO_NV = ['sessao_expirada', 'sem_sessao', 'nao_e_dono'];
 const plain = (h) => String(h).replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 const dataKey = (R) => { try { return JSON.stringify({ ...R, lidoEm: 0 }); } catch { return ''; } };
 // Sem a saúde no aparelho também busca, uma vez por abertura: se ela falhar, volta ao intervalo normal de 10 min.
@@ -1180,7 +1321,8 @@ async function syncNow(manual) {
     realErr = null;
     try { localStorage.setItem(REALK, JSON.stringify(R)); } catch { /* sem espaço: segue só na memória */ }
     // Contas marcadas como pagas no arquivo não valem para o Open Finance (os gastos registrados à mão ficam).
-    if (novo) { S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.card = 0; }
+    // Com a nuvem, as marcações vieram de um aparelho que já usa o Open Finance: ficam.
+    if (novo && !nvEntrou()) { S.paid = {}; S.paidAmt = {}; S.paidAt = {}; S.card = 0; }
     pruneReal(); save();
     changed = before !== dataKey(R);
   } catch (e) { err = e; }
@@ -1229,6 +1371,7 @@ async function sbVerify(code) {
   LG.code = String(code || ''); LG.busy = 'verify'; LG.msg = ''; LG.note = ''; render(true);
   try {
     await SB.verifyCode(LG.email, code);
+    nvPuxar(0); // primeira vez na nuvem: junta o que este aparelho tem com o que já está lá
     LG.busy = ''; LG.step = 'email'; LG.msg = ''; LG.code = '';
     render(true, 'h1'); // o formulário some: o foco vai para o título da tela
     const ok = await syncNow(false);
@@ -1243,13 +1386,55 @@ const saudeConta = () => { const H = D.SAUDE, n = (a, um, v) => `${a.length} ${a
 const saudeLine = () => (syncBusy && !D.SAUDE ? 'Buscando a saúde…' : saudeErr ? `A saúde não veio na última leitura: ${sbMsg(saudeErr)}` : D.SAUDE ? `Saúde: ${D.SAUDE.lidoEm && !isNaN(Date.parse(D.SAUDE.lidoEm)) ? `lida em ${dShort(new Date(D.SAUDE.lidoEm))} às ${hhmm(new Date(D.SAUDE.lidoEm))}` : 'lida'}. Plano, fichas, dieta, medidas e exames vêm do Supabase.` : 'Saúde ainda não lida neste aparelho.');
 // Ocupado: o botão continua focável (aria-disabled) para o foco do teclado e do leitor de tela não cair no começo da página.
 const busyAttr = (b) => (b ? ' aria-disabled="true"' : '');
+// Seus registros na nuvem: o mesmo cartão em Sincronizar (nv-card) e uma linha em Ajustes (aj-nv), trocados a cada mudança.
+function nvLinha() {
+  if (!NV) return { t: 'Esta cópia do app ainda não tem a nuvem. Recarregue com internet para atualizar.', st: 'avencer', chip: 'Atualizar' };
+  if (!SB.session()) return { t: 'Entre com o seu e-mail para salvar check-ins, treinos, tarefas, gastos e XP na nuvem.', st: 'avencer', chip: 'Entrar' };
+  const i = NV.info(), off = !navigator.onLine;
+  if (nvSaindo) return { t: 'Salvando na nuvem antes de sair…', st: 'avencer', chip: 'Salvando' };
+  if (i.ocupado && !i.entrou) return { t: 'Juntando o que está neste aparelho com o que já está na nuvem…', st: 'avencer', chip: 'Juntando' };
+  if (i.ocupado) return { t: 'Sincronizando…', st: 'avencer', chip: 'Sincronizando' };
+  if (i.erro && (!i.entrou || i.pendente)) return { t: `${i.entrou ? 'Há mudanças daqui esperando para subir. ' : 'Ainda não juntou com a nuvem. '}${nvErrMsg(i.erro)}`, st: 'atrasado', chip: 'Pendente' };
+  if (!i.entrou) return { t: off ? 'Sem internet: junta com a nuvem quando a internet voltar.' : 'Ainda não juntou com a nuvem.', st: 'avencer', chip: 'Pendente' };
+  if (i.pendente) return { t: off ? 'Sem internet: as mudanças daqui sobem quando a internet voltar.' : 'Há mudanças daqui esperando para subir.', st: 'avencer', chip: 'Pendente' };
+  const t = i.em ? new Date(i.em) : null;
+  return { t: t && !isNaN(t) ? `Tudo na nuvem. Última gravação ${dShort(t)} às ${hhmm(t)}.` : 'Tudo na nuvem.', st: 'pago', chip: 'Na nuvem' };
+}
+// Atalho do iPhone: o token aparece uma vez só, na memória desta tela (nunca no armazenamento); o banco guarda o hash.
+const AT = { token: null, busy: false, err: null, pend: 0 };
+const ATALHO_NOME = 'Painel Sync';
+function atalhoCard() {
+  const AE = atalhoEm(), off = !navigator.onLine, ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const st = (n, t) => `${n}: ${t ? `recebida ${haQuanto(t)} (${dShort(new Date(t))} às ${hhmm(new Date(t))})` : 'ainda não recebida'}`;
+  const tok = AT.token ? `<div class="at-tok">
+      <div class="field"><span id="at-url-l">Endereço (URL), nos dois Obter Conteúdo do URL</span><div class="row-flex"><input class="input" id="at-url" readonly aria-labelledby="at-url-l" value="${esc(SB.ATALHO_URL)}" spellcheck="false"><button class="btn line" data-act="atCopy" data-arg="url" aria-label="Copiar o endereço">Copiar</button></div></div>
+      <div class="field"><span id="at-tok-l">Cabeçalho Authorization (valor)</span><div class="row-flex"><input class="input" id="at-tok" readonly aria-labelledby="at-tok-l" value="Bearer ${esc(AT.token)}" spellcheck="false" autocomplete="off"><button class="btn line" data-act="atCopy" data-arg="tok" aria-label="Copiar o cabeçalho com o token">Copiar</button></div></div>
+      <p class="xs" style="color:var(--warn);margin-top:6px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} O token só aparece agora. Cole no atalho e não mande para ninguém: quem tem o token consegue mandar dados falsos para a sua saúde e trocar a agenda que veio do atalho. Ele não abre o resto do Painel. Se vazar, gere outro: o antigo para na hora.</p></div>` : '';
+  return `<div class="card" id="at-card"><div class="row-flex"><span class="badge-ic${AE.saude || AE.agenda ? ' p' : ''}">${I('heart', 20)}</span><div class="grow"><b>Atalho do iPhone</b><div class="small muted">Apple Health e agenda do Calendário</div></div></div>
+    <p class="small muted" style="margin-top:8px">${esc(st('Saúde', AE.saude))}.<br>${esc(st('Agenda', AE.agenda))}.</p>
+    <p class="small muted" style="margin-top:6px">O atalho “${ATALHO_NOME}” do app Atalhos manda sono, passos, peso, VFC, frequência de repouso, energia ativa, minutos de exercício e os eventos do Calendário (iCloud e Google). Roda sozinho quando você abre o app escolhido no iPhone, sem pagar nada. Treinos não passam.</p>
+    ${tok}${AT.err ? `<p class="small" style="color:var(--danger);margin-top:8px">${sbMsg(AT.err)}</p>` : ''}
+    <div class="btnrow" style="margin-top:12px"><button class="btn${AT.token ? ' line' : ''}" data-act="atGen"${off ? ' disabled' : busyAttr(AT.busy)}>${I('lock', 20)} ${AT.busy ? 'Gerando…' : off ? 'Sem internet' : AE.token || AT.token || AE.saude || AE.agenda ? 'Gerar outro token' : 'Gerar token'}</button>${ios ? `<a class="btn line" href="shortcuts://run-shortcut?name=${encodeURIComponent(ATALHO_NOME)}" data-act="atRun">${I('refresh', 20)} Rodar o atalho</a>` : ''}</div>
+    <details class="at-how" style="margin-top:12px"><summary class="small">Como montar o atalho, em resumo</summary><ol class="small muted">
+      <li>No app Atalhos, crie um atalho com o nome exato <b>${ATALHO_NOME}</b>.</li>
+      <li>Agenda: Buscar Eventos do Calendário (hoje, últimos 2 dias ou próximos 15, com “Qualquer”), Repetir com Cada com um Dicionário de t, ini, fim, dia, cal e loc, e Obter Conteúdo do URL: POST, JSON com v 1, tipo agenda e eventos = Repetir Resultados.</li>
+      <li>Depois um Nada e as buscas de Saúde (sono, passos e energia por dia, peso, FC de repouso, VFC), cada uma seguida de Nada, e o segundo Obter Conteúdo do URL com tipo saude e as listas de datas e valores.</li>
+      <li>Nos dois, o cabeçalho Authorization com o valor copiado acima. Por fim, Mostrar Notificação com a resposta: ela começa com OK, AVISO ou ERRO.</li>
+      <li>Em Automação: ao abrir o Calendário (ou outro app que você abre todo dia), Executar Imediatamente. O Saúde só é lido com o iPhone desbloqueado.</li></ol></details></div>`;
+}
+function nvCard() {
+  const L = nvLinha(), busy = !!(NV && NV.info().ocupado), off = !navigator.onLine;
+  return `<div class="card" id="nv-card"><div class="row-flex"><span class="badge-ic${L.st === 'pago' ? ' p' : ''}">${I('cloudCheck', 20)}</span><div class="grow"><b>Seus registros na nuvem</b><div class="small muted" role="status">${esc(L.t)}</div></div></div>
+    <p class="small muted" style="margin-top:8px">Check-ins, treinos, tarefas, gastos anotados, contas marcadas, conquistas e XP ficam no Supabase, iguais no celular e no computador. Perdeu o celular? Entre com o mesmo e-mail no aparelho novo e tudo volta. Tema e telas abertas continuam só em cada aparelho.</p>
+    ${NV && SB.session() ? `<button class="btn line block" style="margin-top:12px" data-act="nvSync"${off || leaving || nvSaindo ? ' disabled' : busyAttr(busy)}>${I('refresh', 20)} ${busy ? 'Sincronizando…' : off ? 'Sem internet' : 'Sincronizar agora'}</button>` : ''}</div>`;
+}
 function Sincronizar() {
   const s = SB.session(), R = fromSB() ? D.REAL : null, off = !navigator.onLine;
   // Erro ligado ao campo (aria-describedby) e lido uma vez por announce(), não a cada redesenho.
   const err = LG.msg ? `<p class="small" id="sb-err" style="color:var(--danger);margin-top:8px">${LG.msg}</p>` : '';
   const inv = LG.msg ? ' aria-invalid="true" aria-describedby="sb-err"' : '';
   const note = LG.note ? `<p class="small" style="margin-top:8px">${I('check', 16, 'style="display:inline;vertical-align:-3px;color:var(--primary)"')} ${esc(LG.note)}</p>` : '';
-  const sair = (t) => `<div style="margin:10px 16px"><button class="btn ghost block" data-act="sbLogout"${busyAttr(leaving)}>${leaving ? 'Saindo…' : t}</button></div>`;
+  const sair = (t) => `<div style="margin:10px 16px"><button class="btn ghost block" data-act="sbLogout"${busyAttr(leaving || nvSaindo)}>${leaving ? 'Saindo…' : nvSaindo ? 'Salvando na nuvem…' : t}</button></div>`;
   let body;
   if (leaving) {
     body = `<div class="card"><div class="row-flex"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><b>Saindo…</b><div class="small muted">A sessão e os dados deste aparelho já foram apagados. Falta avisar o Supabase.</div></div></div></div>`;
@@ -1264,7 +1449,7 @@ function Sincronizar() {
           <div class="btnrow" style="margin-top:8px"><button class="btn ghost" type="button" id="sb-resend" data-act="sbResend"${(w && !LG.busy) || off ? ' disabled' : busyAttr(LG.busy)}>${LG.busy === 'send' ? 'Enviando…' : w ? `Mandar outro em ${Math.ceil(w / 1000)} s` : 'Mandar outro'}</button><button class="btn ghost" type="button" data-act="sbOtherEmail"${busyAttr(LG.busy)}>Trocar e-mail</button></div>
           <p class="xs muted" style="margin-top:10px">Chegou só um link, sem número? No Supabase, o modelo do e-mail ainda não mostra o código.</p></form>`
       : `<form class="card" data-form="sbSend" novalidate>
-          <p class="small muted" style="margin:0">Entre com o e-mail da sua conta no Supabase. Chega um código de 6 dígitos; não tem senha.</p>
+          <p class="small muted" style="margin:0">Entre com o e-mail da sua conta no Supabase. Chega um código de 6 dígitos; não tem senha. Entrando, o que você registra aqui também vai para a nuvem, e o que já está lá vem para este aparelho.</p>
           <label class="field"><span>E-mail</span><input class="input" id="sb-email" name="email" data-in="sbemail" type="email" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false" required value="${esc(LG.email)}"${inv}></label>
           ${err}
           <button class="btn block" style="margin-top:12px" type="submit" id="sb-go"${off ? ' disabled' : busyAttr(LG.busy)}>${LG.busy === 'send' ? 'Enviando…' : off ? 'Sem internet' : 'Receber código'}</button></form>`;
@@ -1282,12 +1467,14 @@ function Sincronizar() {
         <p class="small muted" style="margin-top:6px">${saudeLine()}</p>
         ${syncErr ? `<p class="small" style="color:var(--danger);margin-top:8px">${sbMsg(syncErr)}</p>` : ''}
         <button class="btn block" style="margin-top:12px" data-act="sbSync"${off || leaving ? ' disabled' : busyAttr(syncBusy)}>${I('refresh', 20)} ${syncBusy ? 'Buscando…' : off ? 'Sem internet' : 'Buscar de novo'}</button></div>
+      ${nvCard()}
+      ${atalhoCard()}
       ${C.length ? `${sec('Conexões')}<div class="card tight">${C.map((c) => { const t = c.sinc ? new Date(c.sinc) : null, ok = c.status === 'SUCCESS' && !c.erro; return `<div class="row"><span class="badge-ic">${I('bank', 20)}</span><div class="grow"><div class="ttl">${esc(c.inst || 'Banco')}</div><div class="meta">${t ? `Atualizado ${dShort(t)} às ${hhmm(t)}` : 'Sem data'}${c.consentimento ? ` · consentimento até ${new Date(c.consentimento + 'T12:00').toLocaleDateString('pt-BR')}` : ''}</div></div><span class="chip st-${ok ? 'pago' : 'atrasado'}">${ok ? 'OK' : 'Atenção'}</span></div>`; }).join('')}</div>` : ''}
       ${R || D.SAUDE ? `${sec('Neste aparelho')}<div class="card">${R ? `<p class="small muted" style="margin:0">${(R.transacoes || []).length} lançamentos, ${(R.contas || []).length} contas e ${(R.cartoes || []).length} cartões. Ações, carro, financiamento e participações vêm da foto manual${R.snapshotEm ? ` de ${dShort(new Date(R.snapshotEm + 'T12:00'))}` : ''}.</p>` : ''}${D.SAUDE ? `<p class="small muted" style="margin:${R ? '8px' : '0'} 0 0">Saúde: ${saudeConta()}.</p>` : ''}</div>` : ''}
       ${sair('Sair e apagar os dados deste aparelho')}`;
   }
-  return { title: 'Sincronizar', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Sincronizar', 'Dinheiro (Open Finance) e saúde pelo Supabase, com login só seu.')}${netbar()}${body}
-    <p class="xs muted" style="margin:14px 20px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} Só a conta dona lê os dados. A sessão e a última leitura ficam só neste aparelho.</p>` };
+  return { title: 'Sincronizar', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Sincronizar', 'Seus registros na nuvem, dinheiro (Open Finance) e saúde pelo Supabase, com login só seu.')}${netbar()}${body}
+    <p class="xs muted" style="margin:14px 20px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} Só a conta dona lê os dados. A sessão fica só neste aparelho.</p>` };
 }
 
 function Agenda() {
@@ -1300,12 +1487,13 @@ function Agenda() {
     { h: '—', t: s.tipo ? s.nome : 'Sem sessão no plano', d: s.tipo ? `${s.resumo || ''} · do plano` : s.resumo || '', c: 'var(--a-for)' },
     ...(mb ? [{ h: '—', t: `Pagar ${mb.n.split(' · ')[0].toLowerCase()}`, d: `${brl(mb.v)} · ${relDue(mb)}`, c: 'var(--danger)' }] : []),
     ...S.inbox.filter((x) => x.quando === S.day && !x.done).map((x) => ({ h: hm(x.hora) || '—', t: x.t, d: x.top === S.day ? 'Top 3' : 'tarefa', c: 'var(--a-foc)' })),
+    ...eventosDe(S.day).map((e) => ({ h: evH(e, S.day) || '—', t: e.t, d: evSub(e, S.day) || 'agenda', c: 'var(--ev)' })),
     ...meals.map((m) => ({ h: hm(m.hora) || '—', t: m.nome, d: `${m.hora ? `${m.hora} · ` : ''}${fmtInt(m.kcal)} kcal · ${fmtInt(m.p)} g de proteína`, c: 'var(--a-nut)' })),
   ].sort((a, b) => (a.h === '—' && b.h !== '—' ? -1 : b.h === '—' && a.h !== '—' ? 1 : a.h.localeCompare(b.h)));
   const week = Array.from({ length: 7 }, (_, i) => {
     const d = D.addDays(diaNow(), i), q = D.planFor(d), ss = D.sessao(q), id = D.iso(d), bs = bills().filter((b) => D.iso(b.due) === id && !b.pago);
-    const ts = S.inbox.filter((x) => x.quando === id && !x.done);
-    return `<div class="row"><div style="width:52px"><b>${i === 0 ? 'Hoje' : wd(d)}</b><div class="xs muted num">${dShort(d)}</div></div><div class="grow small"><div>${esc(ss.tipo ? ss.nome : '—')}</div>${bs.map((b) => `<div class="muted">${esc(b.n)} · ${brl(b.v)}</div>`).join('')}${ts.map((x) => `<div class="muted">${x.hora ? `${esc(hm(x.hora) || x.hora)} · ` : ''}${esc(x.t)}</div>`).join('')}</div></div>`;
+    const ts = S.inbox.filter((x) => x.quando === id && !x.done), ev = eventosDe(id);
+    return `<div class="row"><div style="width:52px"><b>${i === 0 ? 'Hoje' : wd(d)}</b><div class="xs muted num">${dShort(d)}</div></div><div class="grow small"><div>${esc(ss.tipo ? ss.nome : '—')}</div>${ev.map((e) => `<div class="ev"><span class="k" style="--c:var(--ev)" aria-hidden="true"></span>${evH(e, id) ? `${esc(evH(e, id))} · ` : ''}${esc(e.t)}</div>`).join('')}${bs.map((b) => `<div class="muted">${esc(b.n)} · ${brl(b.v)}</div>`).join('')}${ts.map((x) => `<div class="muted">${x.hora ? `${esc(hm(x.hora) || x.hora)} · ` : ''}${esc(x.t)}</div>`).join('')}</div></div>`;
   }).join('');
   const caixa = S.inbox.filter((x) => x.top !== S.day && !x.done);
   return {
@@ -1319,7 +1507,7 @@ function Agenda() {
         : `${sec('Próximos 7 dias')}<div class="card tight">${week}</div>`}
       ${sec('Caixa de entrada', `<span class="small muted num">${caixa.length} ite${caixa.length === 1 ? 'm' : 'ns'}</span>`)}
       <div class="card tight">${caixa.length ? caixa.map((x) => `<div class="row"><button class="iconbtn" data-act="topInbox" data-arg="${esc(x.id)}" aria-pressed="false" aria-label="Pôr ${esc(x.t)} no Top 3">${I('star')}</button><div class="grow"><div class="ttl" style="white-space:normal">${esc(x.t)}</div>${chips(x)}</div><button class="iconbtn" data-act="doneInbox" data-arg="${esc(x.id)}" aria-label="Concluir ${esc(x.t)}">${I('check')}</button></div>`).join('') : `<div class="empty"><p>Caixa vazia. Anote acima o que precisa fazer.</p></div>`}</div>
-      <p class="small muted" style="margin:14px 20px">${I('calendar', 16, 'style="display:inline;vertical-align:-3px"')} A agenda do Google ou da Apple ainda não está conectada: a linha do dia mostra o plano de treino, as refeições, as contas e as suas tarefas.</p>`,
+      <p class="small muted" style="margin:14px 20px">${I('calendar', 16, 'style="display:inline;vertical-align:-3px"')} ${atalhoEm().agenda ? `Eventos do Calendário do iPhone (iCloud e Google) recebidos ${haQuanto(atalhoEm().agenda)} pelo atalho Painel Sync.` : 'Os eventos do Calendário do iPhone (iCloud e Google) entram pelo atalho Painel Sync: veja em <a href="#/dinheiro/sincronizar">Sincronizar</a>. Até lá, a linha do dia mostra o plano de treino, as refeições, as contas e as suas tarefas.'}</p>`,
   };
 }
 
@@ -1350,27 +1538,28 @@ function Ficha() {
 }
 
 function Ajustes() {
-  const ss = SB.session(), H = D.SAUDE;
+  const ss = SB.session(), H = D.SAUDE, NL = nvLinha(), AE = atalhoEm();
   const integ = [
     ['bank', 'Open Finance (Meu Pluggy)', 'Bancos e cartões pelo Supabase. O Pluggy atualiza uma vez por dia, de manhã.', ss ? (fromSB() ? `Lido ${fmtSync()}` : 'Entrou, sem dados') : 'Entrar', ss && fromSB() ? 'pago' : 'avencer', true],
+    ['cloudCheck', 'Seus registros na nuvem', esc(NL.t), NL.chip, NL.st, true, 'aj-nv'],
     ['heart', 'Saúde no Supabase', H ? `${esc(H.fonte || 'Plano, fichas, dieta, medidas e exames')}. Só a sua conta lê.` : 'Plano, fichas, dieta, medidas e exames, só para a sua conta.', H ? 'Conectado' : ss ? 'Sem dados' : 'Entrar', H ? 'pago' : 'avencer', true],
-    ['health', 'Apple Health', 'Sono, passos, treinos, VFC e frequência de repouso. Ainda não conectado: o sono vem do check-in.', 'Não conectado', 'avencer'],
-    ['calendar', 'Agenda (Google ou Apple)', 'Ainda não conectada. A linha do dia mostra o plano, as refeições, as contas e as suas tarefas.', 'Não conectada', 'avencer'],
+    ['health', 'Apple Health', AE.saude ? 'Sono, passos, peso, VFC, frequência de repouso, energia ativa e minutos de exercício pelo atalho do iPhone. Treinos não passam.' : 'Sono, passos, peso, VFC e frequência de repouso pelo atalho Painel Sync do iPhone, sem pagar nada. Até lá, o sono vem do check-in.', AE.saude ? cap(haQuanto(AE.saude)) : 'Não conectado', AE.saude ? (recente(AE.saude) ? 'pago' : 'avencer') : 'avencer', true],
+    ['calendar', 'Agenda do iPhone', AE.agenda ? 'Eventos do Calendário do iPhone, com as agendas do iCloud e do Google, pelo mesmo atalho.' : 'Os eventos do Calendário do iPhone (iCloud e Google) entram pelo mesmo atalho. Até lá, a linha do dia mostra o plano, as refeições, as contas e as tarefas.', AE.agenda ? cap(haQuanto(AE.agenda)) : 'Não conectada', AE.agenda ? (recente(AE.agenda) ? 'pago' : 'avencer') : 'avencer', true],
     ['pulse', 'Strava', 'Fora do plano: a API exige assinatura.', 'Não usar', 'atrasado'],
   ];
   return {
     title: 'Integrações e ajustes',
     html: `${backbar('ficha', 'Ficha')}${hdr('Integrações e ajustes')}
-      ${sec('Integrações')}<div class="card tight">${integ.map(([ic, n, d, st, cls, link]) => { const inner = `<span class="badge-ic">${I(ic, 20)}</span><div class="grow"><div class="ttl">${n}</div><div class="meta" style="white-space:normal">${d}</div></div><span class="chip st-${cls}">${st}</span>`; return link ? `<a class="row" href="#/dinheiro/sincronizar">${inner}</a>` : `<div class="row">${inner}</div>`; }).join('')}</div>
-      ${sec('Você')}<div class="card"><label class="field" style="margin:0"><span>Como quer ser chamado</span><input class="input" id="aj-nome" data-in="nome" value="${esc(S.nome || '')}" autocomplete="given-name" maxlength="30"></label><p class="xs muted" style="margin-top:6px">Fica só neste aparelho.</p></div>
+      ${sec('Integrações')}<div class="card tight">${integ.map(([ic, n, d, st, cls, link, id]) => { const inner = `<span class="badge-ic">${I(ic, 20)}</span><div class="grow"><div class="ttl">${n}</div><div class="meta" style="white-space:normal">${d}</div></div><span class="chip st-${cls}">${st}</span>`; return link ? `<a class="row"${id ? ` id="${id}"` : ''} href="#/dinheiro/sincronizar">${inner}</a>` : `<div class="row">${inner}</div>`; }).join('')}</div>
+      ${sec('Você')}<div class="card"><label class="field" style="margin:0"><span>Como quer ser chamado</span><input class="input" id="aj-nome" data-in="nome" value="${esc(S.nome || '')}" autocomplete="given-name" maxlength="30"></label><p class="xs muted" style="margin-top:6px">${nvJunto() ? 'Vai para a nuvem junto com o resto.' : 'Fica neste aparelho e, depois do login, na nuvem.'}</p></div>
       ${sec('Notificações')}<div style="margin:10px 16px"><button class="btn line block" data-act="testNotif">${I('bell', 20)} Testar notificação</button><p class="xs muted" style="margin-top:6px">Os lembretes automáticos ainda não existem: por enquanto, só o teste e o número de missões no ícone. No iPhone, funciona com o Painel na Tela de Início.</p></div>
       ${sec('Aparência')}<div class="card"><div class="seg" role="group" aria-label="Tema">${[['system', 'Sistema'], ['light', 'Claro'], ['dark', 'Escuro']].map(([k, l]) => `<button aria-pressed="${S.theme === k}" data-act="theme" data-arg="${k}">${l}</button>`).join('')}</div></div>
       ${sec('Pausa')}<div class="card tight"><div class="row"><div class="grow"><div class="ttl">Modo Pausa</div><div class="meta" style="white-space:normal">Doente ou viajando: congela a Chama e tira os dias da consistência.</div></div><button class="switch" role="switch" aria-checked="${S.pausa}" data-act="pausa" aria-label="Modo Pausa"></button></div></div>
       ${sec('Dados e privacidade')}<div class="card tight">
-        <div class="row"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><div class="ttl">Seus dados</div><div class="meta" style="white-space:normal">O que você registra aqui (check-ins, treinos, tarefas, gastos) fica só neste aparelho. Dinheiro e saúde vêm do Supabase, que só a sua conta lê, e a última leitura fica guardada aqui para abrir sem internet.</div></div></div>
+        <div class="row"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><div class="ttl">Seus dados</div><div class="meta" style="white-space:normal">${nvJunto() ? 'O que você registra (check-ins, treinos, tarefas, gastos, XP) fica neste aparelho e na nuvem do Supabase, igual no celular e no computador.' : 'O que você registra (check-ins, treinos, tarefas, gastos, XP) fica só neste aparelho até você entrar em Sincronizar; aí vai também para a nuvem.'} Dinheiro e saúde vêm do Supabase, que só a sua conta lê, e a última leitura fica guardada aqui para abrir sem internet.</div></div></div>
         <button class="row" data-act="exportar"><span class="badge-ic">${I('upload', 20)}</span><div class="grow"><div class="ttl">Exportar o que está neste aparelho</div><div class="meta">Um arquivo JSON com XP, check-ins, treinos e tarefas</div></div>${I('chevR', 20, 'class="ic muted"')}</button>
         <button class="row" data-act="restartOnb"><span class="badge-ic">${I('sparkle', 20)}</span><div class="grow"><div class="ttl">Ver as boas-vindas de novo</div></div>${I('chevR', 20, 'class="ic muted"')}</button>
-        <button class="row" data-act="resetLocal"><span class="badge-ic">${I('refresh', 20)}</span><div class="grow"><div class="ttl">Recomeçar neste aparelho</div><div class="meta">Apaga XP, check-ins, treinos e marcações daqui. O Supabase não muda.</div></div></button></div>
+        <button class="row" data-act="resetLocal"><span class="badge-ic">${I('refresh', 20)}</span><div class="grow"><div class="ttl">${nvEntrou() ? 'Recomeçar do zero' : 'Recomeçar neste aparelho'}</div><div class="meta">${nvEntrou() ? 'Apaga XP, check-ins, treinos e marcações aqui e na nuvem. Dinheiro e saúde não mudam.' : 'Apaga XP, check-ins, treinos e marcações daqui. O Supabase não muda.'}</div></div></button></div>
       <p class="xs muted" style="margin:14px 20px">Painel ${VERSION}.</p>`,
   };
 }
@@ -1385,7 +1574,7 @@ function Onboarding() {
     body = `<div class="big-ic">${I('shield', 40)}</div><h1 tabindex="-1">Seu painel. Você é o personagem principal.</h1>
       <p class="lead">Saúde, dinheiro e tarefas num lugar só. Cada coisa que você faz no dia vira XP e sobe seus atributos. Os números começam do zero e crescem com o que você registra.</p>
       <label class="field"><span>Como quer ser chamado?</span><input class="input" id="onb-nome" data-in="nome" value="${esc(S.nome || '')}" autocomplete="given-name" maxlength="30"></label>
-      <div class="foot"><button class="btn block" data-act="onbNext">Começar</button></div>`;
+      <div class="foot"><button class="btn block" data-act="onbNext">Começar</button>${SB.session() ? '' : '<button class="btn ghost block" data-act="onbRestore">Já uso o Painel: entrar e trazer meus dados</button>'}</div>`;
   } else if (st === 1) {
     body = `<div class="big-ic">${I('squarePlus', 40)}</div><h1 tabindex="-1">Coloque na Tela de Início</h1><p class="lead">Assim o Painel abre como app e funciona sem internet.</p>
       ${standalone ? `<div class="card soft" style="margin:20px 0 0"><div class="row-flex">${I('check', 22)}<b>Já está instalado.</b></div></div>` : ios ? `<ol class="steps"><li><span class="n">1</span><span>Toque em ${I('share', 18, 'style="display:inline;vertical-align:-3px"')} <b>Compartilhar</b> no Safari</span></li><li><span class="n">2</span><span>Escolha <b>Adicionar à Tela de Início</b></span></li><li><span class="n">3</span><span>Abra o Painel pelo ícone novo</span></li></ol>` : `<ol class="steps"><li><span class="n">1</span><span>No iPhone, abra este endereço no <b>Safari</b></span></li><li><span class="n">2</span><span>Toque em ${I('share', 18, 'style="display:inline;vertical-align:-3px"')} <b>Compartilhar</b> → <b>Adicionar à Tela de Início</b></span></li><li><span class="n">3</span><span>No computador, use o ícone de instalar na barra de endereço</span></li></ol>${deferredPrompt ? '<button class="btn line block" style="margin-top:12px" data-act="install">Instalar neste aparelho</button>' : ''}`}
@@ -1548,7 +1737,7 @@ function energiaSheet() {
   openSheet('Energia', `<div class="row-flex">${ring(h == null ? 0 : lin(h, 4, 8), Z, 72, h == null ? '—' : hShort(h))}<div><b class="zpill zone-${Z}">${ZNAME[Z]}</b><p class="small muted">${h == null ? 'Sem check-in hoje.' : `${hTxt(h)} de sono, pelo check-in de hoje.`} Nunca aumenta nem diminui XP.</p></div></div>
     <div class="card tight" style="margin:14px 0 0">${[['verde', '7 h ou mais', 'Treino completo, como no plano.'], ['amarelo', 'De 6 a 7 h', 'Mesmo treino, com uma série a menos por exercício.'], ['vermelho', 'Menos de 6 h', 'Só caminhada leve ou mobilidade, com o mesmo XP.']].map(([z, r, t]) => `<div class="row zone-${z}"><span class="zpill" style="width:86px">${ZNAME[z]}</span><div class="grow"><div class="ttl small">${r}</div><div class="meta" style="white-space:normal">${t}</div></div></div>`).join('')}</div>
     ${regras.length ? `<h3 class="small muted" style="margin:16px 0 4px;text-transform:uppercase;letter-spacing:.06em">Do seu plano</h3><ul class="small" style="padding-left:20px;margin:0">${regras.map((x) => `<li style="margin:4px 0">${txtBr(x)}</li>`).join('')}</ul>` : ''}
-    <p class="xs muted" style="margin-top:10px">Variabilidade cardíaca e frequência de repouso entram na conta quando o Apple Health for conectado.</p>`);
+    <p class="xs muted" style="margin-top:10px">A zona vem só das horas de sono. ${atalhoEm().saude ? 'O Apple Health já marca o sono no check-in; variabilidade cardíaca e frequência de repouso aparecem na Saúde.' : 'Com o atalho do iPhone, o Apple Health marca o sono no check-in.'}</p>`);
 }
 function attrSheet(k) {
   const a = attrs().find((x) => x.k === k); if (!a) return;
@@ -1602,16 +1791,61 @@ const A = {
   sbResend: () => { if (!resendWait()) sbSend(LG.email, true); },
   sbOtherEmail: () => { if (LG.busy) return; LG.step = 'email'; LG.msg = ''; LG.note = ''; LG.code = ''; SB.clearPending(); render(true, '#sb-email'); },
   // Sair: nada que esteja em andamento (leitura ou renovação da sessão) pode gravar de volta depois disso.
+  // Com a nuvem: antes sobe o que falta deste aparelho; depois apaga daqui também os seus registros (estão na nuvem).
   sbLogout: async () => {
-    if (leaving) return;
-    if (!confirm('Sair deste aparelho? A sessão e a cópia do dinheiro e da saúde daqui são apagadas. No Supabase nada muda.')) return;
-    leaving = true; render(true); announce('Saindo…');
+    if (leaving || nvSaindo) return;
+    const naNuvem = !!(NV && NV.entrou());
+    if (!confirm(naNuvem ? 'Sair deste aparelho? A sessão e a cópia dos seus dados daqui são apagadas. Na nuvem fica tudo, para entrar de novo aqui ou em outro aparelho.' : 'Sair deste aparelho? A sessão e a cópia do dinheiro e da saúde daqui são apagadas. No Supabase nada muda.')) return;
+    let nv = 'fora';
+    if (naNuvem) {
+      nvSaindo = true; render(true); announce('Salvando na nuvem antes de sair…');
+      nv = await NV.sair();
+      nvSaindo = false;
+      if (nv === 'pendente' && !confirm('As últimas mudanças deste aparelho ainda não chegaram à nuvem (sem internet?). Sair assim mesmo e perder essas mudanças?')) { render(true); return; }
+    }
+    leaving = true; NV?.parar(); render(true); announce('Saindo…');
     try { localStorage.removeItem(REALK); localStorage.removeItem(SAUDEK); } catch { /* nada a apagar */ }
-    S.paid = {}; S.paidAmt = {}; S.paidAt = {}; save();
+    if (nv === 'fora') { S.paid = {}; S.paidAmt = {}; S.paidAt = {}; saveLocal(); }
+    else {
+      // Fica só o tema: o resto volta da nuvem quando você entrar de novo.
+      S = Object.assign(defaults(), { theme: S.theme, onboarded: true, day: D.iso(diaNow()), since: D.iso(diaNow()) }); bossMonth(S); saveLocal();
+      NV.esquecer();
+    }
     const r = await SB.signOut();
-    try { sessionStorage.setItem('painel-saiu', r === true || r === 'ok' ? '1' : r === 'sem-rede' ? 'sem-rede' : 'erro'); } catch { /* sem aviso depois */ }
+    try { sessionStorage.setItem('painel-saiu', r === true || r === 'ok' ? '1' : r === 'sem-rede' ? 'sem-rede' : 'erro'); if (nv !== 'fora') sessionStorage.setItem('painel-saiu-nuvem', '1'); } catch { /* sem aviso depois */ }
     location.reload();
   },
+  nvSync: async () => {
+    if (!NV || !nuvemOn() || leaving) return;
+    const r = await NV.puxar();
+    const i = NV.info();
+    if (r === 'ok') toast(`${I('cloudCheck', 18)} Seus registros estão na nuvem.`);
+    else if (r === 'erro') toast(esc(plain(nvErrMsg(i.erro))), 'warn', 6000);
+    else if (r === 'pendente') toast('Ainda falta subir uma parte. Tente de novo em instantes.', 'warn', 5000);
+  },
+  // Token novo do atalho: desliga o anterior. Fica só na memória desta tela, para copiar uma vez.
+  atGen: async () => {
+    if (AT.busy || !SB.session()) return;
+    // O cartão pode não saber se já existe um token (saúde ainda não lida neste aparelho): pergunta do mesmo jeito.
+    const AE = atalhoEm(), ja = AE.token || AT.token || AE.saude || AE.agenda;
+    if ((ja || !D.SAUDE) && !confirm(ja ? 'Gerar outro token? O atalho com o token antigo para de funcionar até você colar o novo nos dois Obter Conteúdo do URL.' : 'Gerar um token? Se o atalho do iPhone já usa um, ele para de funcionar até você colar o novo nos dois Obter Conteúdo do URL.')) return;
+    AT.busy = true; AT.err = null; render(true);
+    try {
+      const t = await SB.novoToken();
+      if (typeof t !== 'string' || !/^[0-9a-f]{32,}$/.test(t)) throw Object.assign(new Error('resposta'), { code: 'resposta' });
+      AT.token = t; AT.busy = false; render(true, '#at-tok');
+      announce('Token gerado. Copie agora: ele só aparece esta vez.');
+    } catch (e) { AT.busy = false; AT.err = e; render(true); }
+  },
+  atCopy: async (k) => {
+    const v = k === 'url' ? SB.ATALHO_URL : AT.token ? `Bearer ${AT.token}` : '';
+    if (!v) return;
+    try { await navigator.clipboard.writeText(v); toast(`${I('check', 18)} ${k === 'url' ? 'Endereço copiado' : 'Cabeçalho copiado'}`); }
+    catch { const el = document.getElementById(k === 'url' ? 'at-url' : 'at-tok'); el?.focus(); el?.select(); toast('Não deu para copiar sozinho: o texto ficou selecionado para você copiar.', 'warn', 4200); }
+  },
+  // Abre o atalho no app Atalhos; ao voltar para o Painel, busca a saúde e a agenda de novo.
+  atRun: () => { AT.pend = Date.now(); },
+  onbRestore: () => { S.onboarded = true; S.onbStep = 0; save(); go('#/dinheiro/sincronizar', true); },
   closeSheet: () => closeSheet(),
   closeSheetNav: (_, el, e) => { const href = el?.getAttribute?.('href'); if (href) { e.preventDefault(); navFromSheet(href); } else closeSheet(true, false); },
   back: (_, el, e) => { e.preventDefault(); history.back(); },
@@ -1636,7 +1870,7 @@ const A = {
   wstep: (d) => {
     const el = document.getElementById('ci-w'), lw = lastWeight();
     const cur = parseFloat((el.value || '').replace(',', '.')), base = Number.isFinite(cur) ? cur : lw ? lw.v : 80;
-    el.value = n1(Math.max(30, Math.min(250, base + (Number.isFinite(cur) ? parseFloat(d) : 0))));
+    el.value = n1(Math.max(30, Math.min(250, base + (Number.isFinite(cur) ? parseFloat(d) : 0)))); pesoRasc = el.value;
   },
   sleep: (v, el) => {
     S.sleep = parseFloat(v);
@@ -1647,8 +1881,9 @@ const A = {
   saveCheckin: () => {
     const el = document.getElementById('ci-w'), raw = (el?.value || '').trim(), w = raw ? parseFloat(raw.replace(',', '.')) : null;
     if (w != null && !(w > 30 && w < 250)) { toast('Confira o peso: use algo como 82,5, ou deixe vazio.'); el?.focus(); return; }
+    if (fin(S.sleep) == null && ahPick() != null) S.sleep = ahPick(); // a opção que já veio marcada pelo Apple Health
     if (fin(S.sleep) == null) { toast('Escolha as horas de sono.'); sheetRoot.querySelector('#sheet [role="radio"][tabindex="0"]')?.focus() || main.querySelector('[role="radio"][tabindex="0"]')?.focus(); return; }
-    const first = !S.checkin; S.checkin = { w, s: S.sleep }; if (w != null) S.weight = w;
+    const first = !S.checkin; S.checkin = { w, s: S.sleep }; if (w != null) S.weight = w; pesoRasc = null;
     // XP fixo: dormir pouco não tira XP (o sono alimenta Recuperação e o chefe).
     if (first) addXP(20, S.sleep >= 7 ? 'Check-in feito · golpe no chefe' : 'Check-in feito'); else { touch(); toast('Check-in atualizado'); }
     setTimeout(checkBoss, 900);
@@ -1784,7 +2019,7 @@ const A = {
   addInbox: () => {
     const el = document.getElementById('inbox'); const v = el.value.trim(); if (!v) { el.focus(); return; }
     const p = parseInbox(v), tm = p.chips.find((c) => c.k === 'time');
-    S.inbox.unshift({ id: newId('n'), t: p.title || v, chips: p.chips.map((c) => c.t), quando: p.date ? D.iso(p.date) : null, hora: tm ? tm.t : null }); S.inboxDraft = ''; touch();
+    S.inbox.unshift({ id: newId('n'), o: Date.now(), t: p.title || v, chips: p.chips.map((c) => c.t), quando: p.date ? D.iso(p.date) : null, hora: tm ? tm.t : null }); S.inboxDraft = ''; touch();
     toast(`${I('inbox', 18)} Anotado na caixa de entrada`);
     render(true, '#inbox');
   },
@@ -1801,12 +2036,12 @@ const A = {
   enableNotif: async () => { await testNotif(true); A.onbDone(); },
   restartOnb: () => { S.onbStep = 0; save(); location.hash = '#/onboarding'; },
   pendentes: () => pendentesSheet(),
-  realClear: () => { if (!confirm('Apagar os seus dados de dinheiro deste aparelho? O arquivo no seu computador continua lá.')) return; try { localStorage.removeItem(REALK); } catch { /* nada a apagar */ } S.paid = {}; S.paidAmt = {}; S.paidAt = {}; save(); location.reload(); },
+  realClear: () => { if (!confirm('Apagar os seus dados de dinheiro deste aparelho? O arquivo no seu computador continua lá.')) return; try { localStorage.removeItem(REALK); } catch { /* nada a apagar */ } if (!nvEntrou()) { S.paid = {}; S.paidAmt = {}; S.paidAt = {}; save(); } location.reload(); },
   resetLocal: () => {
-    if (!confirm('Recomeçar neste aparelho? XP, check-ins, treinos, tarefas, gastos anotados e marcações daqui são apagados. O Supabase não muda.')) return;
+    if (!confirm(nvEntrou() ? 'Recomeçar do zero? XP, check-ins, treinos, tarefas, gastos anotados e marcações são apagados aqui e na nuvem: o outro aparelho também zera. Dinheiro e saúde do Supabase não mudam.' : 'Recomeçar neste aparelho? XP, check-ins, treinos, tarefas, gastos anotados e marcações daqui são apagados. O Supabase não muda.')) return;
     const keep = { theme: S.theme, onboarded: true, nome: S.nome };
     S = Object.assign(defaults(), keep, { day: D.iso(diaNow()), since: D.iso(diaNow()) }); bossMonth(S); save();
-    toast('Recomeçado neste aparelho'); if (current() !== 'hoje') go('#/hoje', true); else render(false); renderChrome();
+    toast(nvEntrou() ? 'Recomeçado do zero, aqui e na nuvem' : 'Recomeçado neste aparelho'); if (current() !== 'hoje') go('#/hoje', true); else render(false); renderChrome();
   },
   exportar: () => {
     try {
@@ -1904,6 +2139,7 @@ document.addEventListener('input', (e) => {
   if (el.dataset.in === 'sbcode') { LG.code = el.value; return; }
   if (el.dataset.in === 'sbemail') { LG.email = el.value; return; }
   if (el.dataset.in === 'nome') { S.nome = el.value.trim().slice(0, 30); save(); return; }
+  if (el.dataset.in === 'weight') { pesoRasc = el.value; return; }
   if (el.dataset.in === 'setkg' || el.dataset.in === 'setreps') setVal(el);
   if (el.dataset.in === 'inbox') {
     S.inboxDraft = el.value; save();
@@ -1982,7 +2218,7 @@ window.addEventListener('resize', fitRestbar);
 
 
 // ---------- Render ----------
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
 const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/campanha': 'Plano', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Open Finance e arquivo', 'dinheiro/sincronizar': 'Sincronizar', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes' };
@@ -2010,7 +2246,7 @@ function render(keep, focusSel) {
   let scr;
   try { scr = ROUTES[r](); } catch (err) {
     console.error(err);
-    scr = { title: 'Erro', html: `${hdr('Algo deu errado')}<div class="card"><p class="lead">Esta tela não abriu com o que está salvo neste aparelho.</p><p class="small muted" style="margin-top:8px">Recomeçar apaga só o progresso guardado aqui (XP, check-ins, marcações). Os dados do Supabase voltam na próxima sincronização.</p><button class="btn block" style="margin-top:12px" data-act="resetLocal">Recomeçar neste aparelho</button></div>` };
+    scr = { title: 'Erro', html: `${hdr('Algo deu errado')}<div class="card"><p class="lead">Esta tela não abriu com o que está salvo neste aparelho.</p><p class="small muted" style="margin-top:8px">${nvEntrou() ? 'Recomeçar apaga o progresso (XP, check-ins, marcações) aqui e na nuvem.' : 'Recomeçar apaga só o progresso guardado aqui (XP, check-ins, marcações).'} Dinheiro e saúde do Supabase voltam na próxima sincronização.</p><button class="btn block" style="margin-top:12px" data-act="resetLocal">${nvEntrou() ? 'Recomeçar do zero' : 'Recomeçar neste aparelho'}</button></div>` };
   }
   main.innerHTML = scr.html;
   app.classList.toggle('focus', scr.chrome === 'focus');
@@ -2059,7 +2295,7 @@ setInterval(() => {
   if (rs && !LG.busy) { const w = resendWait(), off = !navigator.onLine, t = w ? `Mandar outro em ${Math.ceil(w / 1000)} s` : 'Mandar outro'; rs.disabled = !!w || off; if (rs.textContent !== t) rs.textContent = t; }
 }, 500);
 
-window.addEventListener('online', () => { render(true); if (SB.session() && staleSync()) syncNow(false); });
+window.addEventListener('online', () => { render(true); nvPuxar(0); if (SB.session() && staleSync()) syncNow(false); });
 window.addEventListener('offline', () => { render(true); });
 // Troca só um pedaço da tela (sem perder o que está sendo digitado em outro campo).
 function swapPart(sel) {
@@ -2069,7 +2305,7 @@ function swapPart(sel) {
   if (!n || !o) { render(true); return; }
   const had = o.contains(document.activeElement);
   o.replaceWith(n); fitRestbar();
-  if (had) n.querySelector('button, a[href]')?.focus({ preventScroll: true });
+  if (had) (n.matches('button, a[href]') ? n : n.querySelector('button, a[href]'))?.focus({ preventScroll: true });
 }
 // Treino: tela acesa durante o descanso e um bipe no fim (o iPhone não vibra pelo navegador).
 let audio = null, wake = null;
@@ -2080,13 +2316,17 @@ async function keepAwake() {
   try { if (want && !wake && navigator.wakeLock) { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); } else if (!want && wake) { await wake.release(); wake = null; } } catch { wake = null; }
 }
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState !== 'visible') return;
-  checkDay(); keepAwake();
+  if (document.visibilityState !== 'visible') { NV?.enviarJa(); return; } // o iPhone pode fechar o app logo depois
+  if (!checkDay()) nvPuxar(5000);
+  keepAwake();
+  if (AT.pend && Date.now() - AT.pend < 5 * 60000 && SB.session()) { AT.pend = 0; syncNow(false); setTimeout(() => syncNow(false), 8000); return; }
   if (SB.session() && staleSync()) syncNow(false);
   try { (await navigator.serviceWorker?.getRegistration())?.update(); } catch { /* offline */ }
 });
-window.addEventListener('pageshow', (e) => { if (e.persisted) checkDay(); });
-setInterval(checkDay, 60000);
+window.addEventListener('pageshow', (e) => { if (e.persisted && !checkDay()) nvPuxar(5000); });
+window.addEventListener('pagehide', () => { NV?.enviarJa(); });
+// A cada minuto: o dia virou? Com a tela aberta, o outro aparelho mudou algo?
+setInterval(() => { if (!checkDay() && document.visibilityState === 'visible') nvPuxar(55000); }, 60000);
 document.getElementById('fab').addEventListener('click', quickAdd);
 document.querySelector('.tabbar').addEventListener('click', (e) => {
   const a = e.target.closest('a.tab'); if (!a) return; e.preventDefault();
@@ -2104,6 +2344,7 @@ else if (!hashLogin && !SB.session() && SB.pending() && current() === 'hoje') go
 if (pruneReal()) save();
 render(false);
 renderChrome();
+if (!checkDay()) nvPuxar(0); // com a nuvem e o dia velho, checkDay lê a nuvem antes de virar
 if (hashLogin && hashLogin !== 'ok') {
   // Com sessão, o aviso não cabe no formulário de login (que não aparece): vai num aviso passageiro.
   if (SB.session()) toast(hashLogin === 'ja_conectado' ? esc(SBMSG.ja_conectado) : 'Esse link do e-mail já não valia, mas este aparelho continua conectado.', 'warn', 7000);
@@ -2111,7 +2352,11 @@ if (hashLogin && hashLogin !== 'ok') {
 }
 try {
   const saiu = sessionStorage.getItem('painel-saiu');
-  if (saiu) { sessionStorage.removeItem('painel-saiu'); toast(saiu === '1' ? 'Saiu deste aparelho. A sessão e os dados daqui foram apagados.' : saiu === 'sem-rede' ? 'Saiu e apagou os dados deste aparelho. Sem internet, a sessão não foi encerrada no Supabase.' : 'Saiu e apagou os dados deste aparelho. O Supabase não confirmou o fim da sessão lá.', saiu === '1' ? '' : 'warn', 6000); }
+  if (saiu) {
+    const nuv = sessionStorage.getItem('painel-saiu-nuvem') ? ' Seus registros continuam na nuvem.' : '';
+    sessionStorage.removeItem('painel-saiu'); sessionStorage.removeItem('painel-saiu-nuvem');
+    toast((saiu === '1' ? 'Saiu deste aparelho. A sessão e os dados daqui foram apagados.' : saiu === 'sem-rede' ? 'Saiu e apagou os dados deste aparelho. Sem internet, a sessão não foi encerrada no Supabase.' : 'Saiu e apagou os dados deste aparelho. O Supabase não confirmou o fim da sessão lá.') + nuv, saiu === '1' ? '' : 'warn', 6000);
+  }
 } catch { /* sem sessão da aba */ }
 if (SB.session() && (hashLogin === 'ok' || staleSync())) syncNow(false).then((ok) => { if (ok && hashLogin === 'ok') toast(`${I('cloudCheck', 18)} Entrou. Seus dados de dinheiro e saúde estão no Painel.`, '', 5000); });
 // Outra aba, ou o app instalado e o navegador no Android, mexeram na sessão ou nos dados.

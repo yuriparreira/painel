@@ -411,3 +411,22 @@ button.kpi .chev { position: absolute; right: 10px; top: 12px; color: var(--mute
 .filebtn { position: relative; cursor: pointer; }
 .filebtn input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
 .filebtn:focus-within { outline: 3px solid color-mix(in srgb, var(--primary) 75%, transparent); outline-offset: 2px; }
+/* Dia novo com a nuvem: enquanto lê o outro aparelho (até 4 s), nada de toque no dia velho. */
+.nv-splash { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 92%, transparent); color: var(--ink); text-align: center; padding: 24px; }
+.nv-splash p { margin: 12px 0 0; font-weight: 600; max-width: 28ch; }
+.nv-splash svg { animation: nvgira 1s linear infinite; color: var(--primary); }
+@keyframes nvgira { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .nv-splash svg { animation: none; } }
+/* Eventos do Calendário do iPhone (atalho): cor própria, porque --info e --a-foc são a mesma no tema claro. */
+:root { --ev: #BE185D; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ev: #F472B6; } }
+:root[data-theme="dark"] { --ev: #F472B6; }
+.ev { display: flex; align-items: center; gap: 6px; }
+.ev .k { width: 8px; height: 8px; border-radius: 50%; background: var(--c); flex: none; }
+.at-tok .input { font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-width: 0; }
+.at-tok .row-flex { gap: 8px; }
+.at-how summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; gap: 6px; list-style: none; }
+.at-how summary::-webkit-details-marker { display: none; }
+.at-how summary::before { content: ''; width: 7px; height: 7px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); transition: transform .15s; flex: none; }
+.at-how[open] summary::before { transform: rotate(45deg); }
+.at-how ol { margin: 4px 0 0; padding-left: 20px; display: grid; gap: 6px; }

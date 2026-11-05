@@ -1,7 +1,7 @@
 // Login por código no e-mail (Supabase Auth) e leitura dos dados reais pela função fin_painel do banco.
 // O endereço e a chave publicável do projeto são públicos por desenho (a chave publicável é feita para ficar no
-// navegador): quem protege os dados é o RLS do banco, que só deixa a conta dona ler. Sessão e cópia dos dados
-// ficam só neste aparelho; nada pessoal está neste arquivo.
+// navegador): quem protege os dados é o RLS do banco, que só deixa a conta dona ler. A sessão fica só neste aparelho;
+// nada pessoal está neste arquivo.
 export const SB_URL = 'https://ntbbpuqfpjvepykxzzpn.supabase.co';
 const SB_KEY = 'sb_publishable_YVchv74ypU0YChO4jXW2ew_QeNvqSmT';
 const SK = 'painel-sessao-v1'; // sessão (tokens) deste aparelho
@@ -77,7 +77,7 @@ function fromTokens(t) {
   return { access_token: t.access_token, refresh_token: t.refresh_token, expires_at: exp, email: (t.user && t.user.email) || c.email || null, uid: (t.user && t.user.id) || c.sub || null };
 }
 
-async function call(path, { method = 'POST', body, token, timeout = 20000 } = {}) {
+async function call(path, { method = 'POST', body, token, timeout = 20000, keepalive = false } = {}) {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new SyncError('offline');
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeout);
@@ -85,14 +85,16 @@ async function call(path, { method = 'POST', body, token, timeout = 20000 } = {}
   try {
     const headers = { apikey: SB_KEY, 'Content-Type': 'application/json' };
     if (token) headers.Authorization = `Bearer ${token}`;
-    res = await fetch(SB_URL + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', signal: ctl.signal });
+    res = await fetch(SB_URL + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', signal: ctl.signal, keepalive });
     txt = await res.text(); // o prazo vale também para a resposta que chega pela metade
   } catch {
     throw new SyncError(ctl.signal.aborted ? 'timeout' : 'offline');
   } finally { clearTimeout(t); }
   let j = null; try { j = txt ? JSON.parse(txt) : null; } catch { j = null; }
   if (!res.ok) {
-    const code = (j && (j.error_code || (j.message === 'nao_e_dono' && 'nao_e_dono') || j.error || j.code)) || `http_${res.status}`;
+    // As funções do banco recusam com raise exception '<código>': o PostgREST manda P0001 e o código na mensagem.
+    const doBanco = j && ['nao_e_dono', 'doc_grande', 'doc_invalido', 'token_invalido'].includes(j.message) && j.message;
+    const code = (j && (j.error_code || doBanco || j.error || j.code)) || `http_${res.status}`;
     throw new SyncError(String(code), (j && (j.msg || j.message || j.error_description)) || '', res.status);
   }
   return j;
@@ -173,14 +175,13 @@ async function accessToken() {
   return refreshing;
 }
 
-async function rpc(fn) {
-  let tok = await accessToken();
-  try { return await call(`/rest/v1/rpc/${fn}`, { body: {}, token: tok, timeout: 30000 }); }
+async function rpc(fn, args = {}, { keepalive = false } = {}) {
+  const go = (tok) => call(`/rest/v1/rpc/${fn}`, { body: args, token: tok, timeout: 30000, keepalive });
+  try { return await go(await accessToken()); }
   catch (e) {
     if (e.status !== 401 || !sess) throw e;
     sess = { ...sess, expires_at: 0 }; // token recusado antes da hora: renova uma vez e tenta de novo
-    tok = await accessToken();
-    return call(`/rest/v1/rpc/${fn}`, { body: {}, token: tok, timeout: 30000 });
+    return go(await accessToken());
   }
 }
 
@@ -208,6 +209,17 @@ export async function fetchSaude() {
   if (ep !== epoch) throw new SyncError('sem_sessao');
   return r;
 }
+
+// Seus registros (check-ins, treinos, tarefas, gastos, XP) na nuvem: um documento só, que o nuvem.js junta entre os
+// aparelhos. Com rev igual ao da nuvem, a leitura devolve só {rev, mesmo: true}. Gravar manda a versão em que se
+// baseou: se outra chegou antes, volta {ok: false, rev, doc} para juntar e gravar de novo.
+export const lerEstado = (rev) => rpc('estado_ler', rev == null ? {} : { p_rev: rev });
+export const salvarEstado = (doc, base, aparelho, keepalive) => rpc('estado_salvar', { p_doc: doc, p_base: base, p_aparelho: aparelho || null }, { keepalive });
+
+// Atalho do iPhone (Apple Health e Calendário): o token novo aparece uma vez só, no app; o banco guarda só o hash.
+// Gerar outro desliga o anterior.
+export const novoToken = () => rpc('atalho_novo_token');
+export const ATALHO_URL = `${SB_URL}/functions/v1/atalho`;
 
 // Sai deste aparelho. A sessão daqui é apagada na hora (fechar o app logo depois não a deixa salva); depois o
 // Supabase encerra a sessão lá, com um token renovado antes se o atual já venceu. Devolve 'ok', 'sem-rede' ou

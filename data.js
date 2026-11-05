@@ -1,6 +1,7 @@
 // Dados do Painel. Nada pessoal fica neste arquivo: o dinheiro vem do Open Finance (função fin_painel do Supabase) ou
-// do painel-dados.json carregado no aparelho; a saúde (plano, fichas, dieta, medidas, exames) vem da função
-// saude_painel do Supabase. A cópia fica só no navegador. Sem dados, as telas ficam vazias e dizem de onde eles vêm.
+// do painel-dados.json carregado no aparelho; a saúde (plano, fichas, dieta, medidas, exames, o diário com o Apple
+// Health e a agenda do iPhone, que chegam pelo atalho) vem da função saude_painel do Supabase. A cópia fica só no
+// navegador. Sem dados, as telas ficam vazias e dizem de onde eles vêm.
 
 export const DAY = 864e5;
 export const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
@@ -17,7 +18,7 @@ export const PROFILE = { nome: '' }; // o nome fica só no aparelho (Ajustes →
 // Atributos de 0 a 100. O valor é calculado no app a partir do que você registra (e do Open Finance, no Patrimônio).
 export const ATTRS = [
   { k: 'FOR', nome: 'Força', cor: 'var(--a-for)', mede: 'Treinos de força feitos nos últimos 28 dias, contra os do plano (3 por semana).', subir: ['Fazer os treinos A, B e C da semana.', 'Concluir o treino no app (ou marcar Corpo no Hoje).'], fonte: 'Treinos registrados no app' },
-  { k: 'VIG', nome: 'Vigor', cor: 'var(--a-vig)', mede: 'Minutos de cardio na zona 2 nos últimos 28 dias, contra a meta do plano (2 cardios por semana).', subir: ['Fazer os 2 cardios da semana no tempo do plano.'], fonte: 'Cardios registrados no app (o Apple Health ainda não está conectado)' },
+  { k: 'VIG', nome: 'Vigor', cor: 'var(--a-vig)', mede: 'Minutos de cardio na zona 2 nos últimos 28 dias, contra a meta do plano (2 cardios por semana).', subir: ['Fazer os 2 cardios da semana no tempo do plano.'], fonte: 'Cardios registrados no app (os treinos do Apple Health não passam pelo atalho)' },
   { k: 'REC', nome: 'Recuperação', cor: 'var(--a-rec)', mede: 'Noites com 7 h ou mais de sono nos últimos 14 dias.', subir: ['7 h ou mais de sono.', 'Fazer o check-in da manhã com as horas de sono.'], fonte: 'Check-in da manhã' },
   { k: 'NUT', nome: 'Nutrição', cor: 'var(--a-nut)', mede: 'Dias com a missão Combustível (proteína na meta) nos últimos 14 dias.', subir: ['Proteína na meta todo dia.', 'Comer abaixo da faixa não conta: a meta é acertar, não comer menos.'], fonte: 'Missão Combustível e refeições marcadas' },
   { k: 'PAT', nome: 'Patrimônio', cor: 'var(--a-pat)', mede: 'Meses de gastos essenciais cobertos pela reserva, contra a meta de 6 meses.', subir: ['Aporte mensal na reserva até 6 meses de gastos essenciais.', 'Pagar a fatura inteira, sempre.'], fonte: 'Open Finance (Supabase)' },
@@ -68,7 +69,20 @@ export function useSaude(H) {
     refeicoes: Array.isArray(H.refeicoes) ? H.refeicoes.filter((r) => r && r.refeicao) : [],
     diario: byDate(H.diario), medidas: byDate(H.medidas), exames: byDate(H.exames), treinos: byDate(H.treinos),
     historico: (Array.isArray(H.historico) ? H.historico : []).filter((h) => h && isoOk(h.mes)),
+    agenda: agendaDe(H.agenda),
+    atalhoEm: { saude: quando(H.atalhoEm && H.atalhoEm.saude), agenda: quando(H.atalhoEm && H.atalhoEm.agenda), token: quando(H.atalhoEm && H.atalhoEm.token) },
   };
+}
+// Agenda do Calendário do iPhone (iCloud e Google), pelo atalho: d e ate são os dias (ate inclusive), h e fim os horários
+// de Brasília (null no dia inteiro).
+const quando = (v) => (typeof v === 'string' && !isNaN(Date.parse(v)) ? v : null);
+const hmOk = (v) => (typeof v === 'string' && /^\d\d:\d\d$/.test(v) ? v : null);
+const txt = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
+function agendaDe(A) {
+  return (Array.isArray(A) ? A : []).filter((e) => e && isoOk(e.d) && txt(e.t, 200)).map((e) => {
+    const d = e.d.slice(0, 10), ate = isoOk(e.ate) && e.ate.slice(0, 10) >= d ? e.ate.slice(0, 10) : d, diaTodo = e.diaTodo === true;
+    return { d, ate, diaTodo, h: diaTodo ? null : hmOk(e.h), fim: diaTodo ? null : hmOk(e.fim), t: txt(e.t, 200), cal: txt(e.cal, 60), local: txt(e.local, 120) };
+  }).sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : (a.h || '') < (b.h || '') ? -1 : (a.h || '') > (b.h || '') ? 1 : 0));
 }
 export const metas = () => (SAUDE && SAUDE.metas) || {};
 export function clearSaude() { SAUDE = null; }
