@@ -75,11 +75,21 @@ const pct = (v) => `${Math.round(Math.max(0, Math.min(100, v)))}%`;
 
 
 // ---------- Estado neste aparelho ----------
+// Treinos seus, fichas editadas, exercícios criados e o histórico de cargas ficam dentro do mapa lastSets, com chaves que
+// nenhum exercício usa (o id de um exercício só tem a-z, 0-9 e hífen). Assim a cópia 0.6.0 do app, ainda aberta em outro
+// aparelho, guarda essas chaves na nuvem como guarda as cargas, em vez de apagar o que ela não conhece.
+//   ~t:id     treino seu { nome, ex: [{ n, p }], dia? } (com dia: montado naquele dia; some depois de 30 dias)
+//   ~f:A-1    a ficha A do bloco 1 editada { ex: [{ n, p }] }, no lugar da do Supabase (que não muda)
+//   ~e:id     exercício criado por você { n }
+//   id@dia    o que se fez num dia { kg, reps } (histórico de cargas, 400 dias)
+// E no mapa sets, que é do dia: ~s:sessão-posição { n }, a troca de um exercício só hoje.
+const K_T = '~t:', K_F = '~f:', K_E = '~e:', K_S = '~s:';
+const isP = (s) => typeof s === 'string' && /^P:[a-z0-9]{1,24}$/.test(s);
 function defaults() {
   return {
     v: 2, xp: 0, since: null, nome: '', onboarded: false, onbStep: 0, theme: 'system',
     day: null, checkin: null, quests: { corpo: false, comb: false, missao: false }, perfect: false, closed: false,
-    sets: {}, meals: {}, wSel: null, wStart: null, rest: null,
+    sets: {}, meals: {}, wSel: null, wStart: null, rest: null, edAlvo: null,
     paid: {}, inbox: [], weight: null, sleep: null, streak: 0, best: 0, pausa: false,
     card: 0, calSel: null, calOff: 0, billFilter: 'todas', bp: 'resumo', dayType: null, agView: 'hoje',
     draftExpense: '', inboxDraft: '', missaoRef: null, corpoKey: null, corpoMin: 0, combByMeals: false, expenses: [], mealXp: {}, inboxXp: 0, prToday: false,
@@ -118,6 +128,11 @@ function rollover(s, today) {
   Object.keys(s.hist).forEach((d) => { if (D.diffDays(dayAt(today), dayAt(d)) > 400) delete s.hist[d]; });
   Object.keys(s.dias).forEach((d) => { if (D.diffDays(dayAt(today), dayAt(d)) > 400) delete s.dias[d]; });
   Object.keys(s.semXp).forEach((d) => { if (D.diffDays(dayAt(today), dayAt(d)) > 60) delete s.semXp[d]; });
+  // Histórico de cargas: 400 dias. Treino montado num dia: 30 dias (salvo como treino seu, ele fica).
+  Object.keys(s.lastSets).forEach((k) => {
+    const h = /@(\d{4}-\d{2}-\d{2})$/.exec(k), v = s.lastSets[k], d = h ? h[1] : k.startsWith(K_T) && v && v.dia;
+    if (isoOk(d) && D.diffDays(dayAt(today), dayAt(d)) > (h ? 400 : 30)) delete s.lastSets[k];
+  });
   s.inbox = s.inbox.filter((x) => !x.done); // tarefas concluídas saem na virada
   Object.assign(s, { checkin: null, sleep: null, quests: { corpo: false, comb: false, missao: false }, perfect: false, closed: false, sets: {}, meals: {}, wStart: null, rest: null, dayType: null, wSel: null, missaoRef: null, corpoKey: null, corpoMin: 0, combByMeals: false, mealXp: {}, inboxXp: 0, prToday: false, qxp: {} });
 }
@@ -179,7 +194,8 @@ function sane(stored) {
   if (out.checkin) out.checkin = { s: out.checkin.s, w: fin(out.checkin.w) };
   ['day', 'since', 'brasaAt', 'bossMonth', 'bossWon', 'bossWonDay', 'calSel'].forEach((k) => { if (out[k] != null && typeof out[k] !== 'string') out[k] = null; });
   if (out.dayType && !D.DIAS[out.dayType]) out.dayType = null;
-  if (out.wSel && !['A', 'B', 'C', 'Z2', 'REST'].includes(out.wSel)) out.wSel = null;
+  if (out.wSel && !['A', 'B', 'C', 'Z2', 'REST'].includes(out.wSel) && !isP(out.wSel)) out.wSel = null;
+  if (out.edAlvo && !['A', 'B', 'C'].includes(out.edAlvo) && !isP(out.edAlvo)) out.edAlvo = null;
   if (out.rest && !(out.rest.end > 0)) out.rest = null;
   out.inbox = out.inbox.filter((x) => x && typeof x.t === 'string');
   out.expenses = out.expenses.filter((x) => x && Number.isFinite(x.v));
@@ -458,6 +474,8 @@ function logDia(d) { const loc = d === S.day ? logHoje(S) : S.dias[d] || null; c
 // Primeiro dia com registro: o dia em que o app começou a contar, ou o primeiro do diário do Supabase, se for antes.
 function inicio() { const c = [S.since, ...((D.SAUDE && D.SAUDE.diario) || []).map((x) => x.d)].filter(isoOk).sort()[0]; return c ? D.startOfDay(dayAt(c)) : D.startOfDay(diaNow()); }
 const FORCA = new Set(['A', 'B', 'C']);
+// Treino de força feito: A, B, C ou um treino seu (F).
+const ehForca = (k) => FORCA.has(k) || k === 'F';
 
 // ---------- Hábito: consistência, Chama, brasa e chefe ----------
 // Dias com check-in nos últimos 28, contando só a partir do primeiro dia de uso. Sem nenhum dia ainda, sem número.
@@ -494,7 +512,7 @@ function semana(ref = diaNow()) {
   const seg = segunda(ref), n = D.diffDays(ref, seg); let sess = 0, forca = 0, z2 = 0, cardio = 0;
   for (let i = 0; i <= n; i++) {
     const e = logDia(D.iso(D.addDays(seg, i))); if (!e || !e.k) continue;
-    if (e.k === 'Z2') { sess++; cardio++; z2 += e.z || 0; } else if (FORCA.has(e.k)) { sess++; forca++; } else if (e.k === 'LIVRE') sess++;
+    if (e.k === 'Z2') { sess++; cardio++; z2 += e.z || 0; } else if (ehForca(e.k)) { sess++; forca++; } else if (e.k === 'LIVRE') sess++;
   }
   return { sess, forca, cardio, z2, week: cw(D.planFor(ref)), key: D.iso(seg) };
 }
@@ -529,7 +547,7 @@ function attrAt(off) {
   const A28 = dias(28, uso), A14 = dias(14, uso), R14 = dias(14, inicio()), out = {};
   const w = (L) => Math.max(7, L.length);
   if (A28.some(Boolean)) {
-    const forca = A28.filter((e) => e && FORCA.has(e.k)).length, z2 = A28.reduce((a, e) => a + (e && e.k === 'Z2' ? e.z || 0 : 0), 0);
+    const forca = A28.filter((e) => e && ehForca(e.k)).length, z2 = A28.reduce((a, e) => a + (e && e.k === 'Z2' ? e.z || 0 : 0), 0);
     const cm = D.cardioMin(cw(D.planFor(end)));
     Object.assign(out, { FOR: lin(forca, 0, (forcaSemana() * 4 * w(A28)) / 28), VIG: cm ? lin(z2, 0, (cm.min * cardiosSemana() * w(A28)) / 7) : null });
   }
@@ -550,7 +568,7 @@ const deltaTxt = (d) => (d == null ? 'sem histórico' : `${d >= 0 ? '+' : '−'}
 // ---------- Conquistas: ficam guardadas no dia em que você chega lá ----------
 function conquistas() {
   const dias = [...Object.values(S.dias), logHoje(S)].filter(Boolean);
-  const forca = dias.filter((e) => FORCA.has(e.k)).length, sk = Math.max(S.best, streakNow());
+  const forca = dias.filter((e) => ehForca(e.k)).length, sk = Math.max(S.best, streakNow());
   let z28 = 0; for (let i = 0; i < 28; i++) { const e = logDia(D.iso(D.addDays(diaNow(), -i))); if (e && e.k === 'Z2') z28 += e.z || 0; }
   const W = semana(), R = D.SAVINGS && D.SAVINGS.reservaMeses;
   const st = {
@@ -838,6 +856,7 @@ function Saude() {
       </button>
       <a class="card cardlink" href="#/saude/treino" data-act="openTreino"><span class="badge-ic p">${I(key === 'Z2' ? 'pulse' : key === 'REST' || key === 'LIVRE' || red ? 'walk' : 'dumbbell')}</span><div class="grow"><div class="muted small">Hoje</div><b>${esc(sessTxt)}</b><div class="small muted">${esc(sessSub || '')}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
       ${nextGym && nextGym.i > 0 ? `<a class="card cardlink" href="#/saude/treino" data-act="openTreino" data-arg="${nextGym.q.tipo}"><span class="badge-ic">${I('dumbbell')}</span><div class="grow"><div class="muted small">Próximo treino de força · ${nextGym.i === 1 ? 'amanhã' : wd(D.addDays(diaNow(), nextGym.i))}</div><b>${esc(D.sessao(nextGym.q).nome)}</b></div>${I('chevR', 24, 'class="ic chev"')}</a>` : ''}
+      <a class="card cardlink" href="#/saude/exercicios"><span class="badge-ic">${I('search')}</span><div class="grow"><div class="muted small">Exercícios e treinos seus</div><b>Base de exercícios e cargas</b><div class="small muted">Monte um treino, troque exercícios, edite as fichas</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
       ${sec('Peso', H ? '<a href="#/saude/exames">Medidas</a>' : '')}${peso}
       ${ahCard()}
       ${sec('Sono · 7 dias')}${sono}
@@ -860,26 +879,95 @@ function ahCard() {
     <p class="xs muted" style="margin-top:8px">Pelo atalho Painel Sync do iPhone, que só lê o Saúde com o celular desbloqueado. Treinos não passam: o Corpo conta o que você marca aqui.</p></div>`;
 }
 
-// Ficha do dia (ou da sessão escolhida) já convertida em exercícios com séries e faixa de repetições.
+// ---------- Treinos seus, fichas editadas e a base de exercícios ----------
+const PRESC = '3 × 8–12';
+const LS = (k) => { const v = S.lastSets[k]; return v && typeof v === 'object' && !Array.isArray(v) ? v : null; };
+const exArr = (a) => (Array.isArray(a) ? a : []).filter((x) => x && typeof x.n === 'string' && x.n.trim()).slice(0, 30)
+  .map((x) => ({ n: x.n.trim().slice(0, 60), p: typeof x.p === 'string' ? x.p.trim().slice(0, 40) : '' }));
+function treinoP(id) { const t = LS(K_T + id); return t ? { id, nome: (typeof t.nome === 'string' && t.nome.trim().slice(0, 40)) || 'Treino', ex: exArr(t.ex), dia: isoOk(t.dia) ? t.dia : null } : null; }
+const meusTreinos = () => Object.keys(S.lastSets).filter((k) => k.startsWith(K_T)).map((k) => treinoP(k.slice(K_T.length))).filter(Boolean);
+const putT = (t) => { S.lastSets[K_T + t.id] = { nome: t.nome, ex: t.ex, ...(t.dia ? { dia: t.dia } : {}) }; };
+const fKey = (f) => `${f.treino}-${f.bloco ?? 0}`;
+const exOrig = (f) => (f.exercicios || []).filter((e) => e && e.nome).map((e) => ({ n: String(e.nome).trim().slice(0, 60), p: String(e.prescricao || '').trim().slice(0, 40) }));
+const exDaFicha = (f) => { const ed = LS(K_F + fKey(f)); return ed ? exArr(ed.ex) : exOrig(f); };
+const troca = (sel, j) => { const v = S.sets[`${K_S}${sel}-${j}`]; return v && typeof v.n === 'string' && v.n.trim() ? v.n.trim().slice(0, 60) : null; };
+
+// A sessão escolhida já convertida em exercícios com séries e faixa de repetições: a ficha do bloco (ou a sua versão
+// dela) para A, B e C; o treino seu para P:id. A troca de hoje entra no lugar, com as séries do exercício trocado.
 function fichaList(sel, p) {
+  if (isP(sel)) {
+    const t = treinoP(sel.slice(2)), q = { ...p, tipo: sel, semBloco: 99 };
+    const ss = { tipo: sel, nome: t ? t.nome : 'Treino', resumo: '', ficha: t ? { treino: sel, orientacao: '', observacoes: [] } : null };
+    const base = t ? t.ex : [];
+    return { ss, f: ss.ficha, q, t, base, list: lista(sel, base, q) };
+  }
   const ss = sessOf(p, sel), f = ss.ficha, q = { ...p, tipo: sel };
-  return { ss, f, q, list: f && FORCA.has(sel) ? (f.exercicios || []).filter((e) => e && e.nome).map((e) => D.exercicio(e, q)) : [] };
+  const base = f && FORCA.has(sel) ? exDaFicha(f) : [];
+  return { ss, f, q, base, list: lista(sel, base, q) };
 }
+function lista(sel, base, q) {
+  return base.map((e, j) => {
+    const tr = troca(sel, j), ex = D.exercicio({ nome: tr || e.n, prescricao: e.p || PRESC }, q);
+    if (tr && D.slug(tr) !== D.slug(e.n)) ex.no = e.n;
+    return ex;
+  });
+}
+// Muda a lista de exercícios da sessão: o treino seu, ou a sua versão da ficha (a do Supabase continua lá).
+function setBase(sel, arr) {
+  const ex = exArr(arr);
+  if (isP(sel)) { const t = treinoP(sel.slice(2)); if (!t) return false; putT({ ...t, ex }); return true; }
+  const f = fichaList(sel, plan()).f; if (!f) return false;
+  S.lastSets[K_F + fKey(f)] = { ex };
+  return true;
+}
+
+// A base de exercícios: os das fichas (originais e editadas), os dos seus treinos, os que você criou e os que já têm carga.
+const normq = (s) => D.slug(s).replace(/-/g, ' ');
+function biblioteca() {
+  const m = new Map(), H = D.SAUDE;
+  const add = (nome, p, onde) => {
+    nome = String(nome || '').trim(); const id = D.slug(nome); if (!id) return;
+    let x = m.get(id); if (!x) m.set(id, (x = { id, nome, p: '', onde: [] }));
+    if (!x.p && p) x.p = p; if (onde && !x.onde.includes(onde)) x.onde.push(onde);
+  };
+  for (const f of (H && H.fichas) || []) if (FORCA.has(f.treino)) { const o = `Treino ${f.treino}${f.bloco ? ` (bloco ${f.bloco})` : ''}`; exDaFicha(f).forEach((e) => add(e.n, e.p, o)); exOrig(f).forEach((e) => add(e.n, e.p)); }
+  for (const t of meusTreinos()) t.ex.forEach((e) => add(e.n, e.p, t.dia ? null : t.nome));
+  for (const k of Object.keys(S.lastSets)) { const v = LS(k); if (v && typeof v.n === 'string' && (k.startsWith(K_E) || /^[a-z0-9-]+$/.test(k))) add(v.n, '', null); }
+  return [...m.values()].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+}
+const buscar = (L, q) => { const t = normq(q).split(' ').filter(Boolean); return t.length ? L.filter((x) => { const n = normq(x.nome); return t.every((w) => n.includes(w)); }) : L; };
+function ultimaTxt(id) {
+  const l = LS(id); if (!l || !Array.isArray(l.reps) || !l.reps.length) return '';
+  return `${l.kg ? `${D.fmtKg(l.kg)} kg × ` : ''}${l.reps.join(', ')}${isoOk(l.d) ? ` · ${dShort(dayAt(l.d))}` : ''}`;
+}
+function historico(id) {
+  const pre = `${id}@`;
+  return Object.keys(S.lastSets).filter((k) => k.startsWith(pre) && isoOk(k.slice(pre.length))).sort().reverse()
+    .map((k) => ({ d: k.slice(pre.length), ...LS(k) })).filter((x) => Array.isArray(x.reps));
+}
+
+// Ficha do dia (ou da sessão escolhida): séries, cargas sugeridas e o que você marcou.
 const nSeries = (ex, cut) => (cut && ex.series > 1 ? ex.series - 1 : ex.series);
 const setKey = (sel, j, ex, i) => `${sel}-${j}-${ex.id}-${i}`;
+const seuTreinoRow = (t) => `<button class="row" data-act="tAbrir" data-arg="${t.id}"><span class="badge-ic">${I('dumbbell', 20)}</span><div class="grow"><div class="ttl ellip">${esc(t.nome)}</div><div class="meta">${t.ex.length} exercício${t.ex.length === 1 ? '' : 's'}${t.dia ? ` · montado em ${dShort(dayAt(t.dia))}` : ''}</div></div>${I('chevR', 20, 'class="ic muted"')}</button>`;
 function Treino() {
   const tp = todaySession(), today = tp.key, p = tp.p, H = D.SAUDE;
-  const sel = S.wSel || (today === 'LIVRE' ? 'A' : today);
+  let sel = S.wSel || (today === 'LIVRE' ? 'A' : today);
+  if (isP(sel) && !treinoP(sel.slice(2))) sel = today === 'LIVRE' ? 'A' : today; // apagado no outro aparelho
   const Z = zoneNow(), isToday = sel === today, xpHoje = QXP().corpo;
-  const xpNote = S.quests.corpo ? 'O XP de treino de hoje já foi ganho.' : isToday || today === 'LIVRE' ? `Vale +${xpHoje} XP.` : `Reposição: vale os +${xpHoje} XP do plano de hoje, nunca mais que isso.`;
+  const xpNote = S.quests.corpo ? 'O XP de treino de hoje já foi ganho.' : isToday || today === 'LIVRE' || isP(sel) ? `Vale +${xpHoje} XP.` : `Reposição: vale os +${xpHoje} XP do plano de hoje, nunca mais que isso.`;
   const elapsed = S.wStart ? Math.floor((Date.now() - S.wStart) / 1000) : 0;
-  if (!H || !H.fichas.length) {
+  const seus = meusTreinos().filter((t) => !t.dia || t.dia === S.day);
+  if ((!H || !H.fichas.length) && !isP(sel)) {
     return { title: 'Treino', chrome: 'focus', html: `${backbar('saude', 'Saúde')}${hdr('Treino', 'Sem fichas neste aparelho')}${semSaude()}
+      <div class="card"><h3>Treinos seus</h3><p class="lead">Monte o treino de hoje buscando os exercícios, ou abra um treino seu. As cargas ficam guardadas por exercício.</p>
+        <div class="btnrow"><button class="btn" data-act="tMontar">${I('plus', 20)} Montar o treino de hoje</button></div>${seus.length ? `<div class="tight" style="margin-top:8px">${seus.map(seuTreinoRow).join('')}</div>` : ''}</div>
       <div class="card"><h3>Treinou mesmo assim?</h3><p class="lead">Marque como feito: ${S.quests.corpo ? 'o XP de treino de hoje já foi ganho' : `vale +${xpHoje} XP`} e conta na semana.</p><div class="btnrow"><button class="btn" data-act="finishWorkout" data-arg="LIVRE">${I('check', 20)} Fiz um treino</button></div></div>` };
   }
-  const ss = sessOf(p, sel);
-  const seg = `<div class="seg" role="group" aria-label="Escolher sessão" style="margin:4px 16px 0">${['A', 'B', 'C', 'Z2'].map((k) => `<button aria-pressed="${sel === k}" data-act="wsel" data-arg="${k}">${k === 'Z2' ? 'Cardio' : 'Treino ' + k}</button>`).join('')}</div>`;
-  const sub = [isToday ? 'Hoje' : today === 'LIVRE' ? 'Fora do plano' : 'Prévia', p.bloco ? `Bloco ${p.bloco.n}: ${esc(p.bloco.nome)}` : '', p.week ? `semana ${p.week}` : '', p.deload ? 'deload' : ''].filter(Boolean).join(' · ');
+  const FL = fichaList(sel, p), ss = FL.ss;
+  const seg = `<div class="seg" role="group" aria-label="Escolher sessão" style="margin:4px 16px 0">${['A', 'B', 'C', 'Z2'].map((k) => `<button aria-pressed="${sel === k}" data-act="wsel" data-arg="${k}"${k === 'Z2' ? '' : ` aria-label="Treino ${k}"`}>${k === 'Z2' ? 'Cardio' : k}</button>`).join('')}<button aria-pressed="${isP(sel)}" data-act="wOutros" aria-haspopup="dialog">Outros</button></div>`;
+  const sub = isP(sel) ? [FL.t.dia ? 'Montado por você' : 'Treino seu', p.deload ? 'deload' : ''].filter(Boolean).join(' · ')
+    : [isToday ? 'Hoje' : today === 'LIVRE' ? 'Fora do plano' : 'Prévia', p.bloco ? `Bloco ${p.bloco.n}: ${esc(p.bloco.nome)}` : '', p.week ? `semana ${p.week}` : '', p.deload ? 'deload' : ''].filter(Boolean).join(' · ');
   const head = `${backbar('saude', 'Saúde')}${hdr(sel === 'REST' ? 'Descanso ativo' : esc(ss.nome), sub, `<span class="syncchip num" aria-label="Tempo de treino">${I('timer', 16)}<span id="wT">${fmtT(elapsed)}</span></span>`)}${seg}`;
   if (sel === 'REST') {
     const f = ss.ficha, L = f ? (f.exercicios || []).filter((e) => e && e.nome) : [];
@@ -904,18 +992,27 @@ function Treino() {
       <div class="card"><h3>Cronômetro</h3><p class="lead">${S.wStart ? 'Rodando. Conclua no final.' : 'Inicie ao começar e conclua no final.'}</p>${S.wStart ? '' : `<div class="btnrow"><button class="btn ghost" data-act="startWorkout">${I('timer', 20)} Iniciar cronômetro</button></div>`}</div>
       <div class="restbar"><div class="grow"><div class="xs" style="opacity:.75">Cardio</div><div class="t">${c ? esc(c.txt) : 'zona 2'}</div></div><button class="btn go" data-act="finishWorkout" data-arg="Z2">Concluir</button></div>` };
   }
-  const { f, list } = fichaList(sel, p);
-  if (!f || !list.length) return { title: esc(ss.nome), chrome: 'focus', html: `${head}${empty('dumbbell', 'Sem ficha para esta sessão', 'A ficha deste bloco não veio do Supabase. Confira em Sincronizar.', '#/dinheiro/sincronizar', 'Sincronizar')}` };
+  const { f, list } = FL;
+  if (!f) return { title: esc(ss.nome), chrome: 'focus', html: `${head}${empty('dumbbell', 'Sem ficha para esta sessão', 'A ficha deste bloco não veio do Supabase. Confira em Sincronizar, ou monte o treino de hoje em Outros.', '#/dinheiro/sincronizar', 'Sincronizar')}` };
+  // Embaixo da lista: adicionar (treino seu), editar a ficha e guardar o treino montado.
+  const extra = `<div class="card tight">${isP(sel) ? `<button class="row" data-act="exAdd" data-arg="${sel}"><span class="badge-ic p">${I('plus', 20)}</span><div class="grow"><div class="ttl">Adicionar exercício</div><div class="meta">Busque na sua base ou crie um novo</div></div></button>` : ''}
+      <a class="row" href="#/saude/treino-editar" data-act="edAbrir" data-arg="${sel}"><span class="badge-ic">${I('edit', 20)}</span><div class="grow"><div class="ttl">${isP(sel) ? 'Editar este treino' : `Editar a ficha do Treino ${sel}`}</div><div class="meta">${isP(sel) ? 'Ordem, séries e repetições, nome' : LS(K_F + fKey(f)) ? 'Você já mudou esta ficha' : 'Trocar, tirar, pôr e reordenar exercícios'}</div></div>${I('chevR', 20, 'class="ic muted"')}</a>
+      ${isP(sel) && FL.t.dia ? `<button class="row" data-act="tSalvar" data-arg="${FL.t.id}"><span class="badge-ic">${I('star', 20)}</span><div class="grow"><div class="ttl">Guardar para repetir</div><div class="meta">Vira um treino seu em Outros</div></div></button>` : ''}</div>`;
+  if (!list.length) {
+    return { title: esc(ss.nome), chrome: 'focus', html: `${head}
+      <div class="card"><div class="empty"><span class="badge-ic">${I('search', 28)}</span><b>Que exercícios você vai fazer?</b><p>Busque na base (os das fichas, os seus e os que já têm carga) ou crie um novo. Cada um guarda o histórico de cargas.</p><button class="btn" data-act="exAdd" data-arg="${sel}">${I('plus', 20)} Adicionar exercício</button></div></div>${extra}` };
+  }
   const rest = D.descanso(f), cut = Z === 'amarelo' || Z === 'vermelho';
   const cards = list.map((ex, j) => {
-    const last = S.lastSets[ex.id], sg = D.suggestion(ex, last), n = nSeries(ex, cut);
+    const last = LS(ex.id), sg = D.suggestion(ex, last), n = nSeries(ex, cut);
     const rows = Array.from({ length: n }, (_, i) => {
       const k = setKey(sel, j, ex, i), st = S.sets[k] || {};
       const kg = st.kg ?? (sg ? sg.kg : last ? last.kg : ex.carga), reps = st.reps ?? (sg ? sg.reps : ex.rr ? ex.rr[0] : null);
       return `<tr><td>${i + 1}</td><td><input type="text" inputmode="decimal" value="${kg ? D.fmtKg(kg) : ''}" placeholder="kg" aria-label="${esc(ex.nome)}, série ${i + 1}, carga em kg" data-in="setkg" data-arg="${k}"></td><td><input type="text" inputmode="numeric" value="${reps || ''}" aria-label="${esc(ex.nome)}, série ${i + 1}, repetições" data-in="setreps" data-arg="${k}"></td><td><button class="ok" aria-pressed="${!!st.ok}" data-act="set" data-arg="${k}" data-rest="${rest}" aria-label="Concluir série ${i + 1} de ${esc(ex.nome)}">${I('check', 24)}</button></td></tr>`;
     }).join('');
-    const tip = last ? `Última vez: <b class="num">${last.kg ? `${D.fmtKg(last.kg)} kg × ` : ''}${last.reps.join(', ')}</b>${isoOk(last.d) ? ` em ${dShort(dayAt(last.d))}` : ''}.${sg ? ` ${sg.txt}.` : ''}` : 'Primeira vez com este exercício: anote a carga que usar.';
-    return `<section class="ex" aria-label="${esc(ex.nome)}"><div class="row-flex"><h3 class="grow">${esc(ex.nome)}</h3><span class="chip num">${esc(ex.alvo)}</span></div>
+    const tip = last && Array.isArray(last.reps) ? `Última vez: <b class="num">${last.kg ? `${D.fmtKg(last.kg)} kg × ` : ''}${last.reps.join(', ')}</b>${isoOk(last.d) ? ` em ${dShort(dayAt(last.d))}` : ''}.${sg ? ` ${sg.txt}.` : ''}` : 'Primeira vez com este exercício: anote a carga que usar.';
+    return `<section class="ex" aria-label="${esc(ex.nome)}"><div class="row-flex"><h3 class="grow">${esc(ex.nome)}</h3><span class="chip num">${esc(ex.alvo)}</span><button class="iconbtn sm" data-act="trocarEx" data-arg="${sel}:${j}" aria-label="Trocar ${esc(ex.nome)} por outro exercício">${I('refresh', 20)}</button></div>
+      ${ex.no ? `<p class="xs muted" style="margin-top:2px">Só hoje, no lugar de ${esc(ex.no)}.</p>` : ''}
       <div class="tip">${I('refresh', 16)}<span>${tip} Hoje ${n} série${n > 1 ? 's' : ''}${ex.perna ? ', repetições por perna' : ''} · descanso ${fmtRest(rest)}.</span></div>
       <table class="sets"><thead><tr><th>Série</th><th>kg</th><th>Reps</th><th><span class="sr">Feito</span></th></tr></thead><tbody>${rows}</tbody></table></section>`;
   }).join('');
@@ -928,9 +1025,106 @@ function Treino() {
     title: esc(ss.nome), chrome: 'focus',
     html: `${head}${recovery}
       <div class="card soft" style="margin-top:12px"><div class="row-flex">${I('bolt', 20)}<span class="small"><b>${Z === 'nd' ? 'Sem check-in.' : `Zona ${ZNAME[Z].toLowerCase()}.`}</b> ${banner} ${xpNote}</span></div></div>
-      ${cards}${orient}
+      ${cards}${extra}${orient}
       <div class="restbar">${restOn ? `<div class="grow"><div class="xs" style="opacity:.75">Descanso</div><div class="t" id="restT" role="timer" aria-label="Descanso restante">${fmtT(Math.ceil((S.rest.end - Date.now()) / 1000))}</div></div><button class="btn sm" data-act="skipRest">Pular</button>` : `<div class="grow"><div class="xs" style="opacity:.75">Séries</div><div class="t num">${done}/${total}</div></div><button class="btn go" data-act="finishWorkout" data-arg="${sel}">Concluir treino</button>`}</div>`,
   };
+}
+
+// Editar a ficha A, B ou C (a sua versão, no lugar da do Supabase) ou um treino seu.
+function EditarTreino() {
+  const sel = S.edAlvo, back = backbar('saude/treino', 'Treino');
+  if (!(sel && (FORCA.has(sel) || isP(sel)))) return { title: 'Editar treino', html: `${back}${hdr('Editar treino')}${empty('dumbbell', 'Nada para editar', 'Abra o Treino e toque em editar.', '#/saude/treino', 'Abrir o Treino')}` };
+  const FL = fichaList(sel, plan());
+  if (isP(sel) ? !FL.t : !FL.f) return { title: 'Editar treino', html: `${back}${hdr('Editar treino')}${empty('dumbbell', isP(sel) ? 'Este treino foi apagado' : 'Sem ficha para esta sessão', isP(sel) ? 'Talvez no outro aparelho.' : 'A ficha deste bloco não veio do Supabase.', '#/saude/treino', 'Voltar ao Treino')}` };
+  const ed = !isP(sel) && !!LS(K_F + fKey(FL.f)), N = FL.base.length;
+  const rows = FL.base.map((e, j) => `<div class="row edrow"><div class="grow"><div class="ttl">${esc(e.n)}</div>
+      <input class="input" value="${esc(e.p)}" placeholder="${PRESC}" data-in="edp" data-arg="${j}" aria-label="Séries e repetições de ${esc(e.n)}" autocomplete="off"></div>
+      <div class="edbtns"><button class="iconbtn" data-act="edMove" data-arg="${j}:-1" aria-label="Subir ${esc(e.n)}"${j === 0 ? ' aria-disabled="true"' : ''}>${I('up', 20)}</button><button class="iconbtn" data-act="edMove" data-arg="${j}:1" aria-label="Descer ${esc(e.n)}"${j === N - 1 ? ' aria-disabled="true"' : ''}>${I('down', 20)}</button>
+      <button class="iconbtn" data-act="trocarEx" data-arg="${sel}:${j}:ficha" aria-label="Trocar ${esc(e.n)}">${I('refresh', 20)}</button><button class="iconbtn" data-act="edDel" data-arg="${j}" aria-label="Tirar ${esc(e.n)}">${I('x', 20)}</button></div></div>`).join('');
+  const sub = isP(sel) ? (FL.t.dia ? `Montado em ${dShort(dayAt(FL.t.dia))}` : 'Treino seu') : `${FL.f.bloco ? `Bloco ${FL.f.bloco} · ` : ''}${ed ? 'sua versão' : 'como veio do Supabase'}`;
+  return {
+    title: 'Editar treino',
+    html: `${back}${hdr(isP(sel) ? 'Editar treino' : `Editar o Treino ${sel}`, sub)}
+      ${isP(sel) ? `<div class="card"><label class="field" style="margin:0"><span>Nome</span><input class="input" id="ed-nome" data-in="tnome" value="${esc(FL.t.nome)}" maxlength="40" autocomplete="off"></label></div>` : ''}
+      <div class="card tight">${rows || '<p class="small muted" style="padding:12px 0">Nenhum exercício ainda.</p>'}
+        <button class="row" data-act="exAdd" data-arg="${sel}:ficha"><span class="badge-ic p">${I('plus', 20)}</span><div class="grow"><div class="ttl">Adicionar exercício</div><div class="meta">Busque na sua base ou crie um novo</div></div></button></div>
+      <p class="small muted" style="margin:10px 20px">Séries × repetições como na ficha: “3 × 8–12”, “2–3 × 12–15” (2 séries nas 2 primeiras semanas do bloco, depois 3). As cargas ficam guardadas por exercício: trocar, tirar ou reordenar não perde o histórico.</p>
+      ${isP(sel) ? `<div class="card tight"><button class="row" data-act="tApagar" data-arg="${FL.t.id}"><span class="badge-ic">${I('x', 20)}</span><div class="grow"><div class="ttl">Apagar este treino</div><div class="meta">O histórico de cargas dos exercícios fica</div></div></button></div>`
+        : `<div class="card tight">${ed ? `<button class="row" data-act="edReset" data-arg="${sel}"><span class="badge-ic">${I('refresh', 20)}</span><div class="grow"><div class="ttl">Voltar à ficha original</div><div class="meta">Desfaz as suas mudanças nesta ficha</div></div></button>` : '<p class="small muted" style="padding:12px 0">A ficha no Supabase não muda: a sua versão fica no app e na nuvem, igual nos dois aparelhos.</p>'}</div>`}`,
+  };
+}
+
+// A base de exercícios, com a última carga e o histórico de cada um.
+let exBusca = '';
+const exRow = (x) => `<button class="row" data-act="exVer" data-arg="${x.id}"><div class="grow"><div class="ttl ellip">${esc(x.nome)}</div><div class="meta">${esc(ultimaTxt(x.id) || 'Sem cargas ainda')}${x.onde.length ? ` · ${esc(x.onde.slice(0, 2).join(', '))}${x.onde.length > 2 ? '…' : ''}` : ''}</div></div>${I('chevR', 20, 'class="ic muted"')}</button>`;
+const exLista = () => { const L = buscar(biblioteca(), exBusca); return L.length ? L.map(exRow).join('') : `<p class="small muted" style="padding:12px 0">${exBusca.trim() ? 'Nenhum exercício com esse nome. Toque em + para criar.' : 'Os exercícios das fichas chegam com a saúde do Supabase. Toque em + para criar um.'}</p>`; };
+function Exercicios() {
+  const L = biblioteca(), T = meusTreinos().filter((t) => !t.dia || t.dia === S.day);
+  return {
+    title: 'Exercícios',
+    html: `${backbar('saude', 'Saúde')}${hdr('Exercícios', `${L.length} na sua base`, `<button class="iconbtn" data-act="exNovo" aria-label="Criar exercício">${I('plus')}</button>`)}
+      <div class="card"><label class="field" style="margin:0"><span>Buscar</span><input class="input" id="exq" data-in="exq" value="${esc(exBusca)}" placeholder="ex.: supino, remada" autocomplete="off" type="search"></label></div>
+      <div class="card tight" id="exlist" aria-live="polite">${exLista()}</div>
+      ${sec('Treinos seus')}<div class="card tight">${T.map(seuTreinoRow).join('')}
+        <button class="row" data-act="tMontar"><span class="badge-ic p">${I('plus', 20)}</span><div class="grow"><div class="ttl">Montar o treino de hoje</div><div class="meta">Buscando os exercícios que vai fazer</div></div></button>
+        <button class="row" data-act="tNovo"><span class="badge-ic">${I('squarePlus', 20)}</span><div class="grow"><div class="ttl">Criar um treino para repetir</div><div class="meta">Fora do A, B e C</div></div></button></div>`,
+  };
+}
+function exSheet(id) {
+  const x = biblioteca().find((e) => e.id === id); if (!x) return;
+  const H = historico(id), b = S.best1rm[id], meu = !!LS(K_E + id);
+  openSheet(esc(x.nome), `${b ? `<p class="small">Recorde estimado (1RM): <b class="num">${D.fmtKg(Math.round(b * 2) / 2)} kg</b></p>` : ''}
+    ${x.onde.length ? `<p class="small muted" style="margin-top:4px">Em: ${esc(x.onde.join(', '))}.</p>` : ''}
+    ${H.length ? `<table class="bp" style="margin-top:12px"><thead><tr><th>Dia</th><th>Carga</th><th>Repetições</th></tr></thead><tbody>${H.slice(0, 30).map((h) => `<tr><td>${dShort(dayAt(h.d))}</td><td class="num">${h.kg ? `${D.fmtKg(h.kg)} kg` : '—'}</td><td class="num">${h.reps.join(', ')}</td></tr>`).join('')}</tbody></table>`
+      : `<p class="small muted" style="margin-top:12px">${ultimaTxt(id) ? `Última vez: ${esc(ultimaTxt(id))}. O histórico dia a dia começa no próximo treino.` : 'Ainda sem cargas. Elas entram quando você concluir um treino com este exercício.'}</p>`}
+    ${meu && !x.onde.length ? `<div class="btnrow"><button class="btn ghost" data-act="exTirar" data-arg="${id}">Tirar da base</button></div>` : ''}`, 'exv');
+}
+
+// Escolher um exercício (trocar ou adicionar): busca na base, ou cria um com o nome digitado.
+let PK = null;
+function pickSheet(modo, sel, j, ficha) {
+  PK = { modo, sel, j, ficha: !!ficha, q: '', res: [] };
+  let topo = '';
+  if (modo === 'troca') {
+    const FL = fichaList(sel, plan()), e = FL.base[j]; if (!e) { PK = null; return; }
+    const tr = troca(sel, j);
+    topo = `<p class="small muted">No lugar de <b>${esc(e.n)}</b>, com as mesmas séries. A carga de cada exercício fica guardada separada.</p>
+      ${ficha ? '' : radios('Vale para', 'pk-alc', ['hoje', 'sempre'], 'hoje', { hoje: 'Só hoje', sempre: isP(sel) ? 'Sempre neste treino' : 'Sempre nesta ficha' })}
+      ${tr && !ficha ? `<div class="btnrow"><button class="btn line" data-act="pkDesfaz">Voltar para ${esc(e.n)}</button></div>` : ''}`;
+  }
+  openSheet(modo === 'troca' ? 'Trocar exercício' : 'Adicionar exercício', `${topo}
+    <label class="field"><span>Buscar</span><input class="input" id="pk-q" data-in="pkq" placeholder="ex.: supino, remada" autocomplete="off" type="search"></label>
+    <div class="tight" id="pk-res" aria-live="polite" style="margin-top:8px">${pkRes()}</div>`, 'pk', '#pk-q');
+}
+function pkRes() {
+  const q = PK.q.trim(), L = biblioteca(), hit = buscar(L, q), novo = q && !L.some((x) => x.id === D.slug(q));
+  PK.res = hit.slice(0, 40);
+  return `${novo ? `<button class="row" data-act="pkNovo"><span class="badge-ic p">${I('plus', 20)}</span><div class="grow"><div class="ttl ellip">Criar “${esc(q)}”</div><div class="meta">Entra na sua base de exercícios</div></div></button>` : ''}${PK.res.map((x, i) => `<button class="row" data-act="pkPick" data-arg="${i}"><div class="grow"><div class="ttl ellip">${esc(x.nome)}</div><div class="meta">${esc(ultimaTxt(x.id) || x.onde.slice(0, 2).join(', ') || 'Sem cargas ainda')}</div></div></button>`).join('')}${!novo && !PK.res.length ? '<p class="small muted" style="padding:12px 0">Digite o nome para buscar ou criar.</p>' : ''}`;
+}
+function pkAplicar(nome, p) {
+  const { modo, sel, j } = PK, FL = fichaList(sel, plan()), base = FL.base.map((e) => ({ ...e }));
+  const sempre = PK.ficha || document.querySelector('#pk [aria-checked="true"]')?.dataset.val === 'sempre';
+  let msg;
+  if (modo === 'troca') {
+    if (!base[j]) return;
+    if (sempre) { base[j] = { n: nome, p: base[j].p }; setBase(sel, base); delete S.sets[`${K_S}${sel}-${j}`]; msg = `${nome} entrou ${isP(sel) ? 'no treino' : 'na ficha'}`; }
+    else { S.sets[`${K_S}${sel}-${j}`] = { n: nome }; msg = `Hoje: ${nome} no lugar de ${base[j].n}`; }
+  } else { base.push({ n: nome, p: p || PRESC }); setBase(sel, base); msg = `${nome} adicionado`; }
+  PK = null; save(); closeSheet(); render(true); toast(`${I('check', 18)} ${esc(msg)}`);
+}
+
+// Nome de um treino seu (novo, ou o montado de hoje guardado para repetir).
+function nomeSheet(act, arg, valor) {
+  openSheet(act === 'tCriar' ? 'Novo treino' : 'Guardar para repetir', `<label class="field"><span>Nome do treino</span><input class="input" id="tn-nome" maxlength="40" autocomplete="off" value="${esc(valor || '')}" placeholder="ex.: Superiores em casa" data-autofocus></label>
+    <button class="btn block" style="margin-top:16px" data-act="${act}" data-arg="${esc(arg || '')}">${act === 'tCriar' ? 'Criar e escolher os exercícios' : 'Guardar'}</button>`, 'tn', '#tn-nome');
+}
+function outrosSheet() {
+  const L = meusTreinos(), seus = L.filter((t) => !t.dia), hoje = L.find((t) => t.dia === S.day), rec = L.filter((t) => t.dia && t.dia !== S.day).sort((a, b) => b.dia.localeCompare(a.dia)).slice(0, 5);
+  openSheet('Outros treinos', `<button class="btn block" data-act="tMontar">${I('plus', 20)} ${hoje ? 'Abrir o treino montado hoje' : 'Montar o treino de hoje'}</button>
+    <p class="xs muted" style="margin-top:6px">Busque os exercícios que vai fazer. As cargas ficam no histórico de cada exercício.</p>
+    ${seus.length ? `<h3 style="margin-top:16px">Treinos seus</h3><div class="tight">${seus.map(seuTreinoRow).join('')}</div>` : ''}
+    ${rec.length ? `<h3 style="margin-top:16px">Montados nos últimos dias</h3><div class="tight">${rec.map(seuTreinoRow).join('')}</div>` : ''}
+    <div class="btnrow"><button class="btn line" data-act="tNovo">${I('squarePlus', 20)} Criar um treino para repetir</button></div>`, 'ou');
 }
 function setsDone(sel, list, cut) { return list.reduce((a, ex, j) => { let c = 0; for (let i = 0; i < nSeries(ex, cut); i++) if (S.sets[setKey(sel, j, ex, i)]?.ok) c++; return a + c; }, 0); }
 const e1rm = (kg, reps) => kg * (1 + reps / 30); // fórmula de Epley
@@ -1590,7 +1784,7 @@ function Onboarding() {
 }
 
 const ROUTES = {
-  onboarding: Onboarding, hoje: Hoje, saude: Saude, 'saude/treino': Treino, 'saude/campanha': Campanha, 'saude/dieta': Dieta, 'saude/exames': Exames,
+  onboarding: Onboarding, hoje: Hoje, saude: Saude, 'saude/treino': Treino, 'saude/treino-editar': EditarTreino, 'saude/exercicios': Exercicios, 'saude/campanha': Campanha, 'saude/dieta': Dieta, 'saude/exames': Exames,
   dinheiro: Dinheiro, 'dinheiro/contas': Contas, 'dinheiro/cartoes': Cartoes, 'dinheiro/patrimonio': Patrimonio, 'dinheiro/importar': Importar, 'dinheiro/sincronizar': Sincronizar,
   agenda: Agenda, ficha: Ficha, ajustes: Ajustes,
 };
@@ -1598,7 +1792,7 @@ const TAB_OF = (r) => (r.startsWith('saude') ? 'saude' : r.startsWith('dinheiro'
 // Navegação lateral no computador.
 const NAV = [
   ['Hoje', [['hoje', 'Hoje', 'sun']]],
-  ['Saúde', [['saude', 'Visão geral', 'heart'], ['saude/treino', 'Treino', 'dumbbell'], ['saude/campanha', 'Plano de treino', 'target'], ['saude/dieta', 'Dieta do dia', 'utensils'], ['saude/exames', 'Exames e medidas', 'flask']]],
+  ['Saúde', [['saude', 'Visão geral', 'heart'], ['saude/treino', 'Treino', 'dumbbell'], ['saude/exercicios', 'Exercícios', 'search'], ['saude/campanha', 'Plano de treino', 'target'], ['saude/dieta', 'Dieta do dia', 'utensils'], ['saude/exames', 'Exames e medidas', 'flask']]],
   ['Dinheiro', [['dinheiro', 'Visão geral', 'wallet'], ['dinheiro/contas', 'Contas a pagar', 'receipt'], ['dinheiro/cartoes', 'Cartões e faturas', 'card'], ['dinheiro/patrimonio', 'Patrimônio', 'pie'], ['dinheiro/sincronizar', 'Sincronizar', 'link']]],
   ['Assessor', [['agenda', 'Agenda e tarefas', 'calendar']]],
   ['Personagem', [['ficha', 'Ficha do personagem', 'shield'], ['ajustes', 'Integrações e ajustes', 'sliders']]],
@@ -1939,7 +2133,7 @@ const A = {
   startWorkout: () => { if (!S.wStart) S.wStart = Date.now(); save(); toast(`${I('timer', 18)} Cronômetro iniciado`); render(true); },
   finishWorkout: (k, el, e, force) => {
     const sel = k, { key, p } = todaySession();
-    const cut = ['amarelo', 'vermelho'].includes(zoneNow()), FL = FORCA.has(sel) ? fichaList(sel, p) : null;
+    const cut = ['amarelo', 'vermelho'].includes(zoneNow()), FL = FORCA.has(sel) || isP(sel) ? fichaList(sel, p) : null, ck = isP(sel) ? 'F' : sel;
     if (FL && FL.list.length && !force && setsDone(sel, FL.list, cut) === 0) {
       confirmSheet('Concluir sem séries marcadas?', 'Nenhuma série foi marcada como feita. Se você treinou e só não marcou, pode concluir assim mesmo: o treino conta como feito, sem cargas guardadas.', 'finishForce', sel, 'Continuar treino');
       return;
@@ -1951,7 +2145,9 @@ const A = {
       FL.list.forEach((ex, j) => {
         const feitos = []; for (let i = 0; i < 8; i++) { const st = S.sets[setKey(sel, j, ex, i)]; if (st && st.ok) feitos.push(st); }
         if (!feitos.length) return;
-        S.lastSets[ex.id] = { kg: Math.max(...feitos.map((x) => x.kg || 0)), reps: feitos.map((x) => x.reps || 0), d: S.day };
+        const kg = Math.max(...feitos.map((x) => x.kg || 0)), reps = feitos.map((x) => x.reps || 0);
+        S.lastSets[ex.id] = { kg, reps, d: S.day, n: ex.nome };
+        S.lastSets[`${ex.id}@${S.day}`] = { kg, reps }; // histórico de cargas
         const b = Math.max(...feitos.map((x) => (x.kg > 0 && x.reps > 0 ? e1rm(x.kg, x.reps) : 0))), prev = S.best1rm[ex.id];
         if (b > 0) { if (prev != null && b > prev + 0.01) pr = true; if (prev == null || b > prev) S.best1rm[ex.id] = b; }
       });
@@ -1959,14 +2155,14 @@ const A = {
     }
     const minutos = sel === 'Z2' ? z2Min() : 0;
     S.rest = null; S.wStart = null;
-    const label = sel === 'REST' ? 'Mobilidade feita' : sel === 'REC' ? 'Recuperação feita' : sel === 'LIVRE' ? 'Treino feito' : `${sessOf(p, sel).nome} concluído${sel !== key && key !== 'LIVRE' ? ' (reposição)' : ''}`;
+    const label = sel === 'REST' ? 'Mobilidade feita' : sel === 'REC' ? 'Recuperação feita' : sel === 'LIVRE' ? 'Treino feito' : isP(sel) ? `${FL.ss.nome} concluído` : `${sessOf(p, sel).nome} concluído${sel !== key && key !== 'LIVRE' ? ' (reposição)' : ''}`;
     if (!S.quests.corpo) {
-      S.corpoKey = sel; setQuest('corpo', true, label);
+      S.corpoKey = ck; setQuest('corpo', true, label);
       if (sel === 'Z2') S.corpoMin = minutos;
       if (pr && !S.prToday) { S.prToday = true; setTimeout(() => addXP(25, 'Recorde pessoal'), 800); }
     } else {
       // Já ganhou o XP de hoje: a sessão feita (não a recuperação) é a que conta na semana.
-      if (['REC', 'REST', 'LIVRE'].includes(S.corpoKey) && !['REC', 'REST'].includes(sel)) { S.corpoKey = sel; S.corpoMin = minutos; setTimeout(checkWeekly, 600); }
+      if (['REC', 'REST', 'LIVRE'].includes(S.corpoKey) && !['REC', 'REST'].includes(sel)) { S.corpoKey = ck; S.corpoMin = minutos; setTimeout(checkWeekly, 600); }
       toast(`${label}. O XP de treino é de uma sessão por dia${pr ? '; o recorde fica guardado' : ''}.`, '', 3600);
     }
     // Volta para o Hoje sem deixar o treino concluído no caminho do “voltar”.
@@ -1974,6 +2170,62 @@ const A = {
     if (fromSheet) { afterPop = () => go('#/hoje', true); history.back(); } else go('#/hoje', true);
   },
   finishForce: (k) => A.finishWorkout(k, null, null, true),
+  // Treinos seus, fichas editadas e a base de exercícios.
+  wOutros: () => outrosSheet(),
+  tAbrir: (id) => { if (!treinoP(id)) return; S.wSel = `P:${id}`; save(); closeSheet(true, false); if (current() !== 'saude/treino') go('#/saude/treino'); else render(false); },
+  tMontar: () => {
+    let t = meusTreinos().find((x) => x.dia === S.day);
+    if (!t) { t = { id: newId('m'), nome: `Treino de ${dShort(diaNow())}`, ex: [], dia: S.day }; putT(t); }
+    S.wSel = `P:${t.id}`; save();
+    if (current() !== 'saude/treino') { closeSheet(true, false); go('#/saude/treino'); setTimeout(() => { if (!t.ex.length) pickSheet('add', S.wSel); }, 60); return; }
+    render(false);
+    if (t.ex.length) closeSheet(); else pickSheet('add', S.wSel); // folha encadeada: já abre a busca
+  },
+  tNovo: () => nomeSheet('tCriar', '', ''),
+  tCriar: () => {
+    const nome = (document.getElementById('tn-nome')?.value || '').trim().slice(0, 40); if (!nome) { document.getElementById('tn-nome')?.focus(); return; }
+    const t = { id: newId('t'), nome, ex: [] }; putT(t); S.wSel = `P:${t.id}`; S.edAlvo = S.wSel; save();
+    closeSheet(true, false); go('#/saude/treino-editar'); setTimeout(() => pickSheet('add', S.edAlvo, null, true), 60);
+  },
+  tSalvar: (id) => { const t = treinoP(id); if (t) nomeSheet('tGuardar', id, /^Treino de \d/.test(t.nome) ? '' : t.nome); },
+  tGuardar: (id) => {
+    const t = treinoP(id), nome = (document.getElementById('tn-nome')?.value || '').trim().slice(0, 40); if (!t) return; if (!nome) { document.getElementById('tn-nome')?.focus(); return; }
+    putT({ ...t, nome, dia: null }); save(); closeSheet(); render(true); toast(`${I('check', 18)} ${esc(nome)} guardado em Outros`);
+  },
+  tApagar: (id) => {
+    const t = treinoP(id); if (!t || !confirm(`Apagar o treino “${t.nome}”? O histórico de cargas dos exercícios fica.`)) return;
+    delete S.lastSets[K_T + id]; if (S.wSel === `P:${id}`) S.wSel = null; S.edAlvo = null; save(); go('#/saude/treino', true); toast('Treino apagado');
+  },
+  edAbrir: (k, el) => { S.edAlvo = k; save(); if (el.tagName !== 'A') go('#/saude/treino-editar'); },
+  edMove: (a) => {
+    const [j, d] = a.split(':').map(Number), sel = S.edAlvo, b = fichaList(sel, plan()).base, i = j + d;
+    if (!b[j] || !b[i]) return; [b[j], b[i]] = [b[i], b[j]]; setBase(sel, b); save(); render(true, `[data-act="edMove"][data-arg="${i}:${d}"]`);
+  },
+  edDel: (a) => {
+    const j = +a, sel = S.edAlvo, b = fichaList(sel, plan()).base; if (!b[j]) return;
+    const [x] = b.splice(j, 1); setBase(sel, b); save(); render(true); toast(`${esc(x.n)} saiu ${isP(sel) ? 'do treino' : 'da ficha'}`);
+  },
+  edReset: (sel) => {
+    const f = fichaList(sel, plan()).f; if (!f || !confirm(`Voltar à ficha original do Treino ${sel}? As suas mudanças nela são desfeitas; as cargas ficam.`)) return;
+    delete S.lastSets[K_F + fKey(f)]; save(); render(true); toast('Ficha original de volta');
+  },
+  trocarEx: (a) => { const m = /^(.+):(\d+)(:ficha)?$/.exec(a); if (m) pickSheet('troca', m[1], +m[2], !!m[3]); },
+  exAdd: (a) => { const m = /^(.+?)(:ficha)?$/.exec(a); if (m) pickSheet('add', m[1], null, !!m[2]); },
+  pkPick: (i) => { const x = PK && PK.res[+i]; if (x) pkAplicar(x.nome, x.p); },
+  pkNovo: () => {
+    if (!PK) return; const q = PK.q.trim().replace(/\s+/g, ' ').slice(0, 60), id = D.slug(q); if (!id) return;
+    const nome = cap(q); S.lastSets[K_E + id] = { n: nome }; pkAplicar(nome, PRESC);
+  },
+  pkDesfaz: () => { if (!PK) return; delete S.sets[`${K_S}${PK.sel}-${PK.j}`]; PK = null; save(); closeSheet(); render(true); },
+  exVer: (id) => exSheet(id),
+  exNovo: () => openSheet('Novo exercício', `<label class="field"><span>Nome</span><input class="input" id="exn-nome" maxlength="60" autocomplete="off" placeholder="ex.: Remada cavalinho" data-autofocus></label>
+    <button class="btn block" style="margin-top:16px" data-act="exCriar">Criar</button><p class="xs muted" style="margin-top:8px">Entra na sua base para trocar ou adicionar nos treinos.</p>`, 'exn', '#exn-nome'),
+  exCriar: () => {
+    const q = (document.getElementById('exn-nome')?.value || '').trim().replace(/\s+/g, ' ').slice(0, 60), id = D.slug(q); if (!id) { document.getElementById('exn-nome')?.focus(); return; }
+    if (!biblioteca().some((x) => x.id === id)) S.lastSets[K_E + id] = { n: cap(q) };
+    save(); closeSheet(); render(true); toast(`${I('check', 18)} ${esc(cap(q))} na base`);
+  },
+  exTirar: (id) => { delete S.lastSets[K_E + id]; save(); closeSheet(); render(true); },
   daytype: (k) => { if (!D.DIAS[k]) return; S.dayType = k; save(); render(true); },
   meal: (id) => {
     const { key } = todaySession(), meals = D.refeicoes(S.dayType || D.tipoDia(key)), pr = D.prot();
@@ -2038,8 +2290,8 @@ const A = {
   pendentes: () => pendentesSheet(),
   realClear: () => { if (!confirm('Apagar os seus dados de dinheiro deste aparelho? O arquivo no seu computador continua lá.')) return; try { localStorage.removeItem(REALK); } catch { /* nada a apagar */ } if (!nvEntrou()) { S.paid = {}; S.paidAmt = {}; S.paidAt = {}; save(); } location.reload(); },
   resetLocal: () => {
-    if (!confirm(nvEntrou() ? 'Recomeçar do zero? XP, check-ins, treinos, tarefas, gastos anotados e marcações são apagados aqui e na nuvem: o outro aparelho também zera. Dinheiro e saúde do Supabase não mudam.' : 'Recomeçar neste aparelho? XP, check-ins, treinos, tarefas, gastos anotados e marcações daqui são apagados. O Supabase não muda.')) return;
-    const keep = { theme: S.theme, onboarded: true, nome: S.nome };
+    if (!confirm(nvEntrou() ? 'Recomeçar do zero? XP, check-ins, treinos, tarefas, gastos anotados e marcações são apagados aqui e na nuvem: o outro aparelho também zera. Ficam os treinos seus, as fichas editadas e os exercícios criados. Dinheiro e saúde do Supabase não mudam.' : 'Recomeçar neste aparelho? XP, check-ins, treinos, tarefas, gastos anotados e marcações daqui são apagados. Ficam os treinos seus, as fichas editadas e os exercícios criados. O Supabase não muda.')) return;
+    const keep = { theme: S.theme, onboarded: true, nome: S.nome, lastSets: Object.fromEntries(Object.entries(S.lastSets).filter(([k, v]) => k.startsWith(K_F) || k.startsWith(K_E) || (k.startsWith(K_T) && !(v && v.dia)))) };
     S = Object.assign(defaults(), keep, { day: D.iso(diaNow()), since: D.iso(diaNow()) }); bossMonth(S); save();
     toast(nvEntrou() ? 'Recomeçado do zero, aqui e na nuvem' : 'Recomeçado neste aparelho'); if (current() !== 'hoje') go('#/hoje', true); else render(false); renderChrome();
   },
@@ -2141,6 +2393,10 @@ document.addEventListener('input', (e) => {
   if (el.dataset.in === 'nome') { S.nome = el.value.trim().slice(0, 30); save(); return; }
   if (el.dataset.in === 'weight') { pesoRasc = el.value; return; }
   if (el.dataset.in === 'setkg' || el.dataset.in === 'setreps') setVal(el);
+  if (el.dataset.in === 'pkq' && PK) { PK.q = el.value; document.getElementById('pk-res').innerHTML = pkRes(); return; }
+  if (el.dataset.in === 'exq') { exBusca = el.value; document.getElementById('exlist').innerHTML = exLista(); return; }
+  if (el.dataset.in === 'edp') { const sel = S.edAlvo, b = fichaList(sel, plan()).base, j = +el.dataset.arg; if (b[j]) { b[j].p = el.value; if (setBase(sel, b)) save(); } return; }
+  if (el.dataset.in === 'tnome' && isP(S.edAlvo)) { const t = treinoP(S.edAlvo.slice(2)), n = el.value.trim().slice(0, 40); if (t && n) { putT({ ...t, nome: n }); save(); } return; }
   if (el.dataset.in === 'inbox') {
     S.inboxDraft = el.value; save();
     const p = parseInbox(el.value); document.getElementById('parse').innerHTML = el.value.trim() ? [`<span class="chip p">${esc(p.title || '…')}</span>`, ...p.chips.map((c) => `<span class="chip">${esc(c.t)}</span>`)].join('') : '';
@@ -2218,10 +2474,10 @@ window.addEventListener('resize', fitRestbar);
 
 
 // ---------- Render ----------
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
-const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/campanha': 'Plano', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Open Finance e arquivo', 'dinheiro/sincronizar': 'Sincronizar', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes' };
+const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/treino-editar': 'Editar treino', 'saude/exercicios': 'Exercícios', 'saude/campanha': 'Plano', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Open Finance e arquivo', 'dinheiro/sincronizar': 'Sincronizar', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes' };
 let lastRoute = null, curTab = 'hoje', shownIdx = null;
 function render(keep, focusSel) {
   if (syncBusy) busyShown = true; // a tela mostra "Buscando…": no fim da leitura ela é desenhada de novo
