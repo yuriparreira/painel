@@ -1,6 +1,6 @@
 // Service worker do Painel: guarda o app no aparelho para abrir sem internet.
-const VERSION = 'painel-0.6.0';
-const SHELL = ['./', './index.html', './app.css', './app.js', './data.js', './sync.js', './nuvem.js', './icons.js', './manifest.webmanifest',
+const VERSION = 'painel-0.7.0';
+const SHELL = ['./', './index.html', './app.css', './app.js', './data.js', './sync.js', './nuvem.js', './icons.js', './catalogo.js', './manifest.webmanifest',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 
 // Instala com cópias novas (ignora o cache HTTP de 10 min do GitHub Pages), para não guardar a versão anterior.

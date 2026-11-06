@@ -20,7 +20,7 @@ XP, Chama, atributos, conquistas e o chefe do mês começam do zero e são calcu
 | Área | Telas |
 | --- | --- |
 | Hoje | check-in, missões do dia (Corpo, Combustível e Missão), linha do dia, resumo do dinheiro e da semana |
-| Saúde | energia pelo sono, peso, treino com cronômetro de descanso, plano de treino, dieta do dia, exames e medidas |
+| Saúde | energia pelo sono, peso, treino com cronômetro de descanso, treinos seus e base de exercícios, plano de treino, dieta do dia, exames e medidas |
 | Dinheiro | quanto pode gastar, contas a pagar, cartões e faturas, patrimônio, sincronização |
 | Agenda | Top 3 do dia, caixa de entrada com texto livre, próximos 7 dias |
 | Ficha | nível, XP, atributos, missões da semana, conquistas, chefe do mês, ajustes |
@@ -73,6 +73,16 @@ Em Dinheiro → Sincronizar, o dono entra com um código de 6 dígitos que chega
 - Service worker: a página e os arquivos saem só da versão instalada, sem troca um a um. A versão nova chega inteira (o app oferece recarregar). Todo deploy precisa subir o `VERSION` de `sw.js`.
 
 Os segredos (`PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`, `PLUGGY_ITEM_IDS`, `PLUGGY_WEBHOOK_TOKEN`) ficam em Edge Functions → Secrets no Supabase.
+
+## Treinos seus e base de exercícios
+
+- No Treino, ao lado de A, B, C e Cardio, **Outros** abre os treinos seus: montar o treino de hoje buscando os exercícios, guardar para repetir, ou criar um treino fora do A, B e C. Contam como treino de força na semana.
+- Cada exercício tem o botão de trocar: busca um substituto na base (só hoje ou sempre naquela ficha), com as mesmas séries. A carga fica guardada por exercício, então trocar, tirar ou reordenar não perde nada.
+- **Editar a ficha** muda a sua versão de A, B ou C do bloco (tirar, pôr, trocar, reordenar, séries e repetições). A ficha no Supabase não muda, e dá para voltar à original.
+- **Saúde → Exercícios** é a base: os exercícios das fichas, os dos seus treinos, os criados por você e os que já têm carga, com a última carga, o recorde estimado e o histórico dia a dia (400 dias).
+- O catálogo (`catalogo.js`) traz cerca de 250 exercícios de musculação com os nomes usados nas academias do Brasil, em 14 grupos (peito, costas, ombros, bíceps, tríceps, antebraço, quadríceps, posteriores, glúteos, panturrilha, abdômen e core, lombar, corpo inteiro e mobilidade). Na busca, os seus vêm primeiro.
+- “Ver como faz” abre a busca de vídeos do exercício no YouTube. O app não guarda vídeos nem GIFs.
+- Tudo isso fica no mapa `lastSets` do estado, com chaves que começam com `~` (ou `exercício@dia` no histórico), para a cópia 0.6.0 do app, se ainda estiver aberta em outro aparelho, manter essas chaves na nuvem em vez de apagá-las.
 
 ## Saúde no Supabase
 
