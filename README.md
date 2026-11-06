@@ -60,6 +60,11 @@ A pasta `supabase/` tem só a estrutura do banco e as funções; nenhum dado rea
 - `functions/pluggy-webhook`: recebe os avisos da Pluggy e dispara a sincronização da conexão.
 - `cron.example.sql`: modelo do agendamento diário, para rodar no SQL Editor com os valores reais.
 
+### Categorias, plano de contas e lançamentos à mão (0.8.0)
+
+- `migrations/20261106220000_reclassificar.sql`: plano de contas em `fin_plano` (nome "Grupo: detalhe", tipo, e as categorias do sistema que não mudam), lançamentos feitos à mão em `fin_manuais` (dinheiro vivo, conta fora do Open Finance), que entram na view `fin_lancamentos` com id `m<número>`, e as funções do dono: `fin_recategorizar`, `fin_parecidos`, `fin_regra_criar`, `fin_regra_apagar`, `fin_manual_salvar`, `fin_manual_apagar`, `fin_categoria_salvar` (criar, renomear, juntar, mudar o tipo) e `fin_categoria_apagar`. O `fin_painel()` passa a mandar o id de cada lançamento, o plano e as regras pessoais.
+- No app: Dinheiro → Lançamentos (busca, filtros, tocar para trocar a categoria, só este ou também os parecidos, que vira regra no banco; + para lançar à mão) e Dinheiro → Plano de contas. O Gasto rápido usa as categorias do plano; em dinheiro, vira lançamento à mão no Supabase. Um Pix que o banco não soube classificar fica com a categoria do gasto rápido ligado a ele.
+
 ### Login no app
 
 Em Dinheiro → Sincronizar, o dono entra com um código de 6 dígitos que chega no e-mail (Supabase Auth, sem senha). Depois disso o app chama a função `fin_painel()`, que monta numa chamada só o mesmo formato do arquivo `painel-dados.json`: contas, cartões, faturas e lançamentos do Open Finance, mais a foto manual (`fin_snapshots`) com o que não vem por lá. A última leitura fica no aparelho para abrir sem internet.

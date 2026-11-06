@@ -93,7 +93,8 @@ async function call(path, { method = 'POST', body, token, timeout = 20000, keepa
   let j = null; try { j = txt ? JSON.parse(txt) : null; } catch { j = null; }
   if (!res.ok) {
     // As funções do banco recusam com raise exception '<código>': o PostgREST manda P0001 e o código na mensagem.
-    const doBanco = j && ['nao_e_dono', 'doc_grande', 'doc_invalido', 'token_invalido'].includes(j.message) && j.message;
+    // Qualquer raise exception com um código curto em minúsculas (P0001) vira o código do erro.
+    const doBanco = j && typeof j.message === 'string' && (['nao_e_dono', 'doc_grande', 'doc_invalido', 'token_invalido'].includes(j.message) || (j.code === 'P0001' && /^[a-z][a-z_]{2,40}$/.test(j.message))) && j.message;
     const code = (j && (j.error_code || doBanco || j.error || j.code)) || `http_${res.status}`;
     throw new SyncError(String(code), (j && (j.msg || j.message || j.error_description)) || '', res.status);
   }
@@ -219,6 +220,9 @@ export const salvarEstado = (doc, base, aparelho, keepalive) => rpc('estado_salv
 // Atalho do iPhone (Apple Health e Calendário): o token novo aparece uma vez só, no app; o banco guarda só o hash.
 // Gerar outro desliga o anterior.
 export const novoToken = () => rpc('atalho_novo_token');
+
+// Plano de contas e lançamentos (fin_recategorizar, fin_regra_criar, fin_manual_salvar...): só a conta dona grava.
+export const fin = (fn, args) => rpc(fn, args);
 export const ATALHO_URL = `${SB_URL}/functions/v1/atalho`;
 
 // Sai deste aparelho. A sessão daqui é apagada na hora (fechar o app logo depois não a deixa salva); depois o
