@@ -80,6 +80,8 @@ Os segredos (`PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`, `PLUGGY_ITEM_IDS`, `PLU
 - Cada exercício tem o botão de trocar: busca um substituto na base (só hoje ou sempre naquela ficha), com as mesmas séries. A carga fica guardada por exercício, então trocar, tirar ou reordenar não perde nada.
 - **Editar a ficha** muda a sua versão de A, B ou C do bloco (tirar, pôr, trocar, reordenar, séries e repetições). A ficha no Supabase não muda, e dá para voltar à original.
 - **Saúde → Exercícios** é a base: os exercícios das fichas, os dos seus treinos, os criados por você e os que já têm carga, com a última carga, o recorde estimado e o histórico dia a dia (400 dias).
+- O catálogo (`catalogo.js`) traz cerca de 250 exercícios de musculação com os nomes usados nas academias do Brasil, em 14 grupos (peito, costas, ombros, bíceps, tríceps, antebraço, quadríceps, posteriores, glúteos, panturrilha, abdômen e core, lombar, corpo inteiro e mobilidade). Na busca, os seus vêm primeiro.
+- “Ver como faz” abre a busca de vídeos do exercício no YouTube. O app não guarda vídeos nem GIFs.
 - Tudo isso fica no mapa `lastSets` do estado, com chaves que começam com `~` (ou `exercício@dia` no histórico), para a cópia 0.6.0 do app, se ainda estiver aberta em outro aparelho, manter essas chaves na nuvem em vez de apagá-las.
 
 ## Saúde no Supabase

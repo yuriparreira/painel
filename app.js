@@ -4,6 +4,7 @@
 // computador; sem login, só neste navegador. O repositório não guarda dado pessoal nenhum.
 import { I } from './icons.js';
 import * as D from './data.js';
+import { CATALOGO, GRUPOS } from './catalogo.js';
 // Se o aparelho ainda guarda só os arquivos de uma versão sem o sync.js (sem internet, antes da atualização
 // terminar), o app abre sem o login em vez de ficar em branco.
 const sbOff = async () => { const e = new Error('offline'); e.code = 'offline'; throw e; };
@@ -921,20 +922,27 @@ function setBase(sel, arr) {
   return true;
 }
 
-// A base de exercícios: os das fichas (originais e editadas), os dos seus treinos, os que você criou e os que já têm carga.
+// A base de exercícios: os das fichas (originais e editadas), os dos seus treinos, os que você criou, os que já têm carga
+// (esses são "seus" e vêm primeiro) e o catálogo de musculação do app, por grupo muscular.
 const normq = (s) => D.slug(s).replace(/-/g, ' ');
+const GRUPO_DE = new Map(); for (const g of GRUPOS) for (const n of CATALOGO[g]) GRUPO_DE.set(D.slug(n), g);
 function biblioteca() {
   const m = new Map(), H = D.SAUDE;
-  const add = (nome, p, onde) => {
+  const add = (nome, p, onde, cat) => {
     nome = String(nome || '').trim(); const id = D.slug(nome); if (!id) return;
-    let x = m.get(id); if (!x) m.set(id, (x = { id, nome, p: '', onde: [] }));
+    let x = m.get(id); if (!x) m.set(id, (x = { id, nome, p: '', onde: [], g: GRUPO_DE.get(id) || '', meu: false }));
+    if (!cat) x.meu = true;
     if (!x.p && p) x.p = p; if (onde && !x.onde.includes(onde)) x.onde.push(onde);
   };
   for (const f of (H && H.fichas) || []) if (FORCA.has(f.treino)) { const o = `Treino ${f.treino}${f.bloco ? ` (bloco ${f.bloco})` : ''}`; exDaFicha(f).forEach((e) => add(e.n, e.p, o)); exOrig(f).forEach((e) => add(e.n, e.p)); }
   for (const t of meusTreinos()) t.ex.forEach((e) => add(e.n, e.p, t.dia ? null : t.nome));
   for (const k of Object.keys(S.lastSets)) { const v = LS(k); if (v && typeof v.n === 'string' && (k.startsWith(K_E) || /^[a-z0-9-]+$/.test(k))) add(v.n, '', null); }
-  return [...m.values()].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+  for (const g of GRUPOS) for (const n of CATALOGO[g]) add(n, '', null, true);
+  return [...m.values()].sort((a, b) => (b.meu - a.meu) || a.nome.localeCompare(b.nome, 'pt-BR'));
 }
+// Como fazer: abre a busca de vídeos do exercício no YouTube (no iPhone, no app do YouTube). O app não guarda vídeos nem GIFs.
+const videoUrl = (nome) => `https://www.youtube.com/results?search_query=${encodeURIComponent(`${nome} execução`)}`;
+const videoLink = (nome, cls = 'small') => `<a class="${cls} vlink" href="${videoUrl(nome)}" target="_blank" rel="noopener noreferrer">${I('eye', 16)}<span>Ver como faz</span><span class="sr"> ${esc(nome)}, abre o YouTube</span></a>`;
 const buscar = (L, q) => { const t = normq(q).split(' ').filter(Boolean); return t.length ? L.filter((x) => { const n = normq(x.nome); return t.every((w) => n.includes(w)); }) : L; };
 function ultimaTxt(id) {
   const l = LS(id); if (!l || !Array.isArray(l.reps) || !l.reps.length) return '';
@@ -1012,7 +1020,7 @@ function Treino() {
     }).join('');
     const tip = last && Array.isArray(last.reps) ? `Última vez: <b class="num">${last.kg ? `${D.fmtKg(last.kg)} kg × ` : ''}${last.reps.join(', ')}</b>${isoOk(last.d) ? ` em ${dShort(dayAt(last.d))}` : ''}.${sg ? ` ${sg.txt}.` : ''}` : 'Primeira vez com este exercício: anote a carga que usar.';
     return `<section class="ex" aria-label="${esc(ex.nome)}"><div class="row-flex"><h3 class="grow">${esc(ex.nome)}</h3><span class="chip num">${esc(ex.alvo)}</span><button class="iconbtn sm" data-act="trocarEx" data-arg="${sel}:${j}" aria-label="Trocar ${esc(ex.nome)} por outro exercício">${I('refresh', 20)}</button></div>
-      ${ex.no ? `<p class="xs muted" style="margin-top:2px">Só hoje, no lugar de ${esc(ex.no)}.</p>` : ''}
+      ${ex.no ? `<p class="xs muted" style="margin-top:2px">Só hoje, no lugar de ${esc(ex.no)}.</p>` : ''}${videoLink(ex.nome, 'xs')}
       <div class="tip">${I('refresh', 16)}<span>${tip} Hoje ${n} série${n > 1 ? 's' : ''}${ex.perna ? ', repetições por perna' : ''} · descanso ${fmtRest(rest)}.</span></div>
       <table class="sets"><thead><tr><th>Série</th><th>kg</th><th>Reps</th><th><span class="sr">Feito</span></th></tr></thead><tbody>${rows}</tbody></table></section>`;
   }).join('');
@@ -1054,17 +1062,22 @@ function EditarTreino() {
   };
 }
 
-// A base de exercícios, com a última carga e o histórico de cada um.
-let exBusca = '';
-const exRow = (x) => `<button class="row" data-act="exVer" data-arg="${x.id}"><div class="grow"><div class="ttl ellip">${esc(x.nome)}</div><div class="meta">${esc(ultimaTxt(x.id) || 'Sem cargas ainda')}${x.onde.length ? ` · ${esc(x.onde.slice(0, 2).join(', '))}${x.onde.length > 2 ? '…' : ''}` : ''}</div></div>${I('chevR', 20, 'class="ic muted"')}</button>`;
-const exLista = () => { const L = buscar(biblioteca(), exBusca); return L.length ? L.map(exRow).join('') : `<p class="small muted" style="padding:12px 0">${exBusca.trim() ? 'Nenhum exercício com esse nome. Toque em + para criar.' : 'Os exercícios das fichas chegam com a saúde do Supabase. Toque em + para criar um.'}</p>`; };
+// A base de exercícios, com a última carga e o histórico de cada um: os seus em cima, o catálogo embaixo, por grupo.
+let exBusca = '', exGrupo = '';
+const exRow = (x) => `<button class="row" data-act="exVer" data-arg="${x.id}"><div class="grow"><div class="ttl ellip">${esc(x.nome)}</div><div class="meta">${esc(ultimaTxt(x.id) || (x.meu ? 'Sem cargas ainda' : x.g))}${x.onde.length ? ` · ${esc(x.onde.slice(0, 2).join(', '))}${x.onde.length > 2 ? '…' : ''}` : ''}</div></div>${I('chevR', 20, 'class="ic muted"')}</button>`;
+function exLista() {
+  const L = buscar(biblioteca(), exBusca).filter((x) => !exGrupo || x.g === exGrupo), M = L.filter((x) => x.meu), C = L.filter((x) => !x.meu);
+  if (!L.length) return `<div class="card"><p class="small muted">Nenhum exercício com esse nome${exGrupo ? ` em ${esc(exGrupo)}` : ''}. Toque em + para criar.</p></div>`;
+  return `${M.length ? `${sec('Seus')}<div class="card tight">${M.map(exRow).join('')}</div>` : ''}${C.length ? `${sec(exGrupo ? `Catálogo · ${esc(exGrupo)}` : 'Catálogo')}<div class="card tight">${C.map(exRow).join('')}</div>` : ''}`;
+}
+const exChips = () => `<div class="picks exgrupos" role="radiogroup" aria-label="Grupo muscular">${['', ...GRUPOS].map((g) => `<button type="button" class="pick" role="radio" aria-checked="${g === exGrupo}" tabindex="${g === exGrupo ? 0 : -1}" data-act="exGrupo" data-arg="${esc(g)}">${g ? esc(g) : 'Todos'}</button>`).join('')}</div>`;
 function Exercicios() {
-  const L = biblioteca(), T = meusTreinos().filter((t) => !t.dia || t.dia === S.day);
+  const L = biblioteca(), T = meusTreinos().filter((t) => !t.dia || t.dia === S.day), n = L.filter((x) => x.meu).length;
   return {
     title: 'Exercícios',
-    html: `${backbar('saude', 'Saúde')}${hdr('Exercícios', `${L.length} na sua base`, `<button class="iconbtn" data-act="exNovo" aria-label="Criar exercício">${I('plus')}</button>`)}
-      <div class="card"><label class="field" style="margin:0"><span>Buscar</span><input class="input" id="exq" data-in="exq" value="${esc(exBusca)}" placeholder="ex.: supino, remada" autocomplete="off" type="search"></label></div>
-      <div class="card tight" id="exlist" aria-live="polite">${exLista()}</div>
+    html: `${backbar('saude', 'Saúde')}${hdr('Exercícios', `${n} seus · ${L.length - n} no catálogo`, `<button class="iconbtn" data-act="exNovo" aria-label="Criar exercício">${I('plus')}</button>`)}
+      <div class="card"><label class="field" style="margin:0"><span>Buscar</span><input class="input" id="exq" data-in="exq" value="${esc(exBusca)}" placeholder="ex.: supino, remada" autocomplete="off" type="search"></label>${exChips()}</div>
+      <div id="exlist" aria-live="polite">${exLista()}</div>
       ${sec('Treinos seus')}<div class="card tight">${T.map(seuTreinoRow).join('')}
         <button class="row" data-act="tMontar"><span class="badge-ic p">${I('plus', 20)}</span><div class="grow"><div class="ttl">Montar o treino de hoje</div><div class="meta">Buscando os exercícios que vai fazer</div></div></button>
         <button class="row" data-act="tNovo"><span class="badge-ic">${I('squarePlus', 20)}</span><div class="grow"><div class="ttl">Criar um treino para repetir</div><div class="meta">Fora do A, B e C</div></div></button></div>`,
@@ -1073,8 +1086,8 @@ function Exercicios() {
 function exSheet(id) {
   const x = biblioteca().find((e) => e.id === id); if (!x) return;
   const H = historico(id), b = S.best1rm[id], meu = !!LS(K_E + id);
-  openSheet(esc(x.nome), `${b ? `<p class="small">Recorde estimado (1RM): <b class="num">${D.fmtKg(Math.round(b * 2) / 2)} kg</b></p>` : ''}
-    ${x.onde.length ? `<p class="small muted" style="margin-top:4px">Em: ${esc(x.onde.join(', '))}.</p>` : ''}
+  openSheet(esc(x.nome), `<p>${videoLink(x.nome)}</p>${b ? `<p class="small">Recorde estimado (1RM): <b class="num">${D.fmtKg(Math.round(b * 2) / 2)} kg</b></p>` : ''}
+    ${x.onde.length ? `<p class="small muted" style="margin-top:4px">Em: ${esc(x.onde.join(', '))}.</p>` : x.g ? `<p class="small muted" style="margin-top:4px">${esc(x.g)}, do catálogo do app.</p>` : ''}
     ${H.length ? `<table class="bp" style="margin-top:12px"><thead><tr><th>Dia</th><th>Carga</th><th>Repetições</th></tr></thead><tbody>${H.slice(0, 30).map((h) => `<tr><td>${dShort(dayAt(h.d))}</td><td class="num">${h.kg ? `${D.fmtKg(h.kg)} kg` : '—'}</td><td class="num">${h.reps.join(', ')}</td></tr>`).join('')}</tbody></table>`
       : `<p class="small muted" style="margin-top:12px">${ultimaTxt(id) ? `Última vez: ${esc(ultimaTxt(id))}. O histórico dia a dia começa no próximo treino.` : 'Ainda sem cargas. Elas entram quando você concluir um treino com este exercício.'}</p>`}
     ${meu && !x.onde.length ? `<div class="btnrow"><button class="btn ghost" data-act="exTirar" data-arg="${id}">Tirar da base</button></div>` : ''}`, 'exv');
@@ -1099,7 +1112,7 @@ function pickSheet(modo, sel, j, ficha) {
 function pkRes() {
   const q = PK.q.trim(), L = biblioteca(), hit = buscar(L, q), novo = q && !L.some((x) => x.id === D.slug(q));
   PK.res = hit.slice(0, 40);
-  return `${novo ? `<button class="row" data-act="pkNovo"><span class="badge-ic p">${I('plus', 20)}</span><div class="grow"><div class="ttl ellip">Criar “${esc(q)}”</div><div class="meta">Entra na sua base de exercícios</div></div></button>` : ''}${PK.res.map((x, i) => `<button class="row" data-act="pkPick" data-arg="${i}"><div class="grow"><div class="ttl ellip">${esc(x.nome)}</div><div class="meta">${esc(ultimaTxt(x.id) || x.onde.slice(0, 2).join(', ') || 'Sem cargas ainda')}</div></div></button>`).join('')}${!novo && !PK.res.length ? '<p class="small muted" style="padding:12px 0">Digite o nome para buscar ou criar.</p>' : ''}`;
+  return `${novo ? `<button class="row" data-act="pkNovo"><span class="badge-ic p">${I('plus', 20)}</span><div class="grow"><div class="ttl ellip">Criar “${esc(q)}”</div><div class="meta">Entra na sua base de exercícios</div></div></button>` : ''}${PK.res.map((x, i) => `<button class="row" data-act="pkPick" data-arg="${i}"><div class="grow"><div class="ttl ellip">${esc(x.nome)}</div><div class="meta">${esc(ultimaTxt(x.id) || x.onde.slice(0, 2).join(', ') || x.g || 'Sem cargas ainda')}</div></div></button>`).join('')}${!novo && !PK.res.length ? '<p class="small muted" style="padding:12px 0">Digite o nome para buscar ou criar.</p>' : ''}`;
 }
 function pkAplicar(nome, p) {
   const { modo, sel, j } = PK, FL = fichaList(sel, plan()), base = FL.base.map((e) => ({ ...e }));
@@ -2218,6 +2231,7 @@ const A = {
   },
   pkDesfaz: () => { if (!PK) return; delete S.sets[`${K_S}${PK.sel}-${PK.j}`]; PK = null; save(); closeSheet(); render(true); },
   exVer: (id) => exSheet(id),
+  exGrupo: (g) => { exGrupo = GRUPOS.includes(g) ? g : ''; document.querySelectorAll('.exgrupos .pick').forEach((b) => { const on = b.dataset.arg === exGrupo; b.setAttribute('aria-checked', on); b.tabIndex = on ? 0 : -1; }); document.getElementById('exlist').innerHTML = exLista(); },
   exNovo: () => openSheet('Novo exercício', `<label class="field"><span>Nome</span><input class="input" id="exn-nome" maxlength="60" autocomplete="off" placeholder="ex.: Remada cavalinho" data-autofocus></label>
     <button class="btn block" style="margin-top:16px" data-act="exCriar">Criar</button><p class="xs muted" style="margin-top:8px">Entra na sua base para trocar ou adicionar nos treinos.</p>`, 'exn', '#exn-nome'),
   exCriar: () => {

@@ -438,3 +438,7 @@ button.kpi .chev { position: absolute; right: 10px; top: 12px; color: var(--mute
 .edbtns { display: flex; gap: 2px; margin-left: auto; }
 .edbtns .iconbtn[aria-disabled="true"] { opacity: .35; }
 .iconbtn.sm { width: 44px; height: 44px; margin: -6px -8px -6px 0; color: var(--muted); }
+/* Grupos musculares do catálogo: uma linha que rola para o lado */
+.picks.exgrupos { flex-wrap: nowrap; overflow-x: auto; margin-top: 12px; padding-bottom: 2px; scrollbar-width: none; }
+.picks.exgrupos .pick { flex: none; }
+.vlink { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; color: var(--primary); font-weight: 600; text-decoration: none; }
