@@ -5,6 +5,7 @@
 import { I } from './icons.js';
 import * as D from './data.js';
 import { CATALOGO, GRUPOS } from './catalogo.js';
+import * as AL from './alimentos.js';
 // Se o aparelho ainda guarda só os arquivos de uma versão sem o sync.js (sem internet, antes da atualização
 // terminar), o app abre sem o login em vez de ficar em branco.
 const sbOff = async () => { const e = new Error('offline'); e.code = 'offline'; throw e; };
@@ -85,12 +86,37 @@ const pct = (v) => `${Math.round(Math.max(0, Math.min(100, v)))}%`;
 //   id@dia    o que se fez num dia { kg, reps } (histórico de cargas, 400 dias)
 // E no mapa sets, que é do dia: ~s:sessão-posição { n }, a troca de um exercício só hoje.
 const K_T = '~t:', K_F = '~f:', K_E = '~e:', K_S = '~s:';
+// Refeições: no mapa meals (do dia) true = seguiu o plano; { f: [itens] } = o que você comeu nessa refeição (a porção do
+// plano pode ser um dos itens, em vezes). As refeições fora do plano têm chave x~… e { n nome, h hora, f itens }.
+// Os alimentos que você usa ficam em lastSets ~a:fonte (recentes, sem dia: valem nos dois aparelhos e sem internet).
+// As versões anteriores do app só olham se a refeição foi marcada: uma refeição ajustada aparece lá como seguida.
+const K_A = '~a:', K_X = 'x~', RECENTES = 60;
+const mVal = (v) => (v === true ? true : v && typeof v === 'object' && !Array.isArray(v) && Array.isArray(v.f) ? v : null);
+const planB = (m) => [m.kcal, m.p, m.c, m.g];
+const planoItem = (m, x = 1) => ({ pl: 1, x, b: planB(m) });
+const extrasDe = (M) => Object.keys(M || {}).filter((k) => k.startsWith(K_X) && mVal(M[k]) && M[k] !== true).sort();
+function realizado(m, v) { v = mVal(v); return !v ? null : v === true ? (m ? planB(m) : [0, 0, 0, 0]) : AL.soma(v.f); }
+// O que se comeu: [kcal, P, C, G] das refeições do plano marcadas ou ajustadas e das refeições fora do plano.
+function consumo(M, meals) {
+  let t = [0, 0, 0, 0], n = 0;
+  const add = (r) => { if (r) { t = t.map((x, i) => x + r[i]); n++; } };
+  meals.forEach((m) => add(realizado(m, (M || {})[m.id])));
+  extrasDe(M).forEach((k) => add(realizado(null, M[k])));
+  return { t, n };
+}
+// Para o registro do dia: [kcal, P, C, G] arredondados, ou null se nada foi registrado.
+function nutriDe(M, dayType, day) {
+  if (!M || typeof M !== 'object' || !Object.keys(M).length) return null;
+  const tk = D.DIAS[dayType] ? dayType : D.tipoDia(isoOk(day) ? D.sessao(D.planFor(dayAt(day))).tipo || 'LIVRE' : 'LIVRE');
+  const { t, n } = consumo(M, D.SAUDE ? D.refeicoes(tk) : []);
+  return n ? t.map((v) => Math.round(v)) : null;
+}
 const isP = (s) => typeof s === 'string' && /^P:[a-z0-9]{1,24}$/.test(s);
 function defaults() {
   return {
     v: 2, xp: 0, since: null, nome: '', onboarded: false, onbStep: 0, theme: 'system',
     day: null, checkin: null, quests: { corpo: false, comb: false, missao: false }, perfect: false, closed: false,
-    sets: {}, meals: {}, wSel: null, wStart: null, rest: null, edAlvo: null,
+    sets: {}, meals: {}, wSel: null, wStart: null, rest: null, edAlvo: null, refEd: null,
     paid: {}, inbox: [], weight: null, sleep: null, streak: 0, best: 0, pausa: false,
     card: 0, calSel: null, calOff: 0, billFilter: 'todas', bp: 'resumo', dayType: null, agView: 'hoje',
     draftExpense: '', inboxDraft: '', missaoRef: null, corpoKey: null, corpoMin: 0, combByMeals: false, expenses: [], mealXp: {}, inboxXp: 0, prToday: false,
@@ -102,8 +128,9 @@ const dayAt = (isoStr) => new Date(isoStr + 'T12:00');
 const isoOk = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
 const fin = (v) => (Number.isFinite(v) ? v : null);
 // O registro de um dia: sono e peso do check-in, sessão feita (e minutos de zona 2), Combustível e Missão.
-function logHoje(s) {
+function logHoje(s, nut) {
   const e = {};
+  if (nut) e.n = nut;
   if (s.checkin) { if (fin(s.checkin.s) != null) e.s = s.checkin.s; if (fin(s.checkin.w) != null) e.w = s.checkin.w; }
   if (s.quests.corpo && s.corpoKey) { e.k = s.corpoKey; if (s.corpoKey === 'Z2' && s.corpoMin > 0) e.z = s.corpoMin; }
   if (s.quests.comb) e.b = 1;
@@ -115,7 +142,7 @@ function rollover(s, today) {
   const prev = dayAt(s.day), gap = D.diffDays(dayAt(today), prev);
   s.hist[s.day] = s.pausa ? 'p' : s.checkin ? 1 : 0;
   if (s.checkin && s.checkin.s >= 7) s.good[s.day] = 1; // noite boa = golpe no chefe
-  const e = logHoje(s); if (e) s.dias[s.day] = e;
+  const e = logHoje(s, nutriDe(s.meals, s.dayType, s.day)); if (e) s.dias[s.day] = e;
   for (let i = 1; i < gap; i++) { const d = D.iso(D.addDays(prev, i)); if (!(d in s.hist)) s.hist[d] = s.pausa ? 'p' : 0; }
   for (let i = 0; i < gap; i++) {
     const d = D.iso(D.addDays(prev, i)), v = s.hist[d];
@@ -134,6 +161,8 @@ function rollover(s, today) {
     const h = /@(\d{4}-\d{2}-\d{2})$/.exec(k), v = s.lastSets[k], d = h ? h[1] : k.startsWith(K_T) && v && v.dia;
     if (isoOk(d) && D.diffDays(dayAt(today), dayAt(d)) > (h ? 400 : 30)) delete s.lastSets[k];
   });
+  // Alimentos recentes: os 60 usados por último.
+  Object.keys(s.lastSets).filter((k) => k.startsWith(K_A)).sort((a, b) => ((s.lastSets[b] || {}).t || 0) - ((s.lastSets[a] || {}).t || 0)).slice(RECENTES).forEach((k) => { delete s.lastSets[k]; });
   s.inbox = s.inbox.filter((x) => !x.done); // tarefas concluídas saem na virada
   Object.assign(s, { checkin: null, sleep: null, quests: { corpo: false, comb: false, missao: false }, perfect: false, closed: false, sets: {}, meals: {}, wStart: null, rest: null, dayType: null, wSel: null, missaoRef: null, corpoKey: null, corpoMin: 0, combByMeals: false, mealXp: {}, inboxXp: 0, prToday: false, qxp: {} });
 }
@@ -170,7 +199,8 @@ function fecharVelhos(s, velhos) {
     };
     if (T.checkin && s.hist[d] !== 1) { s.hist[d] = 1; mudou = true; }
     if (T.checkin && T.checkin.s >= 7 && s.bossMonth === d.slice(0, 7) && !s.good[d]) { s.good[d] = 1; mudou = true; }
-    const e = logHoje(T);
+    const ml = {}; Object.keys(V).forEach((k) => { if (k.startsWith('meals|')) { const v = P(k); if (v != null) ml[k.slice(6)] = v; } });
+    const e = logHoje(T, nutriDe(ml, P('dayType'), d));
     if (e) { const cur = s.dias[d] && typeof s.dias[d] === 'object' ? s.dias[d] : {}, u = { ...e, ...cur }; if (JSON.stringify(u) !== JSON.stringify(cur)) { s.dias[d] = u; mudou = true; } }
   }
   if (mudou) chama(s);
@@ -198,6 +228,7 @@ function sane(stored) {
   if (out.wSel && !['A', 'B', 'C', 'Z2', 'REST'].includes(out.wSel) && !isP(out.wSel)) out.wSel = null;
   if (out.edAlvo && !['A', 'B', 'C'].includes(out.edAlvo) && !isP(out.edAlvo)) out.edAlvo = null;
   if (out.rest && !(out.rest.end > 0)) out.rest = null;
+  if (out.refEd != null && typeof out.refEd !== 'string') out.refEd = null;
   out.inbox = out.inbox.filter((x) => x && typeof x.t === 'string');
   out.expenses = out.expenses.filter((x) => x && Number.isFinite(x.v));
   return out;
@@ -1186,27 +1217,164 @@ function Campanha() {
   };
 }
 
+// ---------- Dieta: o sugerido pelo plano e o que você comeu de verdade ----------
+const planoHoje = () => { const { key } = todaySession(); return D.SAUDE ? D.refeicoes(S.dayType || D.tipoDia(key)) : []; };
+const g0 = (v) => fmtInt(Math.max(0, v));
+const macroTxt = (r) => `${g0(r[0])} kcal · P ${g0(r[1])} · C ${g0(r[2])} · G ${g0(r[3])} g`;
+const curto = (n) => String(n || '').split(',').slice(0, 2).join(',').trim();
+const vezes = (x) => (x === 1 ? 'o plano' : x === 0.5 ? 'metade do plano' : `${String(x).replace('.', ',')} × o plano`);
+const resumoItens = (f) => { const L = f.map((it) => (it.pl ? vezes(Number(it.x) || 0) : curto(it.n))); return L.length ? (L.length > 3 ? `${L.slice(0, 3).join(', ')} e mais ${L.length - 3}` : L.join(', ')) : 'nada ainda'; };
+// A Missão Combustível acompanha a proteína das refeições: marca sozinha ao chegar na meta e desmarca se foi ela que marcou.
+function combMeals() {
+  const pr = D.prot(); if (!pr) return;
+  const p = consumo(S.meals, planoHoje()).t[1];
+  if (p >= pr.conta && !S.quests.comb) setQuest('comb', true);
+  else if (p < pr.conta && S.quests.comb && S.combByMeals) setQuest('comb', false);
+  if (S.quests.comb && p >= pr.conta) S.combByMeals = true;
+}
+// +3 XP por refeição só na primeira vez no dia: desmarcar e marcar de novo não paga outra vez.
+function mealXp(id) { if (!S.mealXp[id]) { S.mealXp[id] = true; addXP(3, 'Refeição registrada'); } }
+// A lista do que se comeu numa refeição, pronta para mudar (seguiu o plano vira a porção do plano).
+function itensDe(id) {
+  const v = mVal(S.meals[id]);
+  if (v && v !== true) return v.f;
+  const m = planoHoje().find((x) => x.id === id); if (!m) return null;
+  S.meals[id] = { f: v === true ? [planoItem(m)] : [] };
+  return S.meals[id].f;
+}
+function mealRow(m) {
+  const v = mVal(S.meals[m.id]), ed = v && v !== true, r = ed ? realizado(m, v) : null, dif = ed ? Math.round(r[0] - m.kcal) : 0;
+  return `<div class="quest ${v ? 'done' : ''}"><button class="qcheck" aria-pressed="${!!v}" data-act="meal" data-arg="${esc(m.id)}" aria-label="${esc(m.nome)}: ${ed ? 'ajustada, abrir' : v ? 'seguiu o plano' : 'marcar que seguiu o plano'}">${I('check', 28)}</button>
+    <div class="grow"><div class="k num">${esc(m.hora)}${ed ? `${m.hora ? ' · ' : ''}ajustada` : v ? `${m.hora ? ' · ' : ''}seguiu o plano` : ''}</div><div class="t">${esc(m.nome)}</div>
+      <div class="d">${ed ? 'Plano: ' : ''}${txtBr(m.itens)} · <span class="num">${fmtInt(m.kcal)} kcal · ${fmtInt(m.p)} g</span></div>
+      ${ed ? `<div class="d real"><b>Comeu:</b> ${esc(resumoItens(v.f))} · <span class="num">${g0(r[0])} kcal · ${g0(r[1])} g</span>${dif ? ` <span class="dif num">${dif > 0 ? '+' : '−'}${fmtInt(Math.abs(dif))} kcal</span>` : ''}</div>` : ''}</div>
+    <button class="iconbtn go" data-act="refEd" data-arg="${esc(m.id)}" aria-label="Registrar o que comeu em ${esc(m.nome)}">${I('edit')}</button></div>`;
+}
+function extraRow(k) {
+  const v = S.meals[k], r = AL.soma(v.f), nome = (typeof v.n === 'string' && v.n) || 'Refeição';
+  return `<div class="quest done"><button class="qcheck" aria-pressed="true" data-act="refEd" data-arg="${esc(k)}" aria-label="${esc(nome)}: fora do plano, abrir">${I('check', 28)}</button>
+    <div class="grow"><div class="k num">${esc(typeof v.h === 'string' ? v.h : '')}${v.h ? ' · ' : ''}fora do plano</div><div class="t">${esc(nome)}</div><div class="d">${esc(resumoItens(v.f))} · <span class="num">${g0(r[0])} kcal · ${g0(r[1])} g</span></div></div>
+    <button class="iconbtn go" data-act="refEd" data-arg="${esc(k)}" aria-label="Abrir ${esc(nome)}">${I('edit')}</button></div>`;
+}
 function Dieta() {
   const H = D.SAUDE;
-  if (!H || !H.refeicoes.length) return { title: 'Dieta', html: `${backbar('saude', 'Saúde')}${hdr('Dieta de hoje')}${H ? empty('utensils', 'Sem plano alimentar ativo', 'Nenhuma refeição ativa veio do Supabase.') : semSaude()}` };
+  if (!H) return { title: 'Dieta', html: `${backbar('saude', 'Saúde')}${hdr('Dieta de hoje')}${semSaude()}` };
   const { key } = todaySession(), tk = S.dayType || D.tipoDia(key), meals = D.refeicoes(tk), pr = D.prot(), kc = D.kcalDia(tk);
-  const got = meals.filter((m) => S.meals[m.id]), p = Math.round(got.reduce((a, m) => a + m.p, 0)), k = Math.round(got.reduce((a, m) => a + m.kcal, 0));
-  const planP = Math.round(meals.reduce((a, m) => a + m.p, 0)), planK = Math.round(meals.reduce((a, m) => a + m.kcal, 0));
-  const resto = planP - p, ver = (meals[0] && meals[0].versao) || '', agua = fin(Number(D.metas().agua)), metaP = pr ? pr.meta : planP;
+  const [k, p, c, g] = consumo(S.meals, meals).t.map((v) => Math.round(v)), X = extrasDe(S.meals);
+  const plano = meals.reduce((a, m) => a.map((v, i) => v + planB(m)[i]), [0, 0, 0, 0]).map((v) => Math.round(v)), [planK, planP, planC, planG] = plano;
+  const resto = Math.round(meals.filter((m) => !mVal(S.meals[m.id])).reduce((a, m) => a + m.p, 0));
+  const ver = (meals[0] && meals[0].versao) || '', agua = fin(Number(D.metas().agua)), metaP = pr ? pr.meta : planP, metaK = kc || planK;
+  // Os últimos 7 dias pelo registro do dia (o que foi comido) e hoje ao vivo.
+  const sem = Array.from({ length: 7 }, (_, i) => { const d = D.addDays(diaNow(), i - 6), id = D.iso(d), n = id === S.day ? (k || p ? [k, p] : null) : S.dias[id] && Array.isArray(S.dias[id].n) ? S.dias[id].n : null; return { d, n }; });
+  const semN = sem.filter((x) => x.n && x.n[0] > 0);
   return {
     title: 'Dieta',
     html: `${backbar('saude', 'Saúde')}${hdr('Dieta de hoje', `Dia de ${D.DIAS[tk].toLowerCase()} · ${S.dayType ? 'escolhido por você' : 'pelo plano de treino'}`)}
       <div class="seg" role="group" aria-label="Tipo de dia" style="margin:4px 16px 0">${Object.entries(D.DIAS).map(([id, t]) => `<button aria-pressed="${tk === id}" data-act="daytype" data-arg="${id}">${t}</button>`).join('')}</div>
       <div class="card"><div class="grid3">
         <div><div class="small muted">Proteína</div><div class="mid">${p}<span class="small muted"> / ${metaP} g</span></div>${bar(metaP ? (p / metaP) * 100 : 0, 'var(--a-nut)')}</div>
-        <div><div class="small muted">Calorias</div><div class="mid">${fmtInt(k)}</div><div class="small muted">de ${fmtInt(kc || planK)}</div></div>
+        <div><div class="small muted">Calorias</div><div class="mid">${fmtInt(k)}</div><div class="small muted">de ${fmtInt(metaK)}</div>${bar(metaK ? (k / metaK) * 100 : 0, 'var(--a-nut)')}</div>
         <div><div class="small muted">Combustível</div><div class="mid">${pr ? (p >= pr.conta ? 'ok' : `${pr.conta - p} g`) : '—'}</div><div class="small muted">${pr ? (p >= pr.conta ? 'missão feita' : 'para a missão contar') : 'sem meta'}</div></div>
-      </div></div>
+      </div><p class="small muted num" style="margin:10px 0 0">Carboidrato ${fmtInt(c)} de ${fmtInt(planC)} g · gordura ${fmtInt(g)} de ${fmtInt(planG)} g no plano</p></div>
       ${sec('Refeições do plano', `<span class="small muted num">${fmtInt(planK)} kcal · ${planP} g</span>`)}
-      <div class="card tight">${meals.length ? meals.map((m) => `<div class="quest ${S.meals[m.id] ? 'done' : ''}"><button class="qcheck" aria-pressed="${!!S.meals[m.id]}" data-act="meal" data-arg="${esc(m.id)}" aria-label="${esc(m.nome)}: ${S.meals[m.id] ? 'comida' : 'marcar como comida'}">${I('check', 28)}</button><div class="grow"><div class="k num">${esc(m.hora)}</div><div class="t">${esc(m.nome)}</div><div class="d">${txtBr(m.itens)} · <span class="num">${fmtInt(m.kcal)} kcal · ${fmtInt(m.p)} g</span></div></div></div>`).join('') : '<div class="empty"><p>Nenhuma refeição para este tipo de dia.</p></div>'}</div>
+      <div class="card tight">${meals.length ? meals.map(mealRow).join('') : '<div class="empty"><p>Nenhuma refeição do plano para este tipo de dia.</p></div>'}
+        ${X.map(extraRow).join('')}
+        <button class="row" data-act="refNova"><span class="badge-ic p">${I('plus', 20)}</span><div class="grow"><div class="ttl">Comi fora do plano</div><div class="meta">Um lanche, um jantar fora: busque os alimentos</div></div></button></div>
+      <p class="small muted" style="margin:8px 20px 0">O ✓ marca que seguiu o plano. O lápis registra o que comeu de verdade: mais, menos ou outra coisa.</p>
       ${pr && p < pr.conta && meals.length ? `<div class="card soft"><div class="row-flex">${I('sparkle', 20)}<b>Para a missão contar</b></div><p class="small" style="margin-top:4px">Faltam ${pr.conta - p} g. ${p + resto >= pr.conta ? `As refeições que faltam no plano somam ${resto} g: seguindo o plano, a missão conta.` : `Mesmo seguindo o plano, faltam ${pr.conta - p - resto} g para chegar a ${pr.conta} g.`}</p></div>` : ''}
+      ${semN.length > 1 ? `${sec('Últimos 7 dias')}<div class="card">${barChart(sem.map((x) => ({ v: x.n ? x.n[0] : 0, l: wd(x.d).slice(0, 3), c: 'var(--a-nut)', dim: !x.n })), { target: metaK, label: 'Calorias comidas nos últimos 7 dias', values: (v) => (v ? fmtInt(v) : '') })}
+        <p class="small muted num" style="margin:6px 0 0">Proteína: ${sem.map((x) => (x.n ? `${fmtInt(x.n[1])}` : '—')).join(' · ')} g</p></div>` : ''}
       <p class="small muted" style="margin:14px 20px">${agua ? `Água: meta de ${n1(agua)} L por dia. ` : ''}Comer abaixo da faixa não dá XP: a meta é acertar o alvo, não comer menos.${ver ? ` ${esc(ver)}.` : ''}</p>`,
   };
+}
+
+// Uma refeição: o sugerido pelo plano em cima, o que você comeu embaixo, com quantidades e o total contra o plano.
+function rfTotais(f, m) {
+  const r = AL.soma(f).map((v) => Math.round(v)), s = m ? planB(m).map((v) => Math.round(v)) : null, L = ['kcal', 'Proteína', 'Carboidrato', 'Gordura'];
+  return `<div class="grid4">${L.map((l, i) => { const d = s ? r[i] - s[i] : 0; return `<div><div class="small muted">${l}</div><div class="mid num">${fmtInt(r[i])}${i ? '<span class="small muted"> g</span>' : ''}</div>${s ? `<div class="small muted num">${d ? `${d > 0 ? '+' : '−'}${fmtInt(Math.abs(d))} do plano` : 'igual ao plano'}</div>` : ''}</div>`; }).join('')}</div>`;
+}
+const fiMeta = (it) => { const r = AL.macros(it); return `${g0(r[0])} kcal · P ${g0(r[1])} g`; };
+function fiRow(it, j) {
+  const pl = !!it.pl, nome = pl ? 'Porção do plano' : it.n, q = pl ? it.x : it.q, u = pl ? '×' : it.u === 'porção' ? (q === 1 ? 'porção' : 'porções') : it.u || 'g';
+  return `<div class="row fi"><div class="grow"><div class="ttl ellip">${esc(nome)}</div><div class="meta num" id="fi-m-${j}">${fiMeta(it)}</div></div>
+    <input class="qty" type="text" inputmode="decimal" value="${esc(String(q).replace('.', ','))}" data-in="fiq" data-arg="${j}" aria-label="Quantidade de ${esc(nome)}${pl ? ', em vezes o plano' : ` em ${esc(u)}`}"><span class="small muted fiu">${esc(u)}</span>
+    <button class="iconbtn" data-act="fiTirar" data-arg="${j}" aria-label="Tirar ${esc(nome)}">${I('x', 20)}</button></div>`;
+}
+function Refeicao() {
+  const id = S.refEd, m = id ? planoHoje().find((x) => x.id === id) : null, v = id ? mVal(S.meals[id]) : null, extra = !!(id && id.startsWith(K_X) && v && v !== true);
+  const back = backbar('saude/dieta', 'Dieta');
+  if (!m && !extra) return { title: 'Refeição', html: `${back}${hdr('Refeição')}${empty('utensils', 'Refeição não encontrada', 'O dia pode ter virado, ou ela foi apagada no outro aparelho.', '#/saude/dieta', 'Voltar à dieta')}` };
+  const f = v === true ? [planoItem(m)] : v ? v.f : [], temPlano = f.some((it) => it.pl);
+  const nome = extra ? (typeof v.n === 'string' && v.n) || 'Refeição' : m.nome;
+  return {
+    title: nome,
+    html: `${back}${hdr(esc(nome), extra ? 'Fora do plano' : `${m.hora ? `${esc(m.hora)} · ` : ''}${v === true ? 'seguiu o plano' : v ? 'ajustada' : 'ainda não registrada'}`)}
+      ${extra ? `<div class="card"><label class="field" style="margin:0"><span>Nome</span><input class="input" data-in="rfnome" value="${esc(nome)}" maxlength="40" autocomplete="off"></label>
+        <label class="field"><span>Hora</span><input class="input" type="time" data-in="rfhora" value="${esc(typeof v.h === 'string' ? v.h : '')}"></label></div>`
+        : `${sec('Sugerido pelo plano')}<div class="card"><p style="margin:0">${txtBr(m.itens) || '—'}</p><p class="small muted num" style="margin:6px 0 0">${macroTxt(planB(m))}</p>
+        ${v === true ? '' : `<div class="btnrow"><button class="btn line" data-act="rfPlano">${I('check', 18)} Comi o plano</button></div>`}</div>`}
+      ${sec('O que você comeu')}
+      <div class="card tight">${f.map(fiRow).join('') || '<p class="small muted" style="padding:12px 0">Nada ainda. Adicione o que comeu, ou use a porção do plano e ajuste.</p>'}
+        <button class="row" data-act="foodAdd"><span class="badge-ic p">${I('plus', 20)}</span><div class="grow"><div class="ttl">Adicionar alimento</div><div class="meta">Tabela TACO, seus recentes ou produtos de marca</div></div></button>
+        ${m && !temPlano ? `<button class="row" data-act="rfPorcao"><span class="badge-ic">${I('utensils', 20)}</span><div class="grow"><div class="ttl">Porção do plano</div><div class="meta">Comeu parte do plano? Entra como 1 ×, ajuste para ½ ou 1,5</div></div></button>` : ''}</div>
+      <div class="card" id="rf-tot">${rfTotais(f, m)}</div>
+      <div class="btnrow" style="margin:4px 16px"><a class="btn" href="#/saude/dieta" data-act="rfPronto">Pronto</a>${v ? `<button class="btn ghost" data-act="rfLimpa">${extra ? 'Apagar esta refeição' : 'Não comi'}</button>` : ''}</div>
+      <p class="small muted" style="margin:14px 20px">Valores por 100 g da Tabela TACO (NEPA/UNICAMP) ou do rótulo no Open Food Facts. A quantidade é do alimento pronto como você escolheu (cozido, cru, grelhado).</p>`,
+  };
+}
+
+// Escolher um alimento: recentes, TACO (no aparelho) e, ao tocar em Buscar, produtos do Open Food Facts.
+let FS = null;
+const porTxt = (a) => `${a.b[0] != null ? `${g0(a.b[0])} kcal` : '— kcal'} · P ${a.b[1] != null ? n1(a.b[1]).replace(',0', '') : '—'} g por ${a.por === 1 ? 'porção' : `100 ${a.u || 'g'}`}`;
+function foodSheet() {
+  FS = { q: '', off: null, list: [], sel: null, novo: false };
+  openSheet('Adicionar alimento', `<div id="fs-body">${fsBusca()}</div>`, 'fs', '#fs-q');
+}
+const fsBusca = () => `<label class="field" style="margin-top:0"><span>Buscar</span><input class="input" id="fs-q" data-in="fsq" value="${esc(FS.q)}" placeholder="ex.: arroz, frango, whey ou código de barras" autocomplete="off" type="search" enterkeyhint="search"></label>
+  <div id="fs-res" aria-live="polite">${fsRes()}</div>`;
+function fsRes() {
+  const q = FS.q.trim(), nq = AL.norm(q), R = recentes(), cod = AL.ehCodigo(q);
+  const rec = (q ? R.filter((a) => nq.split(' ').every((w) => AL.norm(a.n).includes(w))) : R).slice(0, q ? 8 : 20);
+  const tac = q && !cod ? AL.buscarTaco(q, 25).filter((a) => !rec.some((r) => r.s === a.s)) : [], off = Array.isArray(FS.off) ? FS.off : [];
+  FS.list = [...off, ...rec, ...tac];
+  const row = (a, i) => `<button class="row" data-act="fsPick" data-arg="${i}"><div class="grow"><div class="ttl ellip">${esc(a.n)}</div><div class="meta num">${esc(porTxt(a))}</div></div>${I('plus', 20, 'class="ic muted"')}</button>`;
+  let i = 0;
+  const bloco = (t, L) => (L.length ? `<div class="xs muted b" style="margin:12px 0 2px">${t}</div>${L.map((a) => row(a, i++)).join('')}` : (i += L.length, ''));
+  const offSt = FS.off === 'busy' ? `<p class="small muted" role="status">${I('refresh', 16, 'style="display:inline;vertical-align:-3px"')} Buscando no Open Food Facts…</p>`
+    : FS.off && FS.off.err ? `<p class="small" role="alert">${esc(FS.off.err)}</p>` : Array.isArray(FS.off) && !off.length ? `<p class="small muted">Nada no Open Food Facts para “${esc(q)}”.</p>` : '';
+  return `<div class="btnrow" style="margin-top:4px">${q && FS.off !== 'busy' ? `<button class="btn line sm" data-act="fsOff">${I('search', 18)} ${cod ? 'Buscar o código' : 'Buscar marcas'}</button>` : ''}<button class="btn ghost sm" data-act="fsNovo">${I('plus', 18)} Criar alimento</button></div>
+    ${offSt}${bloco('Produtos (Open Food Facts)', off)}${bloco(q ? 'Seus recentes' : 'Recentes', rec)}${bloco('Tabela TACO', tac)}
+    ${q && !rec.length && !tac.length && !off.length && FS.off == null ? `<p class="small muted" style="margin:12px 0 0">${cod ? 'Código de barras: toque em Buscar o código.' : 'Nada na tabela TACO com esse nome. Tente outra palavra, busque em produtos de marca ou crie o alimento.'}</p>` : ''}
+    ${!q && !rec.length ? '<p class="small muted" style="margin:8px 0 0">Digite o alimento. Os que você usar ficam aqui como recentes.</p>' : ''}
+    ${q ? '<p class="xs muted" style="margin-top:10px">Produtos de marca vêm do Open Food Facts, uma base aberta feita por voluntários com os rótulos: precisa de internet.</p>' : ''}`;
+}
+const fsUpd = () => { const el = document.getElementById('fs-res'); if (el && FS) el.innerHTML = fsRes(); };
+const numBr = (s) => { const v = parseFloat(String(s || '').replace(/\s/g, '').replace(',', '.')); return Number.isFinite(v) ? v : null; };
+function fsQtd(a) {
+  const q0 = Number(a.q) > 0 ? a.q : a.sv || (a.por === 1 ? 1 : 100), u = a.por === 1 ? 'porções' : a.u || 'g';
+  return `<div><b>${esc(a.n)}</b><div class="small muted num">${esc(porTxt(a))}${a.g && a.g !== 'Open Food Facts' ? ` · ${esc(a.g)}` : ''}</div></div>
+    <label class="field"><span>Quantidade (${esc(u)})</span><input class="input" id="fs-qt" data-in="fsqt" inputmode="decimal" value="${esc(String(q0).replace('.', ','))}" autocomplete="off" data-autofocus></label>
+    <div class="picks">${AL.rapidas(a).map(([v, l]) => `<button type="button" class="pick" data-act="fsQ" data-arg="${v}">${esc(l)}</button>`).join('')}</div>
+    <p class="small num" id="fs-prev" aria-live="polite" style="margin-top:10px">${fsPrev(a, q0)}</p>
+    <div class="btnrow"><button class="btn" data-act="fsOk">Adicionar</button><button class="btn ghost" data-act="fsVolta">Voltar</button></div>`;
+}
+const fsPrev = (a, q) => (numBr(q) > 0 ? `= ${macroTxt(AL.macros(AL.item(a, numBr(q))))}` : 'Digite a quantidade.');
+function fsNovoHtml() {
+  const n = (id, l, ph) => `<label class="field"><span>${l}</span><input class="input" id="${id}" inputmode="decimal" placeholder="${ph}" autocomplete="off"></label>`;
+  return `<label class="field" style="margin-top:0"><span>Nome</span><input class="input" id="fn-n" maxlength="60" autocomplete="off" value="${esc(FS.q)}" placeholder="ex.: Marmita do restaurante" data-autofocus></label>
+    ${radios('Os valores são de', 'fn-por', ['100', '1'], '100', { 100: '100 g', 1: '1 porção' })}
+    <div class="grid2">${n('fn-k', 'Calorias (kcal)', '0')}${n('fn-p', 'Proteína (g)', '0')}${n('fn-c', 'Carboidrato (g)', '0')}${n('fn-g', 'Gordura (g)', '0')}</div>
+    <p class="small" id="fn-err" role="alert"></p>
+    <div class="btnrow"><button class="btn" data-act="fsCriar">Continuar</button><button class="btn ghost" data-act="fsVolta">Voltar</button></div>`;
+}
+const fsBody = (h, foco) => { const el = document.getElementById('fs-body'); if (!el) return; el.innerHTML = h; (el.querySelector(foco || '[data-autofocus]') || el.querySelector('input'))?.focus({ preventScroll: true }); };
+function recentes() {
+  return Object.keys(S.lastSets).filter((k) => k.startsWith(K_A)).map((k) => { const v = LS(k); return v && typeof v.n === 'string' && Array.isArray(v.b) ? { ...v, s: k.slice(K_A.length) } : null; })
+    .filter(Boolean).sort((a, b) => (b.t || 0) - (a.t || 0));
+}
+function lembrar(a, q) {
+  const s = String(a.s || `m${D.slug(a.n)}`).slice(0, 40);
+  S.lastSets[K_A + s] = { n: a.n, b: a.b, u: a.u || 'g', por: a.por || 100, q, t: Date.now(), ...(a.sv ? { sv: a.sv } : {}) };
 }
 
 const refTxt = (e) => { const u = e.u ? ` ${esc(e.u)}` : ''; return e.lo != null && e.hi != null ? `Referência: ${fmtNum(e.lo)} a ${fmtNum(e.hi)}${u}` : e.hi != null ? `Referência: até ${fmtNum(e.hi)}${u}` : e.lo != null ? `Referência: a partir de ${fmtNum(e.lo)}${u}` : ''; };
@@ -2083,7 +2251,7 @@ function Onboarding() {
 }
 
 const ROUTES = {
-  onboarding: Onboarding, hoje: Hoje, saude: Saude, 'saude/treino': Treino, 'saude/treino-editar': EditarTreino, 'saude/exercicios': Exercicios, 'saude/campanha': Campanha, 'saude/dieta': Dieta, 'saude/exames': Exames,
+  onboarding: Onboarding, hoje: Hoje, saude: Saude, 'saude/treino': Treino, 'saude/treino-editar': EditarTreino, 'saude/exercicios': Exercicios, 'saude/campanha': Campanha, 'saude/dieta': Dieta, 'saude/refeicao': Refeicao, 'saude/exames': Exames,
   dinheiro: Dinheiro, 'dinheiro/contas': Contas, 'dinheiro/cartoes': Cartoes, 'dinheiro/patrimonio': Patrimonio, 'dinheiro/importar': Importar, 'dinheiro/sincronizar': Sincronizar,
   'dinheiro/lancamentos': Lancamentos, 'dinheiro/categorias': PlanoContas,
   agenda: Agenda, ficha: Ficha, ajustes: Ajustes,
@@ -2536,19 +2704,60 @@ const A = {
     save(); closeSheet(); render(true); toast(`${I('check', 18)} ${esc(cap(q))} na base`);
   },
   exTirar: (id) => { delete S.lastSets[K_E + id]; save(); closeSheet(); render(true); },
-  daytype: (k) => { if (!D.DIAS[k]) return; S.dayType = k; save(); render(true); },
+  daytype: (k) => { if (!D.DIAS[k]) return; S.dayType = k; combMeals(); save(); render(true); },
+  // O ✓ marca que seguiu o plano (ou desmarca). Numa refeição ajustada abre o registro, para não perder o que você anotou.
   meal: (id) => {
-    const { key } = todaySession(), meals = D.refeicoes(S.dayType || D.tipoDia(key)), pr = D.prot();
-    S.meals[id] = !S.meals[id];
-    const p = meals.filter((m) => S.meals[m.id]).reduce((a, m) => a + m.p, 0);
-    // +3 XP por refeição só na primeira marcação do dia: desmarcar e marcar de novo não paga outra vez.
-    if (S.meals[id] && !S.mealXp[id]) { S.mealXp[id] = true; addXP(3, 'Refeição registrada'); } else touch();
-    if (pr) {
-      if (p >= pr.conta && !S.quests.comb) setQuest('comb', true);
-      else if (p < pr.conta && S.quests.comb && S.combByMeals) setQuest('comb', false);
-      if (S.quests.comb && p >= pr.conta) S.combByMeals = true;
-    }
-    render(true);
+    const v = S.meals[id];
+    if (mVal(v) && v !== true) { A.refEd(id); return; }
+    if (v) S.meals[id] = false; else { S.meals[id] = true; mealXp(id); }
+    combMeals(); save(); render(true);
+  },
+  refEd: (id) => { if (!id) return; S.refEd = id; save(); go('#/saude/refeicao'); },
+  refNova: () => { const id = K_X + Date.now().toString(36); S.meals[id] = { n: 'Lanche', h: hmAgora() === '24:00' ? '' : hmAgora(), f: [] }; S.refEd = id; save(); go('#/saude/refeicao'); },
+  rfPlano: () => { const id = S.refEd; if (!planoHoje().some((m) => m.id === id)) return; S.meals[id] = true; mealXp(id); combMeals(); save(); go('#/saude/dieta', true); toast(`${I('check', 18)} Seguiu o plano`); },
+  rfPorcao: () => { const id = S.refEd, m = planoHoje().find((x) => x.id === id), f = itensDe(id); if (!m || !f) return; f.unshift(planoItem(m)); mealXp(id); combMeals(); save(); render(true); },
+  fiTirar: (j) => {
+    const id = S.refEd, f = itensDe(id); if (!f || !f[+j]) return;
+    f.splice(+j, 1);
+    if (!f.length && !id.startsWith(K_X)) S.meals[id] = false; // sem nada: volta a não registrada
+    combMeals(); save(); render(true);
+  },
+  rfLimpa: () => {
+    const id = S.refEd; if (!id) return;
+    if (id.startsWith(K_X)) delete S.meals[id]; else S.meals[id] = false;
+    combMeals(); save(); go('#/saude/dieta', true);
+  },
+  rfPronto: () => {
+    const id = S.refEd, v = id && S.meals[id];
+    if (id && id.startsWith(K_X) && mVal(v) && !v.f.length) delete S.meals[id]; // refeição fora do plano vazia não fica
+    combMeals(); save();
+  },
+  foodAdd: () => foodSheet(),
+  fsPick: (i) => { const a = FS && FS.list[+i]; if (!a) return; FS.sel = a; fsBody(fsQtd(a), '#fs-qt'); document.getElementById('fs-qt')?.select(); },
+  fsQ: (v) => { const el = document.getElementById('fs-qt'); if (!el || !FS?.sel) return; el.value = String(v).replace('.', ','); document.getElementById('fs-prev').innerHTML = fsPrev(FS.sel, el.value); },
+  fsVolta: () => { if (!FS) return; FS.sel = null; FS.novo = false; fsBody(fsBusca(), '#fs-q'); },
+  fsNovo: () => { if (!FS) return; FS.novo = true; fsBody(fsNovoHtml(), '#fn-n'); },
+  fsCriar: () => {
+    const nome = (document.getElementById('fn-n')?.value || '').trim().replace(/\s+/g, ' ').slice(0, 60), err = document.getElementById('fn-err');
+    const v = ['k', 'p', 'c', 'g'].map((k) => numBr(document.getElementById(`fn-${k}`)?.value));
+    if (!nome) { err.textContent = 'Dê um nome ao alimento.'; document.getElementById('fn-n')?.focus(); return; }
+    if (v.every((x) => x == null) || v.some((x) => x != null && (x < 0 || x > 5000))) { err.textContent = 'Preencha ao menos as calorias ou a proteína, com números de 0 a 5000.'; return; }
+    const por = document.querySelector('#fs [aria-labelledby="fn-por"] [aria-checked="true"]')?.dataset.val === '1' ? 1 : 100;
+    FS.sel = { n: nome, b: v.map((x) => (x == null ? 0 : x)), u: por === 1 ? 'porção' : 'g', por, s: `m${D.slug(nome)}`.slice(0, 40) }; FS.novo = false;
+    fsBody(fsQtd(FS.sel), '#fs-qt');
+  },
+  fsOk: () => {
+    const a = FS && FS.sel, q = numBr(document.getElementById('fs-qt')?.value), id = S.refEd;
+    if (!a) return;
+    if (!(q > 0) || q > 5000) { document.getElementById('fs-prev').textContent = 'Digite uma quantidade maior que zero.'; document.getElementById('fs-qt')?.focus(); return; }
+    const f = itensDe(id); if (!f) { closeSheet(); render(true); return; }
+    f.push(AL.item(a, q)); lembrar(a, q); mealXp(id); combMeals(); save(); FS = null; closeSheet(); render(true); toast(`${I('check', 18)} ${esc(curto(a.n))} registrado`);
+  },
+  fsOff: () => {
+    if (!FS || FS.off === 'busy') return;
+    const q = FS.q.trim(); if (!q) return;
+    const me = FS; me.off = 'busy'; fsUpd();
+    AL.buscarOff(q).then((L) => { if (FS === me && me.q.trim() === q) { me.off = L; fsUpd(); } }).catch((e) => { if (FS === me && me.q.trim() === q) { me.off = { err: e.message }; fsUpd(); } });
   },
   card: (i) => { S.card = +i; save(); render(true); },
   bp: (k) => { S.bp = k; save(); render(true); },
@@ -2601,7 +2810,7 @@ const A = {
   realClear: () => { if (!confirm('Apagar os seus dados de dinheiro deste aparelho? O arquivo no seu computador continua lá.')) return; try { localStorage.removeItem(REALK); } catch { /* nada a apagar */ } if (!nvEntrou()) { S.paid = {}; S.paidAmt = {}; S.paidAt = {}; save(); } location.reload(); },
   resetLocal: () => {
     if (!confirm(nvEntrou() ? 'Recomeçar do zero? XP, check-ins, treinos, tarefas, gastos anotados e marcações são apagados aqui e na nuvem: o outro aparelho também zera. Ficam os treinos seus, as fichas editadas e os exercícios criados. Dinheiro e saúde do Supabase não mudam.' : 'Recomeçar neste aparelho? XP, check-ins, treinos, tarefas, gastos anotados e marcações daqui são apagados. Ficam os treinos seus, as fichas editadas e os exercícios criados. O Supabase não muda.')) return;
-    const keep = { theme: S.theme, onboarded: true, nome: S.nome, lastSets: Object.fromEntries(Object.entries(S.lastSets).filter(([k, v]) => k.startsWith(K_F) || k.startsWith(K_E) || (k.startsWith(K_T) && !(v && v.dia)))) };
+    const keep = { theme: S.theme, onboarded: true, nome: S.nome, lastSets: Object.fromEntries(Object.entries(S.lastSets).filter(([k, v]) => k.startsWith(K_F) || k.startsWith(K_E) || k.startsWith(K_A) || (k.startsWith(K_T) && !(v && v.dia)))) };
     S = Object.assign(defaults(), keep, { day: D.iso(diaNow()), since: D.iso(diaNow()) }); bossMonth(S); save();
     toast(nvEntrou() ? 'Recomeçado do zero, aqui e na nuvem' : 'Recomeçado neste aparelho'); if (current() !== 'hoje') go('#/hoje', true); else render(false); renderChrome();
   },
@@ -2752,6 +2961,21 @@ document.addEventListener('input', (e) => {
   if (el.dataset.in === 'nome') { S.nome = el.value.trim().slice(0, 30); save(); return; }
   if (el.dataset.in === 'weight') { pesoRasc = el.value; return; }
   if (el.dataset.in === 'setkg' || el.dataset.in === 'setreps') setVal(el);
+  if (el.dataset.in === 'fsq' && FS) { FS.q = el.value; FS.off = null; fsUpd(); return; }
+  if (el.dataset.in === 'fsqt' && FS?.sel) { document.getElementById('fs-prev').innerHTML = fsPrev(FS.sel, el.value); return; }
+  if (el.dataset.in === 'fiq') {
+    const f = itensDe(S.refEd), j = +el.dataset.arg, it = f && f[j], v = numBr(el.value); if (!it || !(v >= 0) || v > 5000) return;
+    if (it.pl) it.x = Math.round(v * 100) / 100; else it.q = Math.round(v * 10) / 10;
+    combMeals(); save();
+    const m = document.getElementById(`fi-m-${j}`); if (m) m.textContent = fiMeta(it);
+    const t = document.getElementById('rf-tot'); if (t) t.innerHTML = rfTotais(f, planoHoje().find((x) => x.id === S.refEd));
+    return;
+  }
+  if (el.dataset.in === 'rfnome' || el.dataset.in === 'rfhora') {
+    const v = S.meals[S.refEd]; if (!S.refEd || !S.refEd.startsWith(K_X) || !mVal(v) || v === true) return;
+    if (el.dataset.in === 'rfnome') { const n = el.value.trim().replace(/\s+/g, ' ').slice(0, 40); if (n) v.n = n; } else v.h = /^\d\d:\d\d$/.test(el.value) ? el.value : '';
+    save(); return;
+  }
   if (el.dataset.in === 'pkq' && PK) { PK.q = el.value; document.getElementById('pk-res').innerHTML = pkRes(); return; }
   if (el.dataset.in === 'exq') { exBusca = el.value; document.getElementById('exlist').innerHTML = exLista(); return; }
   if (el.dataset.in === 'lfq') { LF.q = el.value; LF.n = 60; document.getElementById('lflist').innerHTML = lfLista(); return; }
@@ -2774,6 +2998,11 @@ document.addEventListener('change', (e) => {
   if (el.dataset.in === 'excat') { if (el.value) sheetRoot.querySelectorAll('[aria-labelledby="ex-cat"] [role="radio"]').forEach((b) => { b.setAttribute('aria-checked', 'false'); }); }
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'inbox') { e.preventDefault(); A.addInbox(); } });
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || !FS) return;
+  if (e.target.id === 'fs-q') { e.preventDefault(); if (FS.list.length === 1) A.fsPick('0'); else if (!FS.list.length || AL.ehCodigo(FS.q.trim())) A.fsOff(); else e.target.blur(); }
+  else if (e.target.id === 'fs-qt') { e.preventDefault(); A.fsOk(); }
+});
 document.addEventListener('submit', (e) => {
   const f = e.target.closest('form[data-form]'); if (!f) return;
   e.preventDefault();
@@ -2839,10 +3068,10 @@ window.addEventListener('resize', fitRestbar);
 
 
 // ---------- Render ----------
-const VERSION = '0.8.2';
+const VERSION = '0.9.0';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
-const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/treino-editar': 'Editar treino', 'saude/exercicios': 'Exercícios', 'saude/campanha': 'Plano', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Open Finance e arquivo', 'dinheiro/sincronizar': 'Sincronizar', 'dinheiro/lancamentos': 'Lançamentos', 'dinheiro/categorias': 'Plano de contas', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes' };
+const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/treino-editar': 'Editar treino', 'saude/exercicios': 'Exercícios', 'saude/campanha': 'Plano', 'saude/dieta': 'Dieta', 'saude/refeicao': 'Refeição', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Open Finance e arquivo', 'dinheiro/sincronizar': 'Sincronizar', 'dinheiro/lancamentos': 'Lançamentos', 'dinheiro/categorias': 'Plano de contas', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes' };
 let lastRoute = null, curTab = 'hoje', shownIdx = null;
 function render(keep, focusSel) {
   if (syncBusy) busyShown = true; // a tela mostra "Buscando…": no fim da leitura ela é desenhada de novo
