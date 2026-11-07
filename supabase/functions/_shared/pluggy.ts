@@ -40,16 +40,18 @@ async function list(key: string, path: string) {
 }
 
 // Transações: GET /v2/transactions com cursor (next).
+// completa: a lista veio até o fim (sem página faltando), então o que não veio não existe mais na Pluggy.
 async function transactions(key: string, accountId: string, dateFrom: string) {
   const out: any[] = [];
-  let q = `?accountId=${accountId}&dateFrom=${dateFrom}`;
+  let q = `?accountId=${accountId}&dateFrom=${dateFrom}`, completa = false;
   for (let i = 0; i < 200 && q; i++) {
     const j = await call(key, `/v2/transactions${q}`);
     if (!j) break;
     out.push(...(j.results || []));
     q = j.next || '';
+    if (!q) completa = true;
   }
-  return out;
+  return { tx: out, completa };
 }
 
 // A categoria de cada lançamento é calculada no banco (gatilho fin_tx_classifica), com as regras da tabela fin_rules.
@@ -67,7 +69,7 @@ export async function syncItem(sb: SupabaseClient, key: string, itemId: string, 
   });
   // Primeira vez: 12 meses (o máximo da Pluggy). Depois: 10 dias para trás, para pegar lançamentos que mudaram de status.
   const dateFrom = prev.data?.last_sync_at ? daysAgo(10) : daysAgo(365);
-  const counts = { accounts: 0, transactions: 0, bills: 0, investments: 0, loans: 0 };
+  const counts = { accounts: 0, transactions: 0, removidos: 0, bills: 0, investments: 0, loans: 0 };
 
   const accounts = await list(key, `/accounts?itemId=${itemId}`);
   if (accounts.length) {
@@ -80,7 +82,7 @@ export async function syncItem(sb: SupabaseClient, key: string, itemId: string, 
     counts.accounts = accounts.length;
   }
   for (const a of accounts) {
-    const tx = await transactions(key, a.id, dateFrom);
+    const { tx, completa } = await transactions(key, a.id, dateFrom);
     for (let i = 0; i < tx.length; i += 500) {
       const rows = tx.slice(i, i + 500).map((t: any) => ({
         id: t.id, account_id: a.id, date: d10(t.date), description: t.description,
@@ -94,6 +96,20 @@ export async function syncItem(sb: SupabaseClient, key: string, itemId: string, 
       if (error) throw new Error(`transactions: ${error.message}`);
     }
     counts.transactions += tx.length;
+    // Lançamento pendente que a Pluggy não manda mais (o banco trocou por outro, com outro id, ao confirmar ou ao
+    // mudar a descrição) sai daqui; sem isso ele fica duplicado para sempre. Só dentro da janela lida e só com a lista
+    // completa; confirmados (POSTED) nunca saem.
+    if (completa) {
+      const vivos = new Set(tx.map((t: any) => t.id));
+      const { data: pend, error: e1 } = await sb.from('fin_transactions').select('id').eq('account_id', a.id).eq('status', 'PENDING').gte('date', dateFrom);
+      if (e1) throw new Error(`pendentes: ${e1.message}`);
+      const fora = (pend || []).map((r: any) => r.id).filter((id: string) => !vivos.has(id));
+      if (fora.length) {
+        const { error: e2 } = await sb.from('fin_transactions').delete().in('id', fora).eq('status', 'PENDING');
+        if (e2) throw new Error(`pendentes: ${e2.message}`);
+        counts.removidos += fora.length;
+      }
+    }
     if (a.type === 'CREDIT') {
       const bills = await list(key, `/bills?accountId=${a.id}`);
       if (bills.length) {
