@@ -299,6 +299,12 @@ function bossMonth(s) {
   s.bossSeed = 0; s.bossMonth = m;
 }
 let S = load();
+// A refeição aberta no registro é desta aba e fica na sessão dela: outra aba que grava o estado não troca a refeição
+// daqui, nem quando esta recarrega. Uma aba que ainda não abriu nenhuma fica com a do estado.
+const REFK = 'painel-ref';
+let refAba = (() => { try { return sessionStorage.getItem(REFK) || null; } catch { return null; } })();
+if (refAba) S.refEd = refAba;
+function abreRef(id) { S.refEd = refAba = id; try { sessionStorage.setItem(REFK, id); } catch { /* sem sessão: vale até recarregar */ } }
 let NV = null; // a nuvem (criada mais abaixo, com a sessão)
 // O app instalado no iPhone volta da memória sem recarregar: confere a virada do dia ao voltar. Com a nuvem, lê antes
 // (até 4 s): se o outro aparelho já virou o dia, este fica com o dia dele em vez de virar de novo com dados velhos.
@@ -2765,8 +2771,8 @@ const A = {
     if (v) S.meals[id] = false; else { S.meals[id] = true; mealXp(id); }
     combMeals(); save(); render(true);
   },
-  refEd: (id) => { if (!id) return; S.refEd = id; save(); go('#/saude/refeicao'); },
-  refNova: () => { const id = K_X + Date.now().toString(36); S.meals[id] = { n: 'Lanche', h: hmAgora() === '24:00' ? '' : hmAgora(), f: [] }; S.refEd = id; save(); go('#/saude/refeicao'); },
+  refEd: (id) => { if (!id) return; abreRef(id); save(); go('#/saude/refeicao'); },
+  refNova: () => { const id = K_X + Date.now().toString(36); S.meals[id] = { n: 'Lanche', h: hmAgora() === '24:00' ? '' : hmAgora(), f: [] }; abreRef(id); save(); go('#/saude/refeicao'); },
   rfPlano: () => { const id = S.refEd; if (!planoHoje().some((m) => m.id === id)) return; S.meals[id] = true; mealXp(id); combMeals(); save(); go('#/saude/dieta', true); toast(`${I('check', 18)} Seguiu o plano`); },
   rfPorcao: () => { const id = S.refEd, m = planoHoje().find((x) => x.id === id), f = itensDe(id); if (!m || !f) return; f.unshift(planoItem(m)); mealXp(id); combMeals(); save(); render(true); },
   fiTirar: (j) => {
@@ -3268,7 +3274,7 @@ SB.onChange((what) => {
 });
 window.addEventListener('storage', (e) => {
   // Outra aba gravou o estado (contas pagas, gastos, missões): esta passa a usar o mesmo, em vez de gravar o antigo por cima.
-  if (e.key === KEY && e.newValue) { const ref = S.refEd; S = load(); S.refEd = ref; render(true); return; } // a refeição aberta é desta aba
+  if (e.key === KEY && e.newValue) { S = load(); if (refAba) S.refEd = refAba; render(true); return; } // a refeição aberta é desta aba
   if (e.key === SAUDEK) {
     if (!e.newValue) { location.reload(); return; }
     try { const H = JSON.parse(e.newValue); D.useSaude(H); saudeRaw = H; saudeErr = null; render(true); } catch { /* fica com o que já está na tela */ }
