@@ -95,7 +95,9 @@ const K_A = '~a:', K_X = 'x~', RECENTES = 60;
 const mVal = (v) => (v === true ? true : v && typeof v === 'object' && !Array.isArray(v) && Array.isArray(v.f) ? v : null);
 const planB = (m) => [m.kcal, m.p, m.c, m.g];
 const planoItem = (m, x = 1) => ({ pl: 1, x, b: planB(m) });
-const extrasDe = (M) => Object.keys(M || {}).filter((k) => k.startsWith(K_X) && mVal(M[k]) && M[k] !== true).sort();
+// Uma refeição fora do plano sem nenhum alimento é rascunho: não aparece nem conta. Nada a apaga sozinho, porque o outro
+// aparelho (ou outra aba) pode estar pondo o primeiro alimento nela agora; a exclusão iria para a nuvem e venceria.
+const extrasDe = (M) => Object.keys(M || {}).filter((k) => k.startsWith(K_X) && mVal(M[k]) && M[k] !== true && M[k].f.length).sort();
 function realizado(m, v) { v = mVal(v); return !v ? null : v === true ? (m ? planB(m) : [0, 0, 0, 0]) : AL.soma(v.f); }
 // O que se comeu: [kcal, P, C, G] das refeições do plano marcadas ou ajustadas e das refeições fora do plano.
 function consumo(M, meals) {
@@ -1001,8 +1003,9 @@ const nSeriesDia = (sel, j, ex, cut) => Math.min(8, nSeries(ex, cut) + extraN(se
 const setKey = (sel, j, ex, i) => `${sel}-${j}-${ex.id}-${i}`;
 // A ficha mudou (ordem, exercício tirado, volta à original): a série a mais (~n:), a troca (~s:) e as séries marcadas de hoje
 // seguem o exercício pelo nome; as de um exercício que saiu vão embora.
-function seguePos(sel, antes, depois) {
-  const usado = new Set(), para = antes.map((e) => { const i = depois.findIndex((d, k) => !usado.has(k) && D.slug(d.n) === D.slug(e.n)); if (i >= 0) usado.add(i); return i; });
+function seguePos(sel, antes, depois, para) {
+  const usado = new Set(); // para[j] = posição nova (-1: saiu); sem ela (voltar à original), pelo nome, na ordem
+  para = para || antes.map((e) => { const i = depois.findIndex((d, k) => !usado.has(k) && D.slug(d.n) === D.slug(e.n)); if (i >= 0) usado.add(i); return i; });
   if (para.length === depois.length && para.every((t, j) => t === j)) return;
   const M = {}, re = /^(~[ns]:)?(.+?)-(\d+)(-.+)?$/;
   Object.keys(S.sets).forEach((k) => {
@@ -1320,12 +1323,8 @@ function fiRow(it, j) {
     <input class="qty" type="text" inputmode="decimal" value="${esc(String(q).replace('.', ','))}" data-in="fiq" data-arg="${j}" aria-label="Quantidade de ${esc(nome)}${pl ? ', em vezes o plano' : ` em ${esc(u)}`}"><span class="small muted fiu">${esc(u)}</span>
     <button class="iconbtn" data-act="fiTirar" data-arg="${j}" aria-label="Tirar ${esc(nome)}">${I('x', 20)}</button></div>`;
 }
-// A refeição fora do plano aberta nesta aba: ao sair do registro sem nada nela, ela não fica. Fica só na memória da aba, então
-// outra aba ou o outro aparelho, que pode estar preenchendo uma refeição vazia agora, nunca apaga a dela.
-let rfAberta = null;
 function Refeicao() {
   const id = S.refEd, m = id ? planoHoje().find((x) => x.id === id) : null, v = id ? mVal(S.meals[id]) : null, extra = !!(id && id.startsWith(K_X) && v && v !== true);
-  rfAberta = extra ? id : null;
   const back = backbar('saude/dieta', 'Dieta');
   if (!m && !extra) return { title: 'Refeição', html: `${back}${hdr('Refeição')}${empty('utensils', 'Refeição não encontrada', 'O dia pode ter virado, ou ela foi apagada no outro aparelho.', '#/saude/dieta', 'Voltar à dieta')}` };
   const f = v === true ? [planoItem(m)] : v ? v.f : [], temPlano = f.some((it) => it.pl);
@@ -1704,7 +1703,7 @@ function lfLista() {
   const sai = L.filter((x) => x.v < 0).reduce((a, x) => a - x.v, 0), ent = L.filter((x) => x.v > 0).reduce((a, x) => a + x.v, 0);
   return `<p class="small muted" style="margin:6px 20px">${L.length} lançamento${L.length === 1 ? '' : 's'}${L.length ? ` · saídas ${brl0(sai)} · entradas ${brl0(ent)}` : ''}</p>
     ${V.length ? porDia(V, L) : `<div class="card"><p class="small muted" style="margin:0">Nenhum lançamento com esse filtro.</p></div>`}
-    ${L.length > V.length ? `<div style="margin:0 16px"><button class="btn line block" data-act="lfMais">Mostrar mais ${lfCorte(L, LF.n + 60) - V.length}</button></div>` : ''}`;
+    ${L.length > V.length ? `<div style="margin:0 16px"><button class="btn line block" data-act="lfMais">Mostrar mais ${lfCorte(L, V.length + 60) - V.length}</button></div>` : ''}`;
 }
 function Lancamentos() {
   if (!D.REAL) return { title: 'Lançamentos', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Lançamentos')}${semDinheiro()}` };
@@ -2730,11 +2729,11 @@ const A = {
   edAbrir: (k, el) => { S.edAlvo = k; save(); if (el.tagName !== 'A') go('#/saude/treino-editar'); },
   edMove: (a) => {
     const [j, d] = a.split(':').map(Number), sel = S.edAlvo, b = fichaList(sel, plan()).base, i = j + d;
-    if (!b[j] || !b[i]) return; const antes = b.slice(); [b[j], b[i]] = [b[i], b[j]]; if (setBase(sel, b)) seguePos(sel, antes, b); save(); render(true, `[data-act="edMove"][data-arg="${i}:${d}"]`);
+    if (!b[j] || !b[i]) return; const antes = b.slice(); [b[j], b[i]] = [b[i], b[j]]; if (setBase(sel, b)) seguePos(sel, antes, b, antes.map((_, k) => (k === j ? i : k === i ? j : k))); save(); render(true, `[data-act="edMove"][data-arg="${i}:${d}"]`);
   },
   edDel: (a) => {
     const j = +a, sel = S.edAlvo, b = fichaList(sel, plan()).base; if (!b[j]) return;
-    const antes = b.slice(), [x] = b.splice(j, 1); if (setBase(sel, b)) seguePos(sel, antes, b); save(); render(true); toast(`${esc(x.n)} saiu ${isP(sel) ? 'do treino' : 'da ficha'}`);
+    const antes = b.slice(), [x] = b.splice(j, 1); if (setBase(sel, b)) seguePos(sel, antes, b, antes.map((_, k) => (k < j ? k : k === j ? -1 : k - 1))); save(); render(true); toast(`${esc(x.n)} saiu ${isP(sel) ? 'do treino' : 'da ficha'}`);
   },
   edReset: (sel) => {
     const f = fichaList(sel, plan()).f; if (!f || !confirm(`Voltar à ficha original do Treino ${sel}? As suas mudanças nela são desfeitas; as cargas ficam.`)) return;
@@ -2782,9 +2781,7 @@ const A = {
     combMeals(); save(); go('#/saude/dieta', true);
   },
   rfPronto: () => {
-    const id = S.refEd, v = id && S.meals[id];
-    if (id && id.startsWith(K_X) && mVal(v) && !v.f.length) delete S.meals[id]; // refeição fora do plano vazia não fica
-    combMeals(); save(); go('#/saude/dieta', true);
+    combMeals(); save(); go('#/saude/dieta', true); // fora do plano sem alimento fica como rascunho, fora da lista
   },
   foodAdd: () => foodSheet(),
   fsPick: (i) => { const a = FS && FS.list[+i]; if (!a) return; FS.sel = a; fsBody(fsQtd(a), '#fs-qt'); document.getElementById('fs-qt')?.select(); },
@@ -2897,7 +2894,7 @@ const A = {
   manApagar: (id) => { const x = txById(id); if (!x) return; if (!confirm(`Apagar “${x.desc}” de ${brl(Math.abs(x.v))}?`)) return; finGrava(() => SB.fin('fin_manual_apagar', { p_id: id }), () => 'Lançamento apagado.').then((ok) => { if (ok) TX = null; }); },
   lfF: (k) => { const nav = k.endsWith('!'); LF = { ...LF, f: k.replace('!', ''), n: 60, ...(nav ? { q: '', mes: '', cat: '' } : {}) }; if (nav) navFromSheet('#/dinheiro/lancamentos'); else render(true, `[data-act="lfF"][data-arg="${k}"]`); },
   lfCat: (c) => { LF = { ...LF, cat: c || '', n: 60 }; render(true, '#lfq'); },
-  lfMais: () => { LF.n += 60; document.getElementById('lflist').innerHTML = lfLista(); },
+  lfMais: () => { LF.n = lfCorte(lfFiltra(), LF.n) + 60; document.getElementById('lflist').innerHTML = lfLista(); },
   verGrupo: (g) => { LF = { q: '', f: 'todos', mes: '', cat: g, n: 60 }; go('#/dinheiro/lancamentos'); },
   pcCat: (n) => pcSheet(n),
   pcNova: () => pcSheet(null),
@@ -3147,10 +3144,6 @@ function render(keep, focusSel) {
     }
     navMode = 'none'; shownIdx = hIdx; navFromMain = false; saveNav();
   }
-  if (!sameRoute && lastRoute === 'saude/refeicao' && rfAberta) {
-    const id = rfAberta, v = mVal(S.meals[id]); rfAberta = null;
-    if (v && v !== true && !v.f.length) { delete S.meals[id]; save(); }
-  }
   let scr;
   try { scr = ROUTES[r](); } catch (err) {
     console.error(err);
@@ -3275,7 +3268,7 @@ SB.onChange((what) => {
 });
 window.addEventListener('storage', (e) => {
   // Outra aba gravou o estado (contas pagas, gastos, missões): esta passa a usar o mesmo, em vez de gravar o antigo por cima.
-  if (e.key === KEY && e.newValue) { S = load(); render(true); return; }
+  if (e.key === KEY && e.newValue) { const ref = S.refEd; S = load(); S.refEd = ref; render(true); return; } // a refeição aberta é desta aba
   if (e.key === SAUDEK) {
     if (!e.newValue) { location.reload(); return; }
     try { const H = JSON.parse(e.newValue); D.useSaude(H); saudeRaw = H; saudeErr = null; render(true); } catch { /* fica com o que já está na tela */ }
