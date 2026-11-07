@@ -300,7 +300,7 @@ function bossMonth(s) {
 }
 let S = load();
 // A refeição aberta no registro é desta aba e fica na sessão dela: outra aba que grava o estado não troca a refeição
-// daqui, nem quando esta recarrega. Uma aba que ainda não abriu nenhuma fica com a do estado.
+// daqui, nem quando esta recarrega. Uma aba que ainda não abriu nem mostrou nenhuma fica com a do estado.
 const REFK = 'painel-ref';
 let refAba = (() => { try { return sessionStorage.getItem(REFK) || null; } catch { return null; } })();
 if (refAba) S.refEd = refAba;
@@ -1330,6 +1330,7 @@ function fiRow(it, j) {
     <button class="iconbtn" data-act="fiTirar" data-arg="${j}" aria-label="Tirar ${esc(nome)}">${I('x', 20)}</button></div>`;
 }
 function Refeicao() {
+  if (!refAba && S.refEd) abreRef(S.refEd); // aberto pelo endereço ou pelo histórico: a aba fica com a refeição que mostra
   const id = S.refEd, m = id ? planoHoje().find((x) => x.id === id) : null, v = id ? mVal(S.meals[id]) : null, extra = !!(id && id.startsWith(K_X) && v && v !== true);
   const back = backbar('saude/dieta', 'Dieta');
   if (!m && !extra) return { title: 'Refeição', html: `${back}${hdr('Refeição')}${empty('utensils', 'Refeição não encontrada', 'O dia pode ter virado, ou ela foi apagada no outro aparelho.', '#/saude/dieta', 'Voltar à dieta')}` };
