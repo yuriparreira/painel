@@ -2336,6 +2336,9 @@ function openSheet(title, html, id = 'sheet', focusSel = null) {
   behindSheet().forEach((el) => { el.inert = true; el.setAttribute('aria-hidden', 'true'); });
   const sh = sheetRoot.querySelector('.sheet');
   const target = (focusSel && sh.querySelector(focusSel)) || sh.querySelector('[data-autofocus]') || sh.querySelector('h2');
+  // Campo de texto com foco já na abertura: a folha aparece no lugar (sem subir de fora da tela). No iPhone, focar um campo
+  // que ainda está abaixo da tela faz o sistema rolar a página para mostrá-lo enquanto o teclado sobe, e a folha pula.
+  if (target.matches('input:not([type="radio"]):not([type="checkbox"]):not([type="button"]), textarea')) sh.classList.add('kbd');
   target.focus({ preventScroll: true });
   requestAnimationFrame(() => { sheetRoot.querySelector('.scrim')?.classList.add('open'); sh.classList.add('open'); });
 }
@@ -3126,7 +3129,7 @@ window.addEventListener('resize', fitRestbar);
 
 
 // ---------- Render ----------
-const VERSION = '0.9.1';
+const VERSION = '0.9.2';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
 const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/treino-editar': 'Editar treino', 'saude/exercicios': 'Exercícios', 'saude/campanha': 'Plano', 'saude/dieta': 'Dieta', 'saude/refeicao': 'Refeição', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Open Finance e arquivo', 'dinheiro/sincronizar': 'Sincronizar', 'dinheiro/lancamentos': 'Lançamentos', 'dinheiro/categorias': 'Plano de contas', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes' };
@@ -3191,7 +3194,16 @@ function applyTheme() {
 }
 darkMQ.addEventListener?.('change', () => { if (S.theme === 'system') applyTheme(); });
 // Teclado na tela: a folha sobe junto, para o botão Salvar não ficar escondido.
-if (window.visualViewport) { const vv = window.visualViewport; const kb = () => app.style.setProperty('--kb', `${Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop))}px`); vv.addEventListener('resize', kb); vv.addEventListener('scroll', kb); }
+// Uma atualização por quadro: o iPhone manda vários eventos enquanto o teclado anima.
+if (window.visualViewport) {
+  const vv = window.visualViewport; let kbRaf = 0;
+  const kb = () => { kbRaf = 0; app.style.setProperty('--kb', `${Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop))}px`); };
+  const kbLater = () => { if (!kbRaf) kbRaf = requestAnimationFrame(kb); };
+  vv.addEventListener('resize', kbLater); vv.addEventListener('scroll', kbLater);
+}
+// O app não rola por fora (quem rola é a tela de dentro e a folha). Se o sistema rolar o contêiner para mostrar um campo
+// com o teclado, tudo sobe junto (a barra de descanso por cima da folha): volta para o lugar.
+app.addEventListener('scroll', () => { if (app.scrollTop || app.scrollLeft) { app.scrollTop = 0; app.scrollLeft = 0; } });
 function updateBadge() { try { const V = view(); const left = ['corpo', 'comb', 'missao'].filter((k) => !V.quests[k]).length; if ('setAppBadge' in navigator && Notification?.permission === 'granted') { if (left) navigator.setAppBadge(left); else navigator.clearAppBadge(); } } catch { /* opcional */ } }
 
 setInterval(() => {

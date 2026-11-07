@@ -301,8 +301,11 @@ button.kpi .chev { position: absolute; right: 10px; top: 12px; color: var(--mute
 .app.focus .tabbar, .app.focus .fab, .app.bare .tabbar, .app.bare .fab { display: none; }
 .scrim { position: absolute; inset: 0; background: var(--scrim); z-index: 40; opacity: 0; transition: opacity .2s; }
 .scrim.open { opacity: 1; }
-.sheet { position: absolute; left: 0; right: 0; bottom: var(--kb, 0px); max-height: calc(92% - var(--kb, 0px)); overflow-y: auto; overscroll-behavior: contain; background: var(--surface); border-radius: 24px 24px 0 0; padding: 6px calc(18px + var(--safe-r)) calc(18px + var(--safe-b)) calc(18px + var(--safe-l)); z-index: 41; transform: translateY(100%); transition: transform .26s cubic-bezier(.2, .8, .2, 1); box-shadow: 0 -10px 40px rgb(0 0 0 / .18); }
+.sheet { position: absolute; left: 0; right: 0; bottom: var(--kb, 0px); max-height: calc(92% - var(--kb, 0px)); overflow-y: auto; overscroll-behavior: contain; background: var(--surface); border-radius: 24px 24px 0 0; padding: 6px calc(18px + var(--safe-r)) calc(18px + var(--safe-b)) calc(18px + var(--safe-l)); z-index: 41; transform: translateY(100%); transition: transform .26s cubic-bezier(.2, .8, .2, 1), bottom .22s ease-out, max-height .22s ease-out; box-shadow: 0 -10px 40px rgb(0 0 0 / .18); }
 .sheet.open { transform: none; }
+/* Folha que abre com o teclado: aparece no lugar e acompanha o teclado com suavidade (ver openSheet). */
+.sheet.kbd { transform: none; opacity: 0; transition: transform .2s ease-out, opacity .16s, bottom .22s ease-out, max-height .22s ease-out; }
+.sheet.kbd.open { transform: none; opacity: 1; }
 .sheet .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--control); margin: 6px auto 4px; position: relative; touch-action: none; cursor: grab; }
 .sheet .grab::before { content: ""; position: absolute; inset: -14px -40px; }
 .sheet { scroll-padding-top: 64px; scroll-padding-bottom: calc(var(--safe-b) + 16px); }
