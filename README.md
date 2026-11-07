@@ -91,7 +91,7 @@ Os segredos (`PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`, `PLUGGY_ITEM_IDS`, `PLU
 - O catálogo (`catalogo.js`) traz cerca de 250 exercícios de musculação com os nomes usados nas academias do Brasil, em 14 grupos (peito, costas, ombros, bíceps, tríceps, antebraço, quadríceps, posteriores, glúteos, panturrilha, abdômen e core, lombar, corpo inteiro e mobilidade). Na busca, os seus vêm primeiro.
 - “Ver como faz” abre a busca de vídeos do exercício no YouTube. O app não guarda vídeos nem GIFs.
 - Tudo isso fica no mapa `lastSets` do estado, com chaves que começam com `~` (ou `exercício@dia` no histórico), para a cópia 0.6.0 do app, se ainda estiver aberta em outro aparelho, manter essas chaves na nuvem em vez de apagá-las.
-- **+ Série** (0.9.1) acrescenta uma série só hoje a um exercício (até 8), e **Tirar** desfaz, apagando o que foi marcado nela. Fica no mapa do dia `sets` com a chave `~n:sessão-posição`; ao concluir, as séries feitas vão para a carga e o histórico como as outras.
+- **+ Série** (0.9.1) acrescenta uma série só hoje a um exercício (até 8), e **Tirar** desfaz, apagando o que foi marcado nela. Fica no mapa do dia `sets` com a chave `~n:sessão-posição`. Ao concluir, todas as séries feitas entram no histórico e no recorde, mas a próxima sugestão de carga (progressão dupla) olha só as séries da ficha. Mudar a ordem da ficha, tirar um exercício ou voltar à original leva junto a série a mais, a troca e as séries marcadas de hoje.
 
 ## Dieta: sugerido x realizado (0.9.0)
 
@@ -106,8 +106,8 @@ Os segredos (`PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`, `PLUGGY_ITEM_IDS`, `PLU
 
 Comparando com apps de finanças (Nubank, Mobills, Organizze), de dieta (MyFitnessPal, Yazio, Lose It) e de treino (Strong, Hevy):
 
-- **Lançamentos** agrupados por dia, como no extrato do banco: “Hoje”, “Ontem” ou o dia da semana em cima, com o total que saiu no dia; as linhas não repetem a data e as entradas aparecem em verde.
-- **Dieta**: o resumo do dia mostra quanto resta da meta de calorias (ou quanto passou, em amarelo), a meta, o comido, quantas refeições do plano já foram, e barras de proteína, carboidrato e gordura. A refeição inteira abre o registro; **Pronto** volta para a Dieta sem deixar a refeição no “voltar”; uma refeição fora do plano aberta e largada vazia não fica na lista.
+- **Lançamentos** agrupados por dia, como no extrato do banco: “Hoje”, “Ontem” ou o dia da semana em cima, com o total que saiu no dia inteiro; a página não parte um dia, as linhas não repetem a data e as entradas aparecem em verde. “Hoje” é o dia do banco (do calendário), também entre meia-noite e 3 h, quando o dia do app ainda não virou.
+- **Dieta**: o resumo do dia mostra quanto resta da meta de calorias (ou quanto passou, em amarelo), a meta, o comido, quantas refeições do plano já foram, e barras de proteína, carboidrato e gordura. A refeição inteira, com o lápis, abre o registro; **Pronto** volta para a Dieta sem deixar a refeição no “voltar”; uma refeição fora do plano aberta e largada vazia sai ao deixar o registro, só na aba que a abriu (outra aba ou o outro aparelho podem estar preenchendo uma refeição nova). Sem meta de calorias para o tipo de dia, o resumo mostra só o que foi comido.
 - **Hoje**: a missão Combustível mostra a proteína já comida, o que falta para contar e as calorias do dia.
 - Treino: **+ Série** (acima).
 - Ajustes de tela: os números dos KPIs cabem em telas de 320 px, links no meio do texto com área de toque maior, “Falta 1 item” no singular.

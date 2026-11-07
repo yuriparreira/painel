@@ -996,9 +996,22 @@ function historico(id) {
 // Ficha do dia (ou da sessão escolhida): séries, cargas sugeridas e o que você marcou.
 const nSeries = (ex, cut) => (cut && ex.series > 1 ? ex.series - 1 : ex.series);
 // Série a mais só hoje (+ Série), como nos apps de treino. Até 8 séries por exercício.
-const extraN = (sel, j) => { const v = S.sets[`${K_N}${sel}-${j}`]; return v && Number.isInteger(v.n) && v.n > 0 ? Math.min(v.n, 6) : 0; };
+const extraN = (sel, j) => { const v = S.sets[`${K_N}${sel}-${j}`]; return v && Number.isInteger(v.n) && v.n > 0 ? Math.min(v.n, 7) : 0; };
 const nSeriesDia = (sel, j, ex, cut) => Math.min(8, nSeries(ex, cut) + extraN(sel, j));
 const setKey = (sel, j, ex, i) => `${sel}-${j}-${ex.id}-${i}`;
+// A ficha mudou (ordem, exercício tirado, volta à original): a série a mais (~n:), a troca (~s:) e as séries marcadas de hoje
+// seguem o exercício pelo nome; as de um exercício que saiu vão embora.
+function seguePos(sel, antes, depois) {
+  const usado = new Set(), para = antes.map((e) => { const i = depois.findIndex((d, k) => !usado.has(k) && D.slug(d.n) === D.slug(e.n)); if (i >= 0) usado.add(i); return i; });
+  if (para.length === depois.length && para.every((t, j) => t === j)) return;
+  const M = {}, re = /^(~[ns]:)?(.+?)-(\d+)(-.+)?$/;
+  Object.keys(S.sets).forEach((k) => {
+    const m = re.exec(k); if (!m || m[2] !== sel || !!m[1] === !!m[4]) return; // ~n:/~s: sem sufixo; séries com o exercício e o número
+    const t = para[+m[3]], v = S.sets[k]; delete S.sets[k];
+    if (t != null && t >= 0) M[`${m[1] || ''}${sel}-${t}${m[4] || ''}`] = v;
+  });
+  Object.assign(S.sets, M);
+}
 const seuTreinoRow = (t) => `<button class="row" data-act="tAbrir" data-arg="${t.id}"><span class="badge-ic">${I('dumbbell', 20)}</span><div class="grow"><div class="ttl ellip">${esc(t.nome)}</div><div class="meta">${t.ex.length} exercício${t.ex.length === 1 ? '' : 's'}${t.dia ? ` · montado em ${dShort(dayAt(t.dia))}` : ''}</div></div>${I('chevR', 20, 'class="ic muted"')}</button>`;
 function Treino() {
   const tp = todaySession(), today = tp.key, p = tp.p, H = D.SAUDE;
@@ -1054,7 +1067,7 @@ function Treino() {
   }
   const rest = D.descanso(f), cut = Z === 'amarelo' || Z === 'vermelho';
   const cards = list.map((ex, j) => {
-    const last = LS(ex.id), sg = D.suggestion(ex, last), n = nSeriesDia(sel, j, ex, cut), ext = extraN(sel, j);
+    const last = LS(ex.id), sg = D.suggestion(ex, last), n = nSeriesDia(sel, j, ex, cut), ext = n - nSeries(ex, cut);
     const rows = Array.from({ length: n }, (_, i) => {
       const k = setKey(sel, j, ex, i), st = S.sets[k] || {};
       const kg = st.kg ?? (sg ? sg.kg : last ? last.kg : ex.carga), reps = st.reps ?? (sg ? sg.reps : ex.rr ? ex.rr[0] : null);
@@ -1065,7 +1078,7 @@ function Treino() {
       ${ex.no ? `<p class="xs muted" style="margin-top:2px">Só hoje, no lugar de ${esc(ex.no)}.</p>` : ''}${videoLink(ex.nome, 'xs')}
       <div class="tip">${I('refresh', 16)}<span>${tip} Hoje ${n} série${n > 1 ? 's' : ''}${ex.perna ? ', repetições por perna' : ''} · descanso ${fmtRest(rest)}.</span></div>
       <table class="sets"><thead><tr><th>Série</th><th>kg</th><th>Reps</th><th><span class="sr">Feito</span></th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="setbtns">${n < 8 && ext < 6 ? `<button class="btn line sm" data-act="serieMais" data-arg="${sel}|${j}" aria-label="Mais uma série de ${esc(ex.nome)}">${I('plus', 18)} Série</button>` : ''}${ext ? `<button class="btn ghost sm" data-act="serieMenos" data-arg="${sel}|${j}|${setKey(sel, j, ex, n - 1)}" aria-label="Tirar a série ${n} de ${esc(ex.nome)}">${I('minus', 18)} Tirar a ${n}ª</button>` : ''}</div></section>`;
+      <div class="setbtns">${n < 8 ? `<button class="btn line sm" data-act="serieMais" data-arg="${sel}|${j}" aria-label="Mais uma série de ${esc(ex.nome)}">${I('plus', 18)} Série</button>` : ''}${ext > 0 ? `<button class="btn ghost sm" data-act="serieMenos" data-arg="${sel}|${j}" aria-label="Tirar a ${n}ª série de ${esc(ex.nome)}">${I('minus', 18)} Tirar a ${n}ª</button>` : ''}</div></section>`;
   }).join('');
   const total = list.reduce((a, ex, j) => a + nSeriesDia(sel, j, ex, cut), 0), done = setsDone(sel, list, cut);
   const restOn = S.rest && S.rest.end > Date.now();
@@ -1234,7 +1247,7 @@ const resumoItens = (f) => { const L = f.map((it) => (it.pl ? vezes(Number(it.x)
 // A Missão Combustível acompanha a proteína das refeições: marca sozinha ao chegar na meta e desmarca se foi ela que marcou.
 function combMeals() {
   const pr = D.prot(); if (!pr) return;
-  const p = consumo(S.meals, planoHoje()).t[1];
+  const p = Math.round(consumo(S.meals, planoHoje()).t[1]); // o mesmo número que Hoje e Dieta mostram
   if (p >= pr.conta && !S.quests.comb) setQuest('comb', true);
   else if (p < pr.conta && S.quests.comb && S.combByMeals) setQuest('comb', false);
   if (S.quests.comb && p >= pr.conta) S.combByMeals = true;
@@ -1252,24 +1265,21 @@ function itensDe(id) {
 function mealRow(m) {
   const v = mVal(S.meals[m.id]), ed = v && v !== true, r = ed ? realizado(m, v) : null, dif = ed ? Math.round(r[0] - m.kcal) : 0;
   return `<div class="quest ${v ? 'done' : ''}"><button class="qcheck" aria-pressed="${!!v}" data-act="meal" data-arg="${esc(m.id)}" aria-label="${esc(m.nome)}: ${ed ? 'ajustada, abrir' : v ? 'seguiu o plano' : 'marcar que seguiu o plano'}">${I('check', 28)}</button>
-    <button class="grow qbody" data-act="refEd" data-arg="${esc(m.id)}" aria-label="${esc(m.nome)}: registrar o que comeu"><div class="k num">${esc(m.hora)}${ed ? `${m.hora ? ' · ' : ''}ajustada` : v ? `${m.hora ? ' · ' : ''}seguiu o plano` : ''}</div><div class="t">${esc(m.nome)}</div>
+    <button class="grow qbody" data-act="refEd" data-arg="${esc(m.id)}"><div class="grow"><div class="k num">${esc(m.hora)}${ed ? `${m.hora ? ' · ' : ''}ajustada` : v ? `${m.hora ? ' · ' : ''}seguiu o plano` : ''}</div><div class="t">${esc(m.nome)}</div>
       <div class="d">${ed ? 'Plano: ' : ''}${txtBr(m.itens)} · <span class="num">${fmtInt(m.kcal)} kcal · ${fmtInt(m.p)} g</span></div>
-      ${ed ? `<div class="d real"><b>Comeu:</b> ${esc(resumoItens(v.f))} · <span class="num">${g0(r[0])} kcal · ${g0(r[1])} g</span>${dif ? ` <span class="dif num">${dif > 0 ? '+' : '−'}${fmtInt(Math.abs(dif))} kcal</span>` : ''}</div>` : ''}</button>
-    <span class="go ic muted" aria-hidden="true">${I('edit')}</span></div>`;
+      ${ed ? `<div class="d real"><b>Comeu:</b> ${esc(resumoItens(v.f))} · <span class="num">${g0(r[0])} kcal · ${g0(r[1])} g</span>${dif ? ` <span class="dif num">${dif > 0 ? '+' : '−'}${fmtInt(Math.abs(dif))} kcal</span>` : ''}</div>` : ''}</div>
+      <span class="sr">. Registrar o que comeu</span>${I('edit', 24, 'class="go muted"')}</button></div>`;
 }
 function extraRow(k) {
   const v = S.meals[k], r = AL.soma(v.f), nome = (typeof v.n === 'string' && v.n) || 'Refeição';
   return `<div class="quest done"><button class="qcheck" aria-pressed="true" data-act="refEd" data-arg="${esc(k)}" aria-label="${esc(nome)}: fora do plano, abrir">${I('check', 28)}</button>
-    <button class="grow qbody" data-act="refEd" data-arg="${esc(k)}" aria-label="${esc(nome)}: abrir"><div class="k num">${esc(typeof v.h === 'string' ? v.h : '')}${v.h ? ' · ' : ''}fora do plano</div><div class="t">${esc(nome)}</div><div class="d">${esc(resumoItens(v.f))} · <span class="num">${g0(r[0])} kcal · ${g0(r[1])} g</span></div></button>
-    <span class="go ic muted" aria-hidden="true">${I('edit')}</span></div>`;
+    <button class="grow qbody" data-act="refEd" data-arg="${esc(k)}"><div class="grow"><div class="k num">${esc(typeof v.h === 'string' ? v.h : '')}${v.h ? ' · ' : ''}fora do plano</div><div class="t">${esc(nome)}</div><div class="d">${esc(resumoItens(v.f))} · <span class="num">${g0(r[0])} kcal · ${g0(r[1])} g</span></div></div>
+      <span class="sr">. Abrir</span>${I('edit', 24, 'class="go muted"')}</button></div>`;
 }
-const macBar = (l, v, m, c) => `<div class="mac"><div class="row-flex small"><span class="grow">${l}</span><b class="num">${fmtInt(v)}</b><span class="muted num">/ ${fmtInt(m)} g</span></div>${bar(m ? (v / m) * 100 : 0, c)}</div>`;
+const macBar = (l, v, m, c) => `<div class="mac"><div class="row-flex small"><span class="grow">${l}</span><b class="num">${fmtInt(v)}</b><span class="muted num">${m ? `/ ${fmtInt(m)} g` : 'g'}</span></div>${bar(m ? (v / m) * 100 : 0, c)}</div>`;
 function Dieta() {
   const H = D.SAUDE;
   if (!H) return { title: 'Dieta', html: `${backbar('saude', 'Saúde')}${hdr('Dieta de hoje')}${semSaude()}` };
-  // Uma refeição fora do plano aberta e deixada vazia não fica na lista.
-  const vazias = extrasDe(S.meals).filter((x) => !S.meals[x].f.length);
-  if (vazias.length) { vazias.forEach((x) => { delete S.meals[x]; }); save(); }
   const { key } = todaySession(), tk = S.dayType || D.tipoDia(key), meals = D.refeicoes(tk), pr = D.prot(), kc = D.kcalDia(tk);
   const [k, p, c, g] = consumo(S.meals, meals).t.map((v) => Math.round(v)), X = extrasDe(S.meals);
   const plano = meals.reduce((a, m) => a.map((v, i) => v + planB(m)[i]), [0, 0, 0, 0]).map((v) => Math.round(v)), [planK, planP, planC, planG] = plano;
@@ -1282,8 +1292,8 @@ function Dieta() {
     title: 'Dieta',
     html: `${backbar('saude', 'Saúde')}${hdr('Dieta de hoje', `Dia de ${D.DIAS[tk].toLowerCase()} · ${S.dayType ? 'escolhido por você' : 'pelo plano de treino'}`)}
       <div class="seg" role="group" aria-label="Tipo de dia" style="margin:4px 16px 0">${Object.entries(D.DIAS).map(([id, t]) => `<button aria-pressed="${tk === id}" data-act="daytype" data-arg="${id}">${t}</button>`).join('')}</div>
-      <div class="card dhero"><div class="row-flex" style="gap:16px">${ring(metaK ? Math.min(100, (k / metaK) * 100) : 0, k > metaK * 1.05 ? 'amarelo' : 'nut', 92, `<span>${fmtInt(Math.abs(metaK - k))}</span><small>${k > metaK ? 'kcal acima' : 'kcal restam'}</small>`)}
-        <div class="grow dconta num"><div><span>Meta</span><b>${fmtInt(metaK)}</b></div><div><span>Comido</span><b>${fmtInt(k)}</b></div><div><span>Refeições</span><b>${meals.filter((m) => mVal(S.meals[m.id])).length}/${meals.length}</b></div></div></div>
+      <div class="card dhero"><div class="row-flex" style="gap:16px">${ring(metaK ? Math.min(100, (k / metaK) * 100) : 0, metaK && k > metaK * 1.05 ? 'amarelo' : 'nut', 92, metaK ? `<span>${fmtInt(Math.abs(metaK - k))}</span><small>${k > metaK ? 'kcal acima' : 'kcal restam'}</small>` : `<span>${fmtInt(k)}</span><small>kcal</small>`)}
+        <div class="grow dconta num"><div><span>Meta</span><b>${metaK ? fmtInt(metaK) : '—'}</b></div><div><span>Comido</span><b>${fmtInt(k)}</b></div><div><span>Refeições</span><b>${meals.filter((m) => mVal(S.meals[m.id])).length}/${meals.length}</b></div></div></div>
         ${macBar('Proteína', p, metaP, 'var(--a-nut)')}${macBar('Carboidrato', c, planC, 'var(--xp-fill)')}${macBar('Gordura', g, planG, 'var(--a-vig)')}
         <p class="small" style="margin:10px 0 0">${pr ? (p >= pr.conta ? `${I('check', 16, 'style="display:inline;vertical-align:-3px;color:var(--primary)"')} Combustível feito: proteína na meta.` : `Combustível conta a partir de <b class="num">${pr.conta} g</b> de proteína: faltam <b class="num">${pr.conta - p} g</b>.`) : '<span class="muted">Sem meta de proteína no plano.</span>'}</p></div>
       ${sec('Refeições do plano', `<span class="small muted num">${fmtInt(planK)} kcal · ${planP} g</span>`)}
@@ -1310,8 +1320,12 @@ function fiRow(it, j) {
     <input class="qty" type="text" inputmode="decimal" value="${esc(String(q).replace('.', ','))}" data-in="fiq" data-arg="${j}" aria-label="Quantidade de ${esc(nome)}${pl ? ', em vezes o plano' : ` em ${esc(u)}`}"><span class="small muted fiu">${esc(u)}</span>
     <button class="iconbtn" data-act="fiTirar" data-arg="${j}" aria-label="Tirar ${esc(nome)}">${I('x', 20)}</button></div>`;
 }
+// A refeição fora do plano aberta nesta aba: ao sair do registro sem nada nela, ela não fica. Fica só na memória da aba, então
+// outra aba ou o outro aparelho, que pode estar preenchendo uma refeição vazia agora, nunca apaga a dela.
+let rfAberta = null;
 function Refeicao() {
   const id = S.refEd, m = id ? planoHoje().find((x) => x.id === id) : null, v = id ? mVal(S.meals[id]) : null, extra = !!(id && id.startsWith(K_X) && v && v !== true);
+  rfAberta = extra ? id : null;
   const back = backbar('saude/dieta', 'Dieta');
   if (!m && !extra) return { title: 'Refeição', html: `${back}${hdr('Refeição')}${empty('utensils', 'Refeição não encontrada', 'O dia pode ter virado, ou ela foi apagada no outro aparelho.', '#/saude/dieta', 'Voltar à dieta')}` };
   const f = v === true ? [planoItem(m)] : v ? v.f : [], temPlano = f.some((it) => it.pl);
@@ -1672,21 +1686,25 @@ const txRow = (x, semData = false) => {
   return podeCat() && x.id ? `<button class="row" data-act="tx" data-arg="${esc(x.id)}">${inner}</button>` : `<div class="row">${inner}</div>`;
 };
 // Lançamentos agrupados por dia, como no extrato do banco: o dia em cima, com o que saiu nele, e as linhas sem a data.
+// A data do lançamento é a do banco (dia do calendário), não o dia do app, que vira às 3 h.
 const diaTit = (iso) => {
-  const d = dayAt(iso), n = D.diffDays(diaNow(), d);
-  return n === 0 ? 'Hoje' : n === 1 ? 'Ontem' : `${wd(d)}, ${d.getDate()} de ${mon(d)}${d.getFullYear() !== diaNow().getFullYear() ? ` de ${d.getFullYear()}` : ''}`;
+  const d = dayAt(iso), agora = new Date(), n = D.diffDays(agora, d);
+  return n === 0 ? 'Hoje' : n === 1 ? 'Ontem' : `${wd(d)}, ${d.getDate()} de ${mon(d)}${d.getFullYear() !== agora.getFullYear() ? ` de ${d.getFullYear()}` : ''}`;
 };
-function porDia(L) {
+// O total de cada dia vem de todos os lançamentos do filtro, e a página termina no fim de um dia (sem dia partido).
+const lfCorte = (L, n) => { n = Math.min(n, L.length); while (n < L.length && L[n].d === L[n - 1].d) n++; return n; };
+function porDia(L, todos = L) {
+  const tot = {}; todos.forEach((x) => { if (x.v < 0) tot[x.d] = (tot[x.d] || 0) - x.v; });
   const G = []; L.forEach((x) => { const g = G[G.length - 1]; if (g && g.d === x.d) g.L.push(x); else G.push({ d: x.d, L: [x] }); });
-  return G.map((g) => { const sai = g.L.filter((x) => x.v < 0).reduce((a, x) => a - x.v, 0);
-    return `<div class="dayhdr"><h3>${diaTit(g.d)}</h3>${sai ? `<span class="num">${brl(sai)}</span>` : ''}</div><div class="card tight">${g.L.map((x) => txRow(x, true)).join('')}</div>`; }).join('');
+  return G.map((g) => { const sai = tot[g.d] || 0;
+    return `<div class="dayhdr"><h2>${diaTit(g.d)}</h2>${sai ? `<span class="num"><span class="sr">Saídas do dia: </span>${brl(sai)}</span>` : ''}</div><div class="card tight">${g.L.map((x) => txRow(x, true)).join('')}</div>`; }).join('');
 }
 function lfLista() {
-  const L = lfFiltra(), V = L.slice(0, LF.n);
+  const L = lfFiltra(), V = L.slice(0, lfCorte(L, LF.n));
   const sai = L.filter((x) => x.v < 0).reduce((a, x) => a - x.v, 0), ent = L.filter((x) => x.v > 0).reduce((a, x) => a + x.v, 0);
   return `<p class="small muted" style="margin:6px 20px">${L.length} lançamento${L.length === 1 ? '' : 's'}${L.length ? ` · saídas ${brl0(sai)} · entradas ${brl0(ent)}` : ''}</p>
-    ${V.length ? porDia(V) : `<div class="card"><p class="small muted" style="margin:0">Nenhum lançamento com esse filtro.</p></div>`}
-    ${L.length > V.length ? `<div style="margin:0 16px"><button class="btn line block" data-act="lfMais">Mostrar mais ${Math.min(60, L.length - V.length)}</button></div>` : ''}`;
+    ${V.length ? porDia(V, L) : `<div class="card"><p class="small muted" style="margin:0">Nenhum lançamento com esse filtro.</p></div>`}
+    ${L.length > V.length ? `<div style="margin:0 16px"><button class="btn line block" data-act="lfMais">Mostrar mais ${lfCorte(L, LF.n + 60) - V.length}</button></div>` : ''}`;
 }
 function Lancamentos() {
   if (!D.REAL) return { title: 'Lançamentos', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Lançamentos')}${semDinheiro()}` };
@@ -1796,7 +1814,7 @@ function manSheet(id) {
     ${radios('É', 'mn-sent', ['saida', 'entrada'], x && x.v > 0 ? 'entrada' : 'saida', { saida: 'Saída', entrada: 'Entrada' })}
     <label class="field"><span>Descrição</span><input class="input" id="mn-desc" maxlength="140" autocomplete="off" value="${x ? esc(x.desc || '') : ''}" placeholder="ex.: feira, corte de cabelo"></label>
     <label class="field"><span>Categoria</span><select class="input" id="mn-cat">${grupos.map((g) => `<optgroup label="${esc(g)}">${P.filter((c) => grupoDe(c.n) === g).map((c) => `<option value="${esc(c.n)}"${c.n === cat ? ' selected' : ''}>${esc(c.n)}</option>`).join('')}</optgroup>`).join('')}</select></label>
-    <div class="row-flex" style="gap:8px"><label class="field grow"><span>Data</span><input class="input" id="mn-d" type="date" value="${x ? x.d : D.iso(diaNow())}" max="${D.iso(D.addDays(diaNow(), 366))}"></label>
+    <div class="row-flex" style="gap:8px"><label class="field grow"><span>Data</span><input class="input" id="mn-d" type="date" value="${x ? x.d : D.iso(new Date())}" max="${D.iso(D.addDays(diaNow(), 366))}"></label>
       <label class="field grow"><span>Conta</span><input class="input" id="mn-conta" list="mn-contas" maxlength="40" autocomplete="off" value="${esc(x ? x.cn || 'Dinheiro' : 'Dinheiro')}"><datalist id="mn-contas">${contas.map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label></div>
     <button class="btn block" style="margin-top:16px" data-fin data-act="manSalvar">Salvar</button>
     <p class="xs muted" style="margin-top:8px">Fica no Supabase e entra nos gastos do mês pela data. Não mexe no saldo das contas do Open Finance.</p>`, 'mn');
@@ -2628,15 +2646,19 @@ const A = {
   },
   skipRest: () => { S.rest = null; save(); render(true, '.restbar .btn'); },
   startWorkout: () => { if (!S.wStart) S.wStart = Date.now(); save(); toast(`${I('timer', 18)} Cronômetro iniciado`); render(true); },
+  // + Série e Tirar contam as séries que aparecem (até 8; o sono curto tira uma da ficha) e deixam o foco no mesmo exercício.
   serieMais: (a) => {
-    const [sel, j] = String(a).split('|'), n = extraN(sel, +j); if (!sel || !(+j >= 0) || n >= 6) return;
-    S.sets[`${K_N}${sel}-${+j}`] = { n: n + 1 }; save(); render(true);
+    const [sel, j] = String(a).split('|'), ex = sel && +j >= 0 ? fichaList(sel, plan()).list[+j] : null; if (!ex) return;
+    const cut = ['amarelo', 'vermelho'].includes(zoneNow()), tot = nSeriesDia(sel, +j, ex, cut); if (tot >= 8) return;
+    S.sets[`${K_N}${sel}-${+j}`] = { n: tot - nSeries(ex, cut) + 1 }; save();
+    render(true, `[data-act="${tot + 1 >= 8 ? 'serieMenos' : 'serieMais'}"][data-arg="${sel}|${+j}"]`);
   },
   serieMenos: (a) => {
-    const [sel, j, k] = String(a).split('|'), n = extraN(sel, +j); if (!sel || !n) return;
-    if (n > 1) S.sets[`${K_N}${sel}-${+j}`] = { n: n - 1 }; else delete S.sets[`${K_N}${sel}-${+j}`];
-    if (k && k.startsWith(`${sel}-${+j}-`)) delete S.sets[k]; // a série tirada não entra nas cargas
-    save(); render(true);
+    const [sel, j] = String(a).split('|'), ex = sel && +j >= 0 ? fichaList(sel, plan()).list[+j] : null; if (!ex) return;
+    const cut = ['amarelo', 'vermelho'].includes(zoneNow()), tot = nSeriesDia(sel, +j, ex, cut), ef = tot - nSeries(ex, cut); if (ef < 1) return;
+    if (ef > 1) S.sets[`${K_N}${sel}-${+j}`] = { n: ef - 1 }; else delete S.sets[`${K_N}${sel}-${+j}`];
+    delete S.sets[setKey(sel, +j, ex, tot - 1)]; // a série tirada não entra nas cargas
+    save(); render(true, `[data-act="${ef > 1 ? 'serieMenos' : 'serieMais'}"][data-arg="${sel}|${+j}"]`);
   },
   finishWorkout: (k, el, e, force) => {
     const sel = k, { key, p } = todaySession();
@@ -2650,11 +2672,13 @@ const A = {
     let pr = false;
     if (FL) {
       FL.list.forEach((ex, j) => {
-        const feitos = []; for (let i = 0; i < 8; i++) { const st = S.sets[setKey(sel, j, ex, i)]; if (st && st.ok) feitos.push(st); }
+        // A próxima sugestão (progressão dupla) olha só as séries da ficha; as a mais entram no histórico e no recorde.
+        const np = nSeries(ex, cut), feitos = [], plano = [];
+        for (let i = 0; i < 8; i++) { const st = S.sets[setKey(sel, j, ex, i)]; if (st && st.ok) { feitos.push(st); if (i < np) plano.push(st); } }
         if (!feitos.length) return;
-        const kg = Math.max(...feitos.map((x) => x.kg || 0)), reps = feitos.map((x) => x.reps || 0);
-        S.lastSets[ex.id] = { kg, reps, d: S.day, n: ex.nome };
-        S.lastSets[`${ex.id}@${S.day}`] = { kg, reps }; // histórico de cargas
+        const P = plano.length ? plano : feitos, kgDe = (L) => Math.max(...L.map((x) => x.kg || 0)), repsDe = (L) => L.map((x) => x.reps || 0);
+        S.lastSets[ex.id] = { kg: kgDe(P), reps: repsDe(P), d: S.day, n: ex.nome };
+        S.lastSets[`${ex.id}@${S.day}`] = { kg: kgDe(feitos), reps: repsDe(feitos) }; // histórico de cargas
         const b = Math.max(...feitos.map((x) => (x.kg > 0 && x.reps > 0 ? e1rm(x.kg, x.reps) : 0))), prev = S.best1rm[ex.id];
         if (b > 0) { if (prev != null && b > prev + 0.01) pr = true; if (prev == null || b > prev) S.best1rm[ex.id] = b; }
       });
@@ -2706,15 +2730,15 @@ const A = {
   edAbrir: (k, el) => { S.edAlvo = k; save(); if (el.tagName !== 'A') go('#/saude/treino-editar'); },
   edMove: (a) => {
     const [j, d] = a.split(':').map(Number), sel = S.edAlvo, b = fichaList(sel, plan()).base, i = j + d;
-    if (!b[j] || !b[i]) return; [b[j], b[i]] = [b[i], b[j]]; setBase(sel, b); save(); render(true, `[data-act="edMove"][data-arg="${i}:${d}"]`);
+    if (!b[j] || !b[i]) return; const antes = b.slice(); [b[j], b[i]] = [b[i], b[j]]; if (setBase(sel, b)) seguePos(sel, antes, b); save(); render(true, `[data-act="edMove"][data-arg="${i}:${d}"]`);
   },
   edDel: (a) => {
     const j = +a, sel = S.edAlvo, b = fichaList(sel, plan()).base; if (!b[j]) return;
-    const [x] = b.splice(j, 1); setBase(sel, b); save(); render(true); toast(`${esc(x.n)} saiu ${isP(sel) ? 'do treino' : 'da ficha'}`);
+    const antes = b.slice(), [x] = b.splice(j, 1); if (setBase(sel, b)) seguePos(sel, antes, b); save(); render(true); toast(`${esc(x.n)} saiu ${isP(sel) ? 'do treino' : 'da ficha'}`);
   },
   edReset: (sel) => {
     const f = fichaList(sel, plan()).f; if (!f || !confirm(`Voltar à ficha original do Treino ${sel}? As suas mudanças nela são desfeitas; as cargas ficam.`)) return;
-    delete S.lastSets[K_F + fKey(f)]; save(); render(true); toast('Ficha original de volta');
+    const antes = fichaList(sel, plan()).base; delete S.lastSets[K_F + fKey(f)]; seguePos(sel, antes, fichaList(sel, plan()).base); save(); render(true); toast('Ficha original de volta');
   },
   trocarEx: (a) => { const m = /^(.+):(\d+)(:ficha)?$/.exec(a); if (m) pickSheet('troca', m[1], +m[2], !!m[3]); },
   exAdd: (a) => { const m = /^(.+?)(:ficha)?$/.exec(a); if (m) pickSheet('add', m[1], null, !!m[2]); },
@@ -2780,7 +2804,7 @@ const A = {
     const a = FS && FS.sel, q = numBr(document.getElementById('fs-qt')?.value), id = S.refEd;
     if (!a) return;
     if (!(q > 0) || q > 5000) { document.getElementById('fs-prev').textContent = 'Digite uma quantidade maior que zero.'; document.getElementById('fs-qt')?.focus(); return; }
-    const f = itensDe(id); if (!f) { closeSheet(); render(true); return; }
+    const f = itensDe(id); if (!f) { closeSheet(); render(true); toast('Esta refeição não existe mais: o dia virou ou ela foi apagada no outro aparelho.', '', 4200); return; }
     f.push(AL.item(a, q)); lembrar(a, q); mealXp(id); combMeals(); save(); FS = null; closeSheet(); render(true); toast(`${I('check', 18)} ${esc(curto(a.n))} registrado`);
   },
   fsOff: () => {
@@ -2909,7 +2933,7 @@ const A = {
     S.expenses.push(x); S.draftExpense = ''; touch(); closeSheet(true);
     // Dinheiro vivo não aparece em extrato nenhum: vira lançamento à mão no Supabase, para ficar nos gastos do mês.
     if (x.met === 'Dinheiro' && podeCat() && planoCats().some((c) => c.n === x.cat)) {
-      SB.fin('fin_manual_salvar', { p_id: null, p_data: x.d, p_desc: `Gasto rápido: ${x.cat}`, p_valor: -x.v, p_categoria: x.cat, p_conta: 'Dinheiro' })
+      SB.fin('fin_manual_salvar', { p_id: null, p_data: D.iso(new Date()), p_desc: `Gasto rápido: ${x.cat}`, p_valor: -x.v, p_categoria: x.cat, p_conta: 'Dinheiro' })
         .then((mid) => { const y = S.expenses.find((e) => e.id === x.id); if (y) { y.mid = mid; touch(); } else SB.fin('fin_manual_apagar', { p_id: mid }).catch(() => {}); finRecarregar(); })
         .catch((e) => toast(`O gasto ficou neste aparelho, mas não entrou nos lançamentos: ${esc(plain(finMsg(e)))}`, 'warn', 6000));
     }
@@ -3122,6 +3146,10 @@ function render(keep, focusSel) {
       navStack[hIdx] = { r, tab: curTab, y: 0 };
     }
     navMode = 'none'; shownIdx = hIdx; navFromMain = false; saveNav();
+  }
+  if (!sameRoute && lastRoute === 'saude/refeicao' && rfAberta) {
+    const id = rfAberta, v = mVal(S.meals[id]); rfAberta = null;
+    if (v && v !== true && !v.f.length) { delete S.meals[id]; save(); }
   }
   let scr;
   try { scr = ROUTES[r](); } catch (err) {
