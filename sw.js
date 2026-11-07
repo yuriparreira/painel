@@ -1,5 +1,5 @@
 // Service worker do Painel: guarda o app no aparelho para abrir sem internet.
-const VERSION = 'painel-0.8.1';
+const VERSION = 'painel-0.8.2';
 const SHELL = ['./', './index.html', './app.css', './app.js', './data.js', './sync.js', './nuvem.js', './icons.js', './catalogo.js', './manifest.webmanifest',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 
