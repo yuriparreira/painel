@@ -1321,7 +1321,7 @@ function Dinheiro() {
       ${sec('Reserva de emergência')}
       <div class="card">${reserva}</div>
       ${sec(D.CATS_TITLE, SV.taxa == null ? '' : `<span class="small muted num">poupança ${esc(SV.taxa)}% · meta ${SV.meta}%</span>`)}
-      <div class="card">${C.map((c) => `<${fromSB() ? `button class="catbar" data-act="verGrupo" data-arg="${esc(c.n)}" aria-label="${esc(c.n)}: ${brl0(c.v)}. Ver lançamentos"` : 'div'} style="margin:10px 0"><div class="row-flex small"><span class="grow">${esc(c.n)}</span><b class="num">${brl0(c.v)}</b><span class="muted num" style="width:72px;text-align:right">${c.v > c.avg * 1.1 ? `${I('up', 14, 'style="display:inline;vertical-align:-2px"')} ${Math.round((c.v / c.avg - 1) * 100)}%` : 'na média'}</span></div>${bar((c.v / top) * 100, c.v > c.avg * 1.1 ? 'var(--xp-fill)' : 'var(--primary)')}</${fromSB() ? 'button' : 'div'}>`).join('')}
+      <div class="card">${C.map((c) => `<${fromSB() ? `button class="catbar" data-act="verGrupo" data-arg="${esc(c.n)}" aria-label="${esc(c.n)}: ${brl0(c.v)}. Ver lançamentos"` : 'div'} style="margin:10px 0"><div class="row-flex small">${catIc(c.n) ? I(catIc(c.n), 18, 'class="ic muted"') : ''}<span class="grow">${esc(c.n)}</span><b class="num">${brl0(c.v)}</b><span class="muted num" style="width:72px;text-align:right">${c.v > c.avg * 1.1 ? `${I('up', 14, 'style="display:inline;vertical-align:-2px"')} ${Math.round((c.v / c.avg - 1) * 100)}%` : 'na média'}</span></div>${bar((c.v / top) * 100, c.v > c.avg * 1.1 ? 'var(--xp-fill)' : 'var(--primary)')}</${fromSB() ? 'button' : 'div'}>`).join('')}
         ${C.length ? '' : '<div class="empty"><p>Ainda sem gastos no Open Finance.</p></div>'}
         <p class="small muted">Total ${brl0(tot)}${Math.abs(rest) >= 1 ? `, com ${rest > 0 ? '' : '−'}${brl0(Math.abs(rest))} de outras categorias e estornos` : ''}. Comparação com a média dos 6 meses anteriores. ${D.REAL.cartaoDetalhado ? 'As compras do cartão entram no mês em que a fatura vence.' : 'A fatura aparece numa linha só até as faturas do cartão chegarem.'}</p></div>
       ${exp}
@@ -1415,6 +1415,20 @@ const planoCats = () => (D.REAL && Array.isArray(D.REAL.categorias) ? D.REAL.cat
 const podeCat = () => fromSB() && !!SB.session() && Array.isArray(D.REAL.categorias);
 const grupoDe = (n) => String(n || '').split(':')[0].trim();
 const subDe = (n) => { const i = String(n || '').indexOf(':'); return i < 0 ? '' : String(n).slice(i + 1).trim(); };
+// Ícone de cada categoria (fin_plano.icone, migração categoria_icones): o dela, senão o do grupo, senão uma etiqueta.
+// Sem a migração, nenhuma categoria tem ícone e as listas ficam como antes.
+const CAT_ICONES = ['cart', 'utensils', 'bag', 'home', 'key', 'bolt', 'droplet', 'flame', 'phone', 'wrench', 'sparkle', 'shield', 'car', 'fuel', 'parking', 'bus', 'map', 'plane', 'bed', 'receipt', 'percent', 'coins', 'card', 'bank', 'wallet', 'swap', 'globe', 'trend', 'pie', 'up', 'briefcase', 'users', 'heart', 'health', 'pill', 'tooth', 'flask', 'dumbbell', 'cap', 'book', 'gift', 'paw', 'shirt', 'laptop', 'tv', 'game', 'dice', 'ticket', 'file', 'info', 'tag', 'star', 'inbox', 'eye', 'refresh', 'calendar'];
+const IC_NOME = { cart: 'carrinho', utensils: 'talheres', bag: 'sacola', home: 'casa', key: 'chave', bolt: 'raio', droplet: 'gota', flame: 'chama', phone: 'celular', wrench: 'ferramenta', sparkle: 'brilho', shield: 'escudo', car: 'carro', fuel: 'combustível', parking: 'estacionamento', bus: 'ônibus', map: 'mapa', plane: 'avião', bed: 'cama', receipt: 'recibo', percent: 'porcentagem', coins: 'moedas', card: 'cartão', bank: 'banco', wallet: 'carteira', swap: 'transferência', globe: 'mundo', trend: 'alta', pie: 'pizza', up: 'seta para cima', briefcase: 'maleta', users: 'pessoas', heart: 'coração', health: 'saúde', pill: 'remédio', tooth: 'dente', flask: 'exame', dumbbell: 'haltere', cap: 'formatura', book: 'livro', gift: 'presente', paw: 'pata', shirt: 'camiseta', laptop: 'computador', tv: 'tela', game: 'controle de jogo', dice: 'dado', ticket: 'ingresso', file: 'documento', info: 'aviso', tag: 'etiqueta', star: 'estrela', inbox: 'caixa de entrada', eye: 'olho', refresh: 'volta', calendar: 'calendário' };
+let catIcMemo = { ref: null, m: null };
+const temIcones = () => planoCats().some((c) => 'ic' in c);
+function catIc(n) {
+  const P = planoCats();
+  if (catIcMemo.ref !== P) catIcMemo = { ref: P, m: new Map(P.filter((c) => c.ic && CAT_ICONES.includes(c.ic)).map((c) => [c.n, c.ic])) };
+  const m = catIcMemo.m;
+  return m.get(n) || m.get(grupoDe(n)) || (m.size ? 'tag' : null);
+}
+// Selo com o ícone (vazio sem a migração).
+const catBadge = (n, size = 20) => { const ic = catIc(n); return ic ? `<span class="badge-ic cat">${I(ic, size)}</span>` : ''; };
 const ehCartao = (x) => !x.m && (D.REAL.cartoes || []).some((c) => c.id === x.conta);
 const contaTipoTx = (x) => (x.m ? null : ehCartao(x) ? 'CREDIT' : 'BANK');
 function contaNomeTx(x) {
@@ -1434,7 +1448,7 @@ const FINMSG = {
   categoria_do_sistema: 'O Painel usa essa categoria nas contas (fatura, transferências): ela não muda de nome nem de tipo.',
   categoria_em_uso: 'Essa categoria ainda tem lançamentos ou regras. Para tirá-la, junte com outra.', nome_invalido: 'Digite um nome de até 80 letras.',
   texto_curto: 'Digite pelo menos 3 letras da descrição.', lancamento_nao_existe: 'Esse lançamento não está mais no banco. Atualize e tente de novo.',
-  valor_invalido: 'Digite o valor, por exemplo 45,90.', descricao_vazia: 'Escreva uma descrição.', categoria_obrigatoria: 'Lançamento feito à mão precisa de categoria.',
+  icone_invalido: 'Esse ícone não existe no app.', valor_invalido: 'Digite o valor, por exemplo 45,90.', descricao_vazia: 'Escreva uma descrição.', categoria_obrigatoria: 'Lançamento feito à mão precisa de categoria.',
 };
 const finMsg = (e) => FINMSG[e && e.code] || sbMsg(e);
 // Lê o fin_painel de novo depois de gravar (espera uma leitura em andamento acabar).
@@ -1476,7 +1490,7 @@ function lfFiltra() {
 }
 const txRow = (x) => {
   const meta = `${esc(x.cat || '')}${x.man ? ' (sua)' : ''} · ${dTx(x)} · ${esc(contaNomeTx(x))}`;
-  const inner = `<div class="grow"><div class="ttl ellip">${esc(x.desc || 'Lançamento')}</div><div class="meta ellip">${meta}</div></div><div class="amt num">${valTx(x)}</div>`;
+  const inner = `${catBadge(x.cat)}<div class="grow"><div class="ttl ellip">${esc(x.desc || 'Lançamento')}</div><div class="meta ellip">${meta}</div></div><div class="amt num">${valTx(x)}</div>`;
   return podeCat() && x.id ? `<button class="row" data-act="tx" data-arg="${esc(x.id)}">${inner}</button>` : `<div class="row">${inner}</div>`;
 };
 function lfLista() {
@@ -1510,7 +1524,7 @@ function catOpcoes(q, atual, act) {
   let L = P.filter((c) => c.n !== atual && (!t || t.split(' ').every((w) => normq(c.n).includes(w))));
   L = L.sort((a, b) => (b.q90 || 0) - (a.q90 || 0) || (b.q || 0) - (a.q || 0) || a.n.localeCompare(b.n, 'pt-BR')).slice(0, t ? 40 : 12);
   const novo = q.trim().length >= 2 && !P.some((c) => normq(c.n) === t);
-  return `${novo ? `<button class="row" data-act="${act}" data-arg="+${esc(q.trim())}"><span class="badge-ic p">${I('plus', 20)}</span><div class="grow"><div class="ttl ellip">Criar “${esc(q.trim())}”</div><div class="meta">Categoria nova no plano de contas</div></div></button>` : ''}${L.map((c) => `<button class="row" data-act="${act}" data-arg="${esc(c.n)}"><div class="grow"><div class="ttl ellip">${esc(c.n)}</div><div class="meta">${TIPOS[c.tipo] || esc(c.tipo)}${c.q ? ` · ${c.q} lançamento${c.q === 1 ? '' : 's'}` : ''}</div></div></button>`).join('')}${!novo && !L.length ? '<p class="small muted" style="padding:12px 0">Nenhuma categoria com esse nome.</p>' : ''}${!t ? '<p class="xs muted" style="padding:8px 0 0">As mais usadas. Busque para ver todas ou criar uma.</p>' : ''}`;
+  return `${novo ? `<button class="row" data-act="${act}" data-arg="+${esc(q.trim())}"><span class="badge-ic p">${I('plus', 20)}</span><div class="grow"><div class="ttl ellip">Criar “${esc(q.trim())}”</div><div class="meta">Categoria nova no plano de contas</div></div></button>` : ''}${L.map((c) => `<button class="row" data-act="${act}" data-arg="${esc(c.n)}">${catBadge(c.n)}<div class="grow"><div class="ttl ellip">${esc(c.n)}</div><div class="meta">${TIPOS[c.tipo] || esc(c.tipo)}${c.q ? ` · ${c.q} lançamento${c.q === 1 ? '' : 's'}` : ''}</div></div></button>`).join('')}${!novo && !L.length ? '<p class="small muted" style="padding:12px 0">Nenhuma categoria com esse nome.</p>' : ''}${!t ? '<p class="xs muted" style="padding:8px 0 0">As mais usadas. Busque para ver todas ou criar uma.</p>' : ''}`;
 }
 
 // Folha do lançamento: escolher a categoria; depois, só ele ou também os parecidos.
@@ -1618,7 +1632,7 @@ function pcLista() {
   const G = {}; P.forEach((c) => { (G[grupoDe(c.n)] = G[grupoDe(c.n)] || []).push(c); });
   const gs = Object.keys(G).sort((a, b) => a.localeCompare(b, 'pt-BR'));
   if (!gs.length) return '<div class="card"><p class="small muted" style="margin:0">Nenhuma categoria com esse nome.</p></div>';
-  return gs.map((g) => `${sec(esc(g), `<span class="small muted num">${G[g].reduce((a, c) => a + (c.q || 0), 0)}</span>`)}<div class="card tight">${G[g].sort((a, b) => a.n.localeCompare(b.n, 'pt-BR')).map((c) => `<button class="row" data-act="pcCat" data-arg="${esc(c.n)}"><div class="grow"><div class="ttl ellip">${esc(subDe(c.n) || c.n)}</div><div class="meta">${TIPOS[c.tipo] || esc(c.tipo)} · ${c.q ? `${c.q} lançamento${c.q === 1 ? '' : 's'}` : 'sem lançamentos'}${c.sis ? ' · do sistema' : ''}</div></div>${c.sis ? I('lock', 16, 'class="ic muted"') : ''}</button>`).join('')}</div>`).join('');
+  return gs.map((g) => `${sec(esc(g), `<span class="small muted num">${G[g].reduce((a, c) => a + (c.q || 0), 0)}</span>`)}<div class="card tight">${G[g].sort((a, b) => a.n.localeCompare(b.n, 'pt-BR')).map((c) => `<button class="row" data-act="pcCat" data-arg="${esc(c.n)}">${catBadge(c.n)}<div class="grow"><div class="ttl ellip">${esc(subDe(c.n) || c.n)}</div><div class="meta">${TIPOS[c.tipo] || esc(c.tipo)} · ${c.q ? `${c.q} lançamento${c.q === 1 ? '' : 's'}` : 'sem lançamentos'}${c.sis ? ' · do sistema' : ''}</div></div>${c.sis ? I('lock', 16, 'class="ic muted"') : ''}</button>`).join('')}</div>`).join('');
 }
 function PlanoContas() {
   if (!podeCat()) return { title: 'Plano de contas', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Plano de contas')}${fromSB() && SB.session() ? '<div class="card"><p class="small muted" style="margin:0">O banco ainda não tem o plano de contas. Ele chega com a atualização desta versão (migração reclassificar).</p></div>' : semDinheiro()}` };
@@ -1633,13 +1647,27 @@ function PlanoContas() {
       <div class="card tight">${R.length ? R.map((r) => `<div class="row"><div class="grow"><div class="ttl ellip">“${esc(regraTexto(r.p))}”</div><div class="meta ellip">${esc(r.c)}${r.s ? ` · ${r.s === 'saida' ? 'saídas' : 'entradas'}` : ''}${r.ct ? ` ${r.ct === 'CREDIT' ? 'no cartão' : 'na conta'}` : ''}</div></div><button class="iconbtn" data-act="regraApagar" data-arg="${r.id}" aria-label="Apagar a regra ${esc(regraTexto(r.p))}">${I('x')}</button></div>`).join('') : '<div class="empty"><p>Nenhuma regra sua ainda. Elas nascem quando você troca a categoria de um lançamento e escolhe “Este e os parecidos”.</p></div>'}</div>`,
   };
 }
+let PC_NOME = null;
+// Troca o ícone na hora (e grava; se o banco recusar, volta o anterior).
+async function pcIcone(k) {
+  const c = planoCats().find((x) => x.n === PC_NOME); if (!c || !CAT_ICONES.includes(k)) return;
+  const antes = c.ic, marca = (v) => sheetRoot.querySelectorAll('.icpick [role="radio"]').forEach((b) => { const on = b.dataset.arg === v; b.setAttribute('aria-checked', String(on)); b.tabIndex = on ? 0 : -1; });
+  c.ic = k; catIcMemo.ref = null; marca(k); render(true);
+  try {
+    await SB.fin('fin_categoria_icone', { p_nome: c.n, p_icone: k });
+    try { const R = JSON.parse(localStorage.getItem(REALK)), y = (R.categorias || []).find((x) => x.n === c.n); if (y) { y.ic = k; localStorage.setItem(REALK, JSON.stringify(R)); } } catch { /* a próxima leitura traz */ }
+  }
+  catch (e) { c.ic = antes; catIcMemo.ref = null; marca(catIc(c.n)); render(true); toast(esc(plain(finMsg(e))), 'warn', 6000); }
+}
 function pcSheet(nome) {
   const c = nome ? planoCats().find((x) => x.n === nome) : null;
   if (nome && !c) return;
+  PC_NOME = nome || null;
   const outras = planoCats().filter((x) => x.n !== nome).sort((a, b) => a.n.localeCompare(b.n, 'pt-BR'));
   openSheet(c ? esc(c.n) : 'Nova categoria', `${c && c.sis ? '<p class="small muted" style="margin:0 0 8px">O Painel usa esta categoria nas contas (fatura, transferências ou padrão das regras): o nome e o tipo ficam como estão. Dá para juntar outras nela.</p>' : ''}
     <label class="field"><span>Nome</span><input class="input" id="pc-nome" maxlength="80" autocomplete="off" value="${c ? esc(c.n) : ''}" placeholder="Grupo: detalhe, ex.: Moradia: diarista"${c && c.sis ? ' readonly' : ''}${c ? '' : ' data-autofocus'}></label>
     ${c && c.sis ? `<p class="small">Tipo: <b>${TIPOS[c.tipo] || esc(c.tipo)}</b></p>` : radios('Tipo', 'pc-tipo', Object.keys(TIPOS), c ? c.tipo : 'despesa', TIPOS)}
+    ${c && temIcones() ? `<div class="field"><span id="pc-ic">Ícone</span><div class="icpick" role="radiogroup" aria-labelledby="pc-ic">${CAT_ICONES.map((k) => `<button type="button" class="pick" role="radio" aria-checked="${k === catIc(c.n)}" tabindex="${k === catIc(c.n) ? 0 : -1}" data-act="pcIcone" data-arg="${k}" aria-label="${IC_NOME[k] || k}">${I(k, 22)}</button>`).join('')}</div></div>` : !c && temIcones() ? '<p class="xs muted" style="margin-top:4px">O ícone vem sugerido pelo nome; dá para trocar depois, tocando na categoria.</p>' : ''}
     <p class="xs muted" style="margin-top:4px">Despesa e dívida entram nos gastos do mês. Transferência, investimento, terceiros, rateio, PJ, a receber e bem ficam fora.</p>
     ${c && !c.sis ? '<p class="xs muted" style="margin-top:4px">Renomear leva junto os lançamentos, as regras e as contas fixas que usam esta categoria. Com o nome de outra que já existe, as duas viram uma.</p>' : ''}
     <button class="btn block" style="margin-top:14px" data-fin data-act="pcSalvar" data-arg="${c ? esc(c.n) : ''}"${c && c.sis ? ' hidden' : ''}>Salvar</button>
@@ -2230,7 +2258,7 @@ function quickAdd() {
   const items = [['openCheckin', 'Check-in', 'scale'], ['nav:saude/treino', 'Treino', 'dumbbell'], ['nav:saude/dieta', 'Refeição', 'utensils'], ['expense', 'Gasto', 'wallet'], ['task', 'Tarefa ou nota', 'note'], ['nav:dinheiro/contas', 'Contas', 'receipt']];
   openSheet('Registrar', `<div class="qa">${items.map(([a, l, ic]) => `<button data-act="qa" data-arg="${a}">${I(ic)}<span>${l}</span></button>`).join('')}</div>`, 'qa');
 }
-const radios = (label, id, opts, sel, labels = {}) => `<div class="field"><span id="${id}">${label}</span><div class="picks" role="radiogroup" aria-labelledby="${id}">${opts.map((c) => `<button type="button" class="pick" role="radio" aria-checked="${c === sel}" tabindex="${c === sel ? 0 : -1}" data-act="radio" data-arg="${esc(c)}" data-val="${esc(c)}">${esc(labels[c] || c)}</button>`).join('')}</div></div>`;
+const radios = (label, id, opts, sel, labels = {}, icons = {}) => `<div class="field"><span id="${id}">${label}</span><div class="picks" role="radiogroup" aria-labelledby="${id}">${opts.map((c) => `<button type="button" class="pick${icons[c] ? ' wic' : ''}" role="radio" aria-checked="${c === sel}" tabindex="${c === sel ? 0 : -1}" data-act="radio" data-arg="${esc(c)}" data-val="${esc(c)}">${icons[c] ? I(icons[c], 18) : ''}${esc(labels[c] || c)}</button>`).join('')}</div></div>`;
 // Com o plano de contas no banco, as categorias de despesa mais usadas nos últimos 90 dias; as outras num seletor.
 function expenseCats() {
   const P = planoCats().filter((c) => c.tipo === 'despesa' && !/classificar|^estornos$/i.test(c.n));
@@ -2242,7 +2270,7 @@ function expenseCats() {
 function expenseSheet() {
   const { top: cats, resto } = expenseCats();
   openSheet('Gasto rápido', `<label class="field"><span>Valor</span><input class="input" id="ex-v" inputmode="decimal" placeholder="R$ 0,00" style="font-size:24px;font-weight:750" data-autofocus value="${esc(S.draftExpense)}"></label>
-    ${radios('Categoria', 'ex-cat', cats, cats[0])}
+    ${radios('Categoria', 'ex-cat', cats, cats[0], {}, Object.fromEntries(cats.map((c) => [c, catIc(c)]).filter((e) => e[1])))}
     ${resto.length ? `<label class="field" style="margin-top:-4px"><span class="sr">Outra categoria</span><select class="input" id="ex-cat-outra" data-in="excat" aria-label="Outra categoria"><option value="">Outra categoria…</option>${resto.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select></label>` : ''}
     ${semCartao() ? radios('Pago com', 'ex-met', ['Pix', 'Dinheiro'], 'Pix') : radios('Pago com', 'ex-met', [CARD, 'Pix', 'Dinheiro'], CARD, { [CARD]: card0() })}
     <button class="btn block" style="margin-top:16px" data-act="saveExpense">Salvar gasto</button><p class="xs muted" style="margin-top:8px">${S.paid.fatura && !semCartao() ? `No ${esc(card0())} vai para a próxima fatura (a aberta já foi paga) e não muda o “livre para gastar”. Pix e dinheiro saem do saldo na hora.` : 'Entra na hora no “livre para gastar”.'} Quando o extrato chegar, o lançamento é ligado a este gasto e não duplica.${podeCat() ? ' Em dinheiro, fica também nos lançamentos do Supabase.' : ''}</p>`, 'ex');
@@ -2610,6 +2638,7 @@ const A = {
   verGrupo: (g) => { LF = { q: '', f: 'todos', mes: '', cat: g, n: 60 }; go('#/dinheiro/lancamentos'); },
   pcCat: (n) => pcSheet(n),
   pcNova: () => pcSheet(null),
+  pcIcone: (k) => pcIcone(k),
   pcVer: (n) => { LF = { q: '', f: 'todos', mes: '', cat: n, n: 60 }; navFromSheet('#/dinheiro/lancamentos'); },
   pcSalvar: (antigo) => {
     const nome = document.getElementById('pc-nome').value.trim(), tipo = sheetRoot.querySelector('[aria-labelledby="pc-tipo"] [aria-checked="true"]')?.dataset.val || null;
@@ -2810,7 +2839,7 @@ window.addEventListener('resize', fitRestbar);
 
 
 // ---------- Render ----------
-const VERSION = '0.8.0';
+const VERSION = '0.8.2';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
 const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/treino-editar': 'Editar treino', 'saude/exercicios': 'Exercícios', 'saude/campanha': 'Plano', 'saude/dieta': 'Dieta', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Open Finance e arquivo', 'dinheiro/sincronizar': 'Sincronizar', 'dinheiro/lancamentos': 'Lançamentos', 'dinheiro/categorias': 'Plano de contas', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes' };

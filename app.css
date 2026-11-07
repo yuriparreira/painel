@@ -447,3 +447,8 @@ button.kpi .chev { position: absolute; right: 10px; top: 12px; color: var(--mute
 .catbar:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 /* Link em texto corrido (Trocar, Tirar) */
 .sheet button.link, .card button.link { background: none; border: 0; padding: 10px 6px; margin: -10px -2px; color: var(--primary); font-weight: 650; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+/* Ícones das categorias (0.8.2) */
+.badge-ic.cat { width: 36px; height: 36px; border-radius: 11px; background: var(--primary-soft); color: var(--primary); }
+.icpick { display: grid; grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); gap: 6px; }
+.icpick .pick { min-height: 48px; padding: 0; display: grid; place-items: center; }
+.pick.wic { display: inline-flex; align-items: center; gap: 6px; padding-left: 12px; }

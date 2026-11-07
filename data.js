@@ -201,6 +201,11 @@ export function payday(t) { return new Date(t.getFullYear(), t.getMonth() + 1, 0
 function realBills(paid, faturaExtra, t) {
   const tx = REAL.transacoes || [], mes = ym(t), hoje = startOfDay(t), corte = REAL.geradoEm;
   const dim = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  // Conta de valor fixo também se acha pelo valor exato: um débito na conta do mesmo valor, perto do vencimento, que
+  // o banco ainda não classificou na categoria dela (débito agendado, descrição diferente). Cada débito vale para uma
+  // conta só, e nunca um que já está na categoria de outra conta.
+  const bancos = new Set((REAL.contas || []).map((c) => c.id).filter(Boolean)), usados = new Set();
+  const cats = new Set((REAL.contasPagar || []).map((b) => b.txCat).filter(Boolean));
   // Cada conta do arquivo diz qual categoria do extrato a quita (txCat); a do cartão principal vem com fatura: true.
   return (REAL.contasPagar || []).filter((b) => b.v != null && !b.flex).map((b) => {
     const id = b.fatura ? 'fatura' : b.id;
@@ -208,7 +213,12 @@ function realBills(paid, faturaExtra, t) {
     const due = b.venceEm ? dayOf(b.venceEm) : new Date(t.getFullYear(), t.getMonth(), Math.min(b.dia, dim));
     // txValor: a fatura só conta como paga quando o pagamento bate o valor (dois cartões pagos no mesmo mês).
     // Fatura do Open Finance (venceEm): quem acha o pagamento é o banco de dados (pagoEm), para Contas e Cartões concordarem.
-    const hit = b.pagoEm || b.venceEm ? null : b.txCat ? tx.find((x) => x.d.startsWith(mes) && x.cat === b.txCat && x.v < 0 && (b.txValor == null || Math.abs(-x.v - b.txValor) < 1)) : null;
+    let hit = b.pagoEm || b.venceEm ? null : b.txCat ? tx.find((x) => x.d.startsWith(mes) && x.cat === b.txCat && x.v < 0 && (b.txValor == null || Math.abs(-x.v - b.txValor) < 1)) : null;
+    if (!hit && !b.pagoEm && !b.venceEm && b.txCat && !b.estimado && b.v >= 1) {
+      const d0 = iso(addDays(due, -7)), d1 = iso(addDays(due, 10));
+      hit = tx.find((x) => x.v < 0 && Math.abs(-x.v - b.v) < 0.01 && x.d >= d0 && x.d <= d1 && bancos.has(x.conta) && !usados.has(x) && !cats.has(x.cat) && x.tipo !== 'transferencia') || null;
+    }
+    if (hit) usados.add(hit);
     const porExtrato = !!hit || !!b.pagoEm;
     const isPaid = porExtrato || !!paid[id];
     let v = hit ? -hit.v : b.v;
