@@ -464,3 +464,31 @@ button.kpi .chev { position: absolute; right: 10px; top: 12px; color: var(--mute
 .icpick { display: grid; grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); gap: 6px; }
 .icpick .pick { min-height: 48px; padding: 0; display: grid; place-items: center; }
 .pick.wic { display: inline-flex; align-items: center; gap: 6px; padding-left: 12px; }
+
+/* 0.9.1: revisão mobile */
+button.card { width: calc(100% - 32px); text-align: left; font: inherit; color: inherit; }
+/* Link no meio do texto: a área de toque cresce para cima e para baixo sem mexer na linha. */
+.main p a:not([class]), .main .small a:not([class]) { padding-block: 12px; }
+@media (max-width: 359px) { .kpis { gap: 6px; } .kpi { padding: 8px 7px; } .kpi b { font-size: 13.5px; letter-spacing: -0.01em; overflow-wrap: normal; } }
+/* Lançamentos por dia */
+.dayhdr { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 18px 20px 0; }
+.dayhdr h3 { font-size: 14px; font-weight: 700; color: var(--ink); }
+.dayhdr .num { font-size: 13px; color: var(--muted); }
+.dayhdr + .card { margin-top: 6px; }
+.row .amt.pos { color: var(--primary); }
+/* Dieta: resumo do dia no estilo dos apps de dieta (o que resta da meta, e os macros) */
+.zone-nut { --zc: var(--a-nut); }
+.dhero .ring b { display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.05; font-size: 20px; }
+.dhero .ring b small { font-size: 12px; font-weight: 600; color: var(--muted); margin-top: 2px; }
+.dconta { display: grid; gap: 6px; min-width: 0; }
+.dconta div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+.dconta div:last-child { border-bottom: 0; padding-bottom: 0; }
+.dconta span { font-size: 13px; color: var(--muted); }
+.dconta b { font-size: 16px; font-weight: 750; }
+.mac { margin-top: 12px; }
+.mac .small b { margin-right: 4px; }
+/* A refeição inteira abre o registro; o ✓ continua separado. */
+.qbody { flex: 1; min-width: 0; min-height: 56px; background: none; border: 0; padding: 4px 0; text-align: left; color: inherit; font: inherit; cursor: pointer; }
+.quest .go.ic { flex: none; display: grid; place-items: center; width: 24px; }
+.setbtns { display: flex; gap: 8px; margin-top: 8px; }
+.setbtns .btn { min-height: 44px; }
