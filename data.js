@@ -167,7 +167,7 @@ export const DIAS = { treino: 'Treino', descanso: 'Descanso', refeed: 'Refeed' }
 export const tipoDia = (tipo) => (tipo === 'REST' ? 'descanso' : 'treino');
 export function refeicoes(k) {
   const L = (SAUDE && SAUDE.refeicoes) || [], nome = DIAS[k];
-  return L.filter((r) => Array.isArray(r.tipos) && r.tipos.includes(nome)).map((r) => ({ id: slug(r.refeicao), nome: r.refeicao, hora: r.horario || '', itens: r.alimentos || '', kcal: num(r.kcal) || 0, p: num(r.p) || 0, versao: r.versao || '' }));
+  return L.filter((r) => Array.isArray(r.tipos) && r.tipos.includes(nome)).map((r) => ({ id: slug(r.refeicao), nome: r.refeicao, hora: r.horario || '', itens: r.alimentos || '', kcal: num(r.kcal) || 0, p: num(r.p) || 0, c: num(r.c) || 0, g: num(r.g) || 0, versao: r.versao || '' }));
 }
 export const kcalDia = (k) => { const K = metas().kcal; return K && num(K[k]) ? num(K[k]) : null; };
 export function prot() { const m = num(metas().proteina); return m ? { meta: m, conta: Math.round(m * 0.9) } : null; } // conta = 90% da meta

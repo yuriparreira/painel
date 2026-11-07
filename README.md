@@ -20,7 +20,7 @@ XP, Chama, atributos, conquistas e o chefe do mês começam do zero e são calcu
 | Área | Telas |
 | --- | --- |
 | Hoje | check-in, missões do dia (Corpo, Combustível e Missão), linha do dia, resumo do dinheiro e da semana |
-| Saúde | energia pelo sono, peso, treino com cronômetro de descanso, treinos seus e base de exercícios, plano de treino, dieta do dia, exames e medidas |
+| Saúde | energia pelo sono, peso, treino com cronômetro de descanso, treinos seus e base de exercícios, plano de treino, dieta do dia com o que você comeu de verdade (tabela TACO e Open Food Facts), exames e medidas |
 | Dinheiro | quanto pode gastar, contas a pagar, cartões e faturas, patrimônio, sincronização |
 | Agenda | Top 3 do dia, caixa de entrada com texto livre, próximos 7 dias |
 | Ficha | nível, XP, atributos, missões da semana, conquistas, chefe do mês, ajustes |
@@ -39,6 +39,8 @@ sync.js               login por código no e-mail (Supabase Auth) e leitura do b
 nuvem.js              seus registros na nuvem: junta o estado do celular e do computador
 app.css               tokens de cor (claro e escuro) e componentes
 icons.js              ícones de traço em SVG
+alimentos.js          busca de alimentos (TACO no aparelho, Open Food Facts pela internet) e conta de calorias e macros
+taco.js               Tabela Brasileira de Composição de Alimentos (TACO, 4ª ed., NEPA/UNICAMP), 597 alimentos por 100 g
 sw.js                 service worker: funciona offline após a primeira visita
 manifest.webmanifest  instalação como PWA
 icons/                ícones do app
@@ -88,6 +90,15 @@ Os segredos (`PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`, `PLUGGY_ITEM_IDS`, `PLU
 - O catálogo (`catalogo.js`) traz cerca de 250 exercícios de musculação com os nomes usados nas academias do Brasil, em 14 grupos (peito, costas, ombros, bíceps, tríceps, antebraço, quadríceps, posteriores, glúteos, panturrilha, abdômen e core, lombar, corpo inteiro e mobilidade). Na busca, os seus vêm primeiro.
 - “Ver como faz” abre a busca de vídeos do exercício no YouTube. O app não guarda vídeos nem GIFs.
 - Tudo isso fica no mapa `lastSets` do estado, com chaves que começam com `~` (ou `exercício@dia` no histórico), para a cópia 0.6.0 do app, se ainda estiver aberta em outro aparelho, manter essas chaves na nuvem em vez de apagá-las.
+
+## Dieta: sugerido x realizado (0.9.0)
+
+- Em **Saúde → Dieta**, cada refeição do plano mostra o sugerido. O ✓ marca que você seguiu o plano; o lápis abre a refeição para registrar o que comeu de verdade: a porção do plano em vezes (½, 1, 1,5) e/ou alimentos com a quantidade em gramas. O total da refeição aparece contra o plano.
+- **Comi fora do plano** cria uma refeição avulsa (lanche, jantar fora) com nome, hora e alimentos.
+- Proteína, calorias, carboidrato e gordura do dia somam o que foi registrado; a missão Combustível marca sozinha quando a proteína chega a 90% da meta. O total do dia fica no registro do dia (`dias`, campo `n` = [kcal, P, C, G]) e aparece nos últimos 7 dias.
+- Alimentos: a **tabela TACO** (`taco.js`, 597 alimentos, valores por 100 g) funciona sem internet; **produtos de marca** vêm do [Open Food Facts](https://world.openfoodfacts.org) (base aberta, ODbL) pelo nome ou código de barras, só quando você toca em Buscar (o limite deles é de 10 buscas por minuto). Dá para criar um alimento com os valores do rótulo. Os 60 alimentos usados por último ficam como recentes, nos dois aparelhos.
+- No estado: o mapa do dia `meals` guarda `true` (seguiu o plano) ou `{ f: [itens] }`; refeições fora do plano têm chave `x~…`; os recentes ficam em `lastSets` com chave `~a:fonte`. Uma cópia antiga do app só vê a refeição como marcada.
+- Fonte da TACO: NEPA/UNICAMP, Tabela Brasileira de Composição de Alimentos, 4ª edição revisada e ampliada, 2011 (CSV de github.com/raulfdm/taco-api).
 
 ## Saúde no Supabase
 

@@ -447,3 +447,15 @@ button.kpi .chev { position: absolute; right: 10px; top: 12px; color: var(--mute
 .catbar:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 /* Link em texto corrido (Trocar, Tirar) */
 .sheet button.link, .card button.link { background: none; border: 0; padding: 10px 6px; margin: -10px -2px; color: var(--primary); font-weight: 650; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+
+/* Refeições: sugerido x realizado */
+.quest .d.real { color: var(--ink); margin-top: 2px; }
+.quest .dif { display: inline-block; font-size: 12px; font-weight: 650; padding: 0 6px; border-radius: 999px; background: var(--surface-2, rgba(127,127,127,.12)); color: var(--muted); }
+.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.grid4 .mid { font-size: 20px; }
+@media (max-width: 360px) { .grid4 { grid-template-columns: repeat(2, 1fr); row-gap: 10px; } }
+.row.fi { gap: 8px; }
+.row.fi .qty { width: 68px; min-height: 44px; border-radius: 10px; border: 1.5px solid var(--control); background: var(--surface); color: var(--ink); text-align: center; font-size: 16px; font-weight: 650; flex: none; }
+.row.fi .fiu { min-width: 14px; max-width: 54px; flex: none; overflow-wrap: anywhere; }
+.sheet .grid2 { margin: 0; }
+.sheet .grid2 .field { margin-top: 10px; }
