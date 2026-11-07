@@ -130,3 +130,8 @@ Comparando com apps de finanças (Nubank, Mobills, Organizze), de dieta (MyFitne
 - `migrations/20261104222000_saude_painel_agenda.sql`: `saude_painel()` passa a mandar a agenda (de ontem até 15 dias) e quando o atalho mandou cada parte.
 - `functions/atalho`: recebe o atalho (sem JWT do Supabase: confere o token no cabeçalho `x-painel-token` ou `Authorization: Bearer`), entende datas e números do iPhone em português e responde uma linha que o atalho mostra numa notificação, começando com OK, AVISO ou ERRO. A resposta mostra só valores que vieram na própria chamada; do banco vêm só as contagens. Sem token válido nada é gravado; com ele, uma chamada que não deu para ler anota só o motivo em `atalho_log` (90 dias). `ATALHO_BRUTO=1` nos segredos guarda também o corpo cru por 14 dias, para ajustar a leitura.
 - O token é gerado em Sincronizar → Atalho do iPhone e aparece uma vez só. Gerar outro desliga o anterior. Quem tem o token consegue mandar dados de saúde e trocar a agenda que veio do atalho, nada mais.
+
+## Teclado nas folhas (0.9.2)
+
+- Folha que abre já com o cursor num campo (Adicionar exercício, Trocar exercício, Gasto rápido, Lançar à mão, nomes) aparece no lugar, sem subir de fora da tela. No iPhone, focar um campo que ainda estava abaixo da tela fazia o sistema rolar o app inteiro para mostrá-lo enquanto o teclado subia: a página e a barra de descanso apareciam por cima da folha e a folha pulava de posição.
+- O contêiner do app nunca fica rolado (se o sistema rolar, volta para o topo) e a folha acompanha o teclado com uma transição curta, uma atualização por quadro.
