@@ -201,24 +201,47 @@ export function payday(t) { return new Date(t.getFullYear(), t.getMonth() + 1, 0
 function realBills(paid, faturaExtra, t) {
   const tx = REAL.transacoes || [], mes = ym(t), hoje = startOfDay(t), corte = REAL.geradoEm;
   const dim = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  const vence = (dia) => new Date(t.getFullYear(), t.getMonth(), Math.min(dia, dim));
   // Conta de valor fixo também se acha pelo valor exato: um débito na conta do mesmo valor, perto do vencimento, que
   // o banco ainda não classificou na categoria dela (débito agendado, descrição diferente). Cada débito vale para uma
   // conta só, e nunca um que já está na categoria de outra conta.
   const bancos = new Set((REAL.contas || []).map((c) => c.id).filter(Boolean)), usados = new Set();
-  const cats = new Set((REAL.contasPagar || []).map((b) => b.txCat).filter(Boolean));
+  // Categorias das contas, também a que quitou uma conta neste mês antes de ela ser editada (antes.l).
+  const deAntes = (b) => (b.antes && b.antes.m === mes && Array.isArray(b.antes.l) ? b.antes.l.map((a) => a && a.txCat) : []);
+  const cats = new Set((REAL.contasPagar || []).flatMap((b) => [b.txCat, ...deAntes(b)]).filter(Boolean));
+  // O pagamento deste mês de uma conta fixa (c: txCat, txValor, estimado, v e criada; due: o vencimento).
+  // txValor: a conta só fica paga quando o pagamento bate o valor (duas contas pagas pela mesma categoria). Um débito
+  // quita uma conta só, também quando duas contas ficaram com a mesma categoria (categorias juntadas no Plano de contas).
+  // criada: conta nova deste mês não é quitada por um débito de antes do dia em que foi criada (o de uma conta tirada).
+  const acha = (c, due) => {
+    const ini = typeof c.criada === 'string' ? c.criada : '';
+    let hit = c.txCat ? tx.find((x) => x.d.startsWith(mes) && x.d >= ini && x.cat === c.txCat && x.v < 0 && !usados.has(x) && (c.txValor == null || Math.abs(-x.v - c.txValor) < 1)) : null;
+    if (!hit && c.txCat && !c.estimado && c.v >= 1) {
+      const d0 = iso(addDays(due, -7)), d1 = iso(addDays(due, 10));
+      hit = tx.find((x) => x.v < 0 && Math.abs(-x.v - c.v) < 0.01 && x.d >= d0 && x.d >= ini && x.d <= d1 && bancos.has(x.conta) && !usados.has(x) && !cats.has(x.cat) && x.tipo !== 'transferencia');
+    }
+    return hit || null;
+  };
   // Cada conta do arquivo diz qual categoria do extrato a quita (txCat); a do cartão principal vem com fatura: true.
-  return (REAL.contasPagar || []).filter((b) => b.v != null && !b.flex).map((b) => {
+  // Conta nova que começa no mês que vem (desde) ainda não aparece.
+  return (REAL.contasPagar || []).filter((b) => b.v != null && !b.flex && !(typeof b.desde === 'string' && b.desde > mes)).map((b) => {
     const id = b.fatura ? 'fatura' : b.id;
     // Fatura do Open Finance: vem com o vencimento exato (venceEm) e, se o pagamento já apareceu, com a data dele (pagoEm).
-    const due = b.venceEm ? dayOf(b.venceEm) : new Date(t.getFullYear(), t.getMonth(), Math.min(b.dia, dim));
-    // txValor: a fatura só conta como paga quando o pagamento bate o valor (dois cartões pagos no mesmo mês).
-    // Fatura do Open Finance (venceEm): quem acha o pagamento é o banco de dados (pagoEm), para Contas e Cartões concordarem.
-    let hit = b.pagoEm || b.venceEm ? null : b.txCat ? tx.find((x) => x.d.startsWith(mes) && x.cat === b.txCat && x.v < 0 && (b.txValor == null || Math.abs(-x.v - b.txValor) < 1)) : null;
-    if (!hit && !b.pagoEm && !b.venceEm && b.txCat && !b.estimado && b.v >= 1) {
-      const d0 = iso(addDays(due, -7)), d1 = iso(addDays(due, 10));
-      hit = tx.find((x) => x.v < 0 && Math.abs(-x.v - b.v) < 0.01 && x.d >= d0 && x.d <= d1 && bancos.has(x.conta) && !usados.has(x) && !cats.has(x.cat) && x.tipo !== 'transferencia') || null;
+    // Quem acha o pagamento dela é o banco de dados (pagoEm), para Contas e Cartões concordarem.
+    const due = b.venceEm ? dayOf(b.venceEm) : vence(b.dia);
+    let hit = b.pagoEm || b.venceEm ? null : acha(b, due);
+    // Conta editada neste mês: o pagamento que já saiu é achado pelos campos que ela tinha antes de cada edição (antes.l).
+    // A conta continua com o vencimento de agora.
+    const A = !hit && !b.pagoEm && !b.venceEm && b.antes && b.antes.m === mes && Array.isArray(b.antes.l) ? b.antes.l : [];
+    for (const a of A) {
+      if (!a || typeof a !== 'object') continue;
+      hit = acha({ txCat: a.txCat, txValor: a.txValor, estimado: a.estimado, v: a.v ?? b.v, criada: b.criada }, vence(a.dia ?? b.dia));
+      if (hit) break;
     }
     if (hit) usados.add(hit);
+    // Financiamento sem parcelas a pagar: a parcela sai da lista no mês seguinte ao da última.
+    const P = b.passivo && (REAL.passivos || []).find((p) => p.id === b.passivo);
+    if (P && P.prazo && P.restantes != null && P.restantes <= 0 && !hit) return null;
     const porExtrato = !!hit || !!b.pagoEm;
     const isPaid = porExtrato || !!paid[id];
     let v = hit ? -hit.v : b.v;
@@ -226,10 +249,9 @@ function realBills(paid, faturaExtra, t) {
     const auto = /autom/i.test(b.met);
     const st = isPaid ? 'pago' : due < hoje && iso(due) <= corte ? 'atrasado' : auto ? 'agendado' : 'avencer';
     let n = b.n + (b.estimado && !hit ? ' · valor médio' : '');
-    const P = b.passivo && (REAL.passivos || []).find((p) => p.id === b.passivo);
     if (P && P.prazo) { const k = P.pagas + (hit ? 0 : 1) + Math.max(0, (t.getFullYear() - +corte.slice(0, 4)) * 12 + t.getMonth() + 1 - +corte.slice(5, 7)); n = `${b.n} · ${Math.min(k, P.prazo)}/${P.prazo}`; }
     return { id, n, v: r2(v), due, st, pago: isPaid, porExtrato, met: b.met, cat: b.cat, auto, hitTx: hit || null };
-  }).sort((a, b) => a.due - b.due);
+  }).filter(Boolean).sort((a, b) => a.due - b.due);
 }
 
 // Valida e calcula tudo antes de trocar: um arquivo ou leitura com defeito não deixa a tela meio real, meio vazia.

@@ -31,6 +31,8 @@ try { const t = localStorage.getItem(REALK); if (t) D.useReal(JSON.parse(t)); } 
 try { const t = localStorage.getItem(SAUDEK); if (t) { const H = JSON.parse(t); D.useSaude(H); saudeRaw = H; } } catch { saudeRaw = null; /* lê de novo na próxima sincronização */ }
 const CARD = 'cartao'; // gasto registrado à mão no cartão principal
 const card0 = () => (D.CARDS[0] ? D.CARDS[0].n : 'cartão');
+// Conta fixa no cartão não diz qual cartão: com mais de um, fica só "cartão".
+const cartaoDe = () => (D.CARDS.length > 1 ? 'cartão' : card0());
 const semCartao = () => !D.CARDS.length; // sem nenhum cartão: nada de fatura nas telas
 const cardName = (m) => (m === CARD ? card0() : m);
 
@@ -393,17 +395,31 @@ function txKeys() {
 // antes do vencimento), fora da categoria de outra conta e sem já explicar outra coisa; ou quando todos os bancos
 // atualizaram depois da marcação e depois do dia do vencimento (um pagamento agendado só sai no dia). Na dúvida,
 // continua descontando: o "livre para gastar" nunca fica maior do que é. Devolve as contas e os débitos usados.
+// Conta tirada da lista (Não devo mais) depois de marcada como paga neste mês: a marcação continua saindo do saldo
+// até o extrato mostrar o pagamento, como as outras.
+function comTiradas(B) {
+  const m = D.iso(diaNow()).slice(0, 7);
+  const ids = Object.keys(S.paid).filter((id) => { const at = S.paidAt[id]; return S.paid[id] && at && at.m === m && at.due && !String(id).startsWith('fatura') && !B.some((b) => b.id === id); });
+  return ids.length ? B.concat(ids.map((id) => { const at = S.paidAt[id]; return { id, due: D.dayOf(at.due), v: S.paidAmt[id] ?? 0, met: at.met || '', txCat: at.txCat || '', tirada: true, porExtrato: false }; })) : B;
+}
+// Marcação à mão sai do saldo do banco, menos a de conta no cartão (entra na fatura): no cartão agora e também quando
+// foi marcada. Uma conta paga por Pix e depois trocada para o cartão continua saindo do saldo até o extrato mostrar.
+const saiDoBanco = (b) => b.met !== 'Cartão' || !!(S.paidAt[b.id] && S.paidAt[b.id].met && S.paidAt[b.id].met !== 'Cartão');
 function reflected(B) {
   const ids = new Set(), tx = new Set();
   if (!fromSB()) return { ids, tx };
   const R = D.REAL, bank = bankIds(), K = txKeys(), cps = R.contasPagar || [], u = tsOf(R.atualizadoEm), usados = new Set(S.txUsados);
   B.forEach((b) => { if (b.hitTx) tx.add(b.hitTx); });
-  B.filter((b) => S.paid[b.id] && !b.porExtrato && S.paidAt[b.id]).sort((a, b) => a.due - b.due).forEach((b) => {
+  // Conta no cartão entra na fatura: nunca sai do saldo do banco nem casa com um débito dele.
+  B.filter((b) => S.paid[b.id] && saiDoBanco(b) && !b.porExtrato && S.paidAt[b.id]).sort((a, b) => a.due - b.due).forEach((b) => {
     const at = S.paidAt[b.id], v = S.paidAmt[b.id] ?? b.v;
     const own = cps.find((c) => (c.fatura ? 'fatura' : c.id) === b.id), oc = own && own.txCat;
-    const outras = new Set(cps.filter((c) => c !== own && c.txCat && c.txCat !== oc).map((c) => c.txCat));
+    // Débito na categoria de outra conta (a de agora ou a que a quitou neste mês, antes de uma edição) é dela.
+    const outras = new Set(cps.filter((c) => c !== own).flatMap((c) => [c.txCat, ...(c.antes && c.antes.m === at.m && Array.isArray(c.antes.l) ? c.antes.l.map((a) => a && a.txCat) : [])]).filter((x) => x && x !== oc));
     const d0 = [D.iso(D.addDays(new Date(tsOf(at.t) || Date.now()), -1)), D.iso(D.addDays(b.due, -28))].sort()[1];
-    const hit = v >= 1 && (R.transacoes || []).find((x) => !tx.has(x) && !usados.has(K.get(x)) && bank.has(x.conta) && x.v < 0 && Math.abs(-x.v - v) < 1 && x.d >= d0 && !outras.has(x.cat));
+    // Conta tirada da lista: um débito do mês na categoria dela também é o pagamento, de qualquer valor (conta que muda).
+    const daConta = (x) => b.tirada && b.txCat && x.cat === b.txCat && x.d.slice(0, 7) === at.m;
+    const hit = v >= 1 && (R.transacoes || []).find((x) => !tx.has(x) && !usados.has(K.get(x)) && bank.has(x.conta) && x.v < 0 && x.d >= d0 && (daConta(x) || (Math.abs(-x.v - v) < 1 && !outras.has(x.cat))));
     if (hit) { tx.add(hit); ids.add(b.id); return; }
     const depois = new Date(b.due.getFullYear(), b.due.getMonth(), b.due.getDate() + 1).getTime();
     if (u && u > Math.max(tsOf(at.t), depois)) ids.add(b.id);
@@ -411,8 +427,8 @@ function reflected(B) {
   return { ids, tx };
 }
 function money() {
-  const now = diaNow(), payday = D.payday(now), B = bills(), RF = reflected(B);
-  const pagas = B.filter((b) => S.paid[b.id] && !b.porExtrato && !RF.ids.has(b.id)).reduce((a, b) => a + (S.paidAmt[b.id] ?? b.v), 0); // sai do saldo o valor pago, não o atual
+  const now = diaNow(), payday = D.payday(now), B = bills(), BT = comTiradas(B), RF = reflected(BT);
+  const pagas = BT.filter((b) => S.paid[b.id] && saiDoBanco(b) && !b.porExtrato && !RF.ids.has(b.id)).reduce((a, b) => a + (S.paidAmt[b.id] ?? b.v), 0); // sai do saldo o valor pago, não o atual
   const avista = S.expenses.filter((x) => x.met !== CARD).reduce((a, x) => a + x.v, 0);
   const saldo = D.SAFE.saldo - pagas - avista;
   const due = B.filter((b) => !b.pago && b.id !== 'fatura' && b.met !== 'Cartão' && b.due <= payday);
@@ -425,9 +441,12 @@ function money() {
   if (c0 && c0.faturas.proxima.deUso && fb.pago && !fb.porExtrato && S.paid.fatura && !RF.ids.has('fatura')) proxima = Math.max(0, proxima - fb.v);
   return { saldo, contas, due, fb, fatura: fb.v, faturaAntes, proxima, payday, dias: D.diffDays(payday, now), livre: saldo - contas - faturaAntes };
 }
-// Contas marcadas à mão nos dados reais: valem no mês em que foram marcadas, só para a mesma conta (mesmo nome e
-// vencimento: a fatura do cartão principal pode passar a ser de outro cartão), e saem quando o extrato mostra o pagamento.
+// Contas marcadas à mão nos dados reais: valem no mês em que foram marcadas e saem quando o extrato mostra o pagamento.
+// A fatura vale só para o mesmo cartão (mesmo nome e vencimento: a do cartão principal pode passar a ser de outro); uma
+// conta fixa editada (nome, dia) continua sendo a mesma conta.
 const billName = (b) => String(b.n || '').split(' · ')[0];
+// "Pagar luz", "Pagar processo da CNH", "Pagar IPVA": a primeira letra fica minúscula só quando a segunda já é.
+const pagarTxt = (b) => { const n = billName(b); return `Pagar ${/^\p{Lu}\p{Ll}/u.test(n) ? n[0].toLowerCase() + n.slice(1) : n}`; };
 function prunePaid() {
   if (!D.REAL) return false;
   const m = D.iso(diaNow()).slice(0, 7), B = bills(); let ch = false;
@@ -436,8 +455,11 @@ function prunePaid() {
     if (!at || typeof at !== 'object') { at = S.paidAt[id] = { m, t: new Date().toISOString(), xp: 0 }; ch = true; } // marcação de antes desta versão
     const b = B.find((x) => x.id === id);
     if (b && !at.due) { at.due = D.iso(b.due); at.n = billName(b); ch = true; }
-    const outra = b && (at.due !== D.iso(b.due) || (at.n && at.n !== billName(b)));
-    if (at.m !== m || (b && b.porExtrato) || outra) { delete S.paid[id]; delete S.paidAmt[id]; delete S.paidAt[id]; ch = true; }
+    const fatura = String(id).startsWith('fatura'), mudou = b && (at.due !== D.iso(b.due) || (at.n && at.n !== billName(b)));
+    if (at.m !== m || (b && b.porExtrato) || (fatura && mudou)) { delete S.paid[id]; delete S.paidAmt[id]; delete S.paidAt[id]; ch = true; }
+    // Conta fixa editada (nome, dia): a marcação acompanha, para uma versão antiga do app aberta em outro aparelho não a
+    // tomar por outra conta e apagá-la.
+    else if (mudou) { at.due = D.iso(b.due); at.n = billName(b); ch = true; }
   });
   return ch;
 }
@@ -449,7 +471,7 @@ const sameDebits = (v, d) => { if (!fromSB()) return []; const K = txKeys(), d0 
 function pruneExpenses() {
   if (!fromSB()) return false;
   const R = D.REAL, bank = bankIds(), card = new Set((R.cartoes || []).map((c) => c.id).filter(Boolean)), K = txKeys();
-  const busy = S.expenses.length ? reflected(bills()).tx : new Set(), usados = new Set(S.txUsados), u = tsOf(R.atualizadoEm);
+  const busy = S.expenses.length ? reflected(comTiradas(bills())).tx : new Set(), usados = new Set(S.txUsados), u = tsOf(R.atualizadoEm);
   let ch = false;
   const keep = S.expenses.filter((x) => {
     if (!x.t) { x.t = new Date().toISOString(); ch = true; } // registrado antes desta versão
@@ -477,7 +499,7 @@ const livreLabel = (m) => (m.livre < 0 ? `Falta para as contas até ${dShort(m.p
 const livreBig = (m) => `<span class="big${m.livre < 0 ? ' neg' : ''}" style="margin-top:2px">${brl0(Math.abs(m.livre))}</span>`;
 function missionBill() { return bills().find((b) => !b.pago && !b.auto && D.diffDays(b.due, diaNow()) <= 1); }
 // A Missão do dia é escolhida uma vez e fica fixa: pagar a conta não troca o texto pela próxima.
-function missao() { if (S.missaoRef && S.missaoRef !== 't1' && !bills().some((b) => b.id === S.missaoRef)) S.missaoRef = null; if (!S.missaoRef) { const mb = missionBill(); S.missaoRef = mb ? mb.id : 't1'; save(); } return S.missaoRef; }
+function missao() { if (S.missaoRef && S.missaoRef !== 't1' && !S.quests.missao && !bills().some((b) => b.id === S.missaoRef)) S.missaoRef = null; if (!S.missaoRef) { const mb = missionBill(); S.missaoRef = mb ? mb.id : 't1'; save(); } return S.missaoRef; }
 
 
 // ---------- XP das missões: o mesmo valor venha de onde vier ----------
@@ -750,7 +772,8 @@ function Hoje() {
   const cm = D.SAUDE ? consumo(S.meals, D.refeicoes(tk)) : { n: 0, t: [0, 0, 0, 0] }, cp = Math.round(cm.t[1]);
   const comb = pr ? { t: `Proteína ${pr.meta} g`, d: cm.n ? `${cp} de ${pr.meta} g${cp >= pr.conta ? ' · meta batida' : ` · faltam ${pr.conta - cp} g para contar`} · ${fmtInt(cm.t[0])} kcal` : `Dia de ${D.DIAS[tk].toLowerCase()}${kc ? ` · ${fmtInt(kc)} kcal` : ''} · conta a partir de ${pr.conta} g`, go: '#/saude/dieta', xp: X.comb } : { t: 'Proteína na meta', d: 'A meta vem do plano alimentar no Supabase', go: '#/saude/dieta', xp: X.comb };
   const ref = missao(), mbill = ref !== 't1' ? bills().find((b) => b.id === ref) : null, t1 = top1();
-  const miss = mbill ? { t: `Pagar ${mbill.n.split(' · ')[0].toLowerCase()}`, d: `${brl(mbill.v)} · ${relDue(mbill)}`, goAct: 'bill', goArg: mbill.id, goLabel: 'Ver a conta', xp: X.missao }
+  const miss = mbill ? { t: pagarTxt(mbill), d: `${brl(mbill.v)} · ${relDue(mbill)}`, goAct: 'bill', goArg: mbill.id, goLabel: 'Ver a conta', xp: X.missao }
+    : ref !== 't1' && V.quests.missao ? { t: 'Conta do dia paga', d: 'Ela saiu das contas a pagar.', go: '#/dinheiro/contas', xp: X.missao }
     : t1 ? { t: 'Concluir o Top 1 do dia', d: t1.t, go: '#/agenda', xp: X.missao } : { t: 'Escolher o Top 1 do dia', d: 'Na Agenda, marque até 3 tarefas com a estrela. A primeira é a Missão.', go: '#/agenda', xp: X.missao };
   const qrow = (k, label, q) => {
     const on = V.quests[k];
@@ -1539,7 +1562,7 @@ function plTotal() { const a = D.BALANCE.ativo.flatMap((g) => g.itens).reduce((s
 
 function Contas() {
   if (!D.REAL) return { title: 'Contas a pagar', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Contas a pagar')}${semDinheiro()}` };
-  const all = bills(), now = diaNow();
+  const all = bills(), now = diaNow(), fut = contasFixas().filter(contaFutura).sort((a, b) => a.desde.localeCompare(b.desde) || a.dia - b.dia);
   const m0 = new Date(now.getFullYear(), now.getMonth() + S.calOff, 1);
   const first = (m0.getDay() + 6) % 7, dim = new Date(m0.getFullYear(), m0.getMonth() + 1, 0).getDate();
   let cells = D.DOW.map((d) => `<div class="dh">${d.slice(0, 1)}</div>`).join('');
@@ -1566,8 +1589,10 @@ function Contas() {
         <div class="legend" style="margin-top:8px"><span><i class="dot-pago" style="width:8px;height:8px;border-radius:50%"></i>paga</span><span><i class="dot-agendado" style="width:8px;height:8px;border-radius:50%"></i>agendada</span><span><i class="dot-avencer" style="width:8px;height:8px;border-radius:50%"></i>a vencer</span><span><i class="dot-atrasado" style="width:8px;height:8px;border-radius:50%"></i>atrasada</span></div></div>
       <div class="hscroll" role="group" aria-label="Filtrar contas">${F.map(([k, l]) => `<button class="pick" aria-pressed="${S.billFilter === k}" data-act="billf" data-arg="${k}">${l}</button>`).join('')}</div>
       ${S.calSel ? `<div class="sec"><h2>${dShort(new Date(S.calSel + 'T12:00'))}</h2><button class="link" data-act="calsel" data-arg="${S.calSel}">Ver o mês todo</button></div>` : ''}
-      <div class="card tight">${list.length ? list.map((b) => `<button class="row" data-act="bill" data-arg="${esc(b.id)}"><span class="badge-ic">${I(b.cat === 'Cartão' ? 'card' : b.cat === 'Transporte' ? 'car' : b.cat === 'Investimento' ? 'trend' : 'receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${b.met === 'Cartão' ? `no ${esc(card0())}, entra na fatura` : esc(b.met || '')}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><span class="badge-ic">${I('receipt')}</span><p>Nenhuma conta com esse filtro.</p></div>`}</div>
-      <p class="small muted" style="margin:14px 20px">Pagar até o vencimento dá +15 XP. ${fromSB() ? 'As contas vêm do Open Finance: as recorrentes que aparecem no extrato e a fatura do cartão.' : 'As contas vêm do arquivo do Painel.'}</p>`,
+      <div class="card tight">${list.length ? list.map((b) => `<button class="row" data-act="bill" data-arg="${esc(b.id)}"><span class="badge-ic">${I(b.cat === 'Cartão' ? 'card' : b.cat === 'Transporte' ? 'car' : /^Investiment/.test(b.cat || '') ? 'trend' : 'receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${b.met === 'Cartão' ? `no ${esc(cartaoDe())}, entra na fatura` : esc(b.met || '')}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><span class="badge-ic">${I('receipt')}</span><p>Nenhuma conta com esse filtro.</p></div>`}</div>
+      ${fut.length ? `<section id="ct-fut" aria-labelledby="ct-fut-t"><div class="sec"><h2 id="ct-fut-t">${fut.every((c) => c.desde === mesDe(now, 1)) ? 'Começam no mês que vem' : 'Começam depois'}</h2></div><div class="card tight">${fut.map((c) => `<button class="row" data-act="bill" data-arg="${esc(c.id)}"><span class="badge-ic">${I('receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(c.n)}</div><div class="meta">a partir de ${esc(mesDesde(c, false))} · dia ${esc(String(c.dia))} · ${c.met === 'Cartão' ? 'no cartão' : esc(c.met || '')}</div></div><div class="amt"><div class="num">${brl(c.v)}</div></div></button>`).join('')}</div></section>` : ''}
+      ${podeCat() ? `<div class="btnrow" style="margin:0 16px"><button class="btn line" data-act="contaEd" data-arg="">${I('plus', 20)} Nova conta fixa</button></div>` : ''}
+      <p class="small muted" style="margin:14px 20px">Pagar até o vencimento dá +15 XP. ${fromSB() ? `A fatura do cartão vem do Open Finance. As contas fixas são as do seu cadastro${podeCat() ? ' (toque numa para editar ou tirar)' : ''}: as que têm categoria do extrato ficam pagas quando o pagamento aparece nele, e as outras você marca como paga.` : 'As contas vêm do arquivo do Painel.'}</p>`,
   };
 }
 
@@ -1647,30 +1672,47 @@ const FINMSG = {
   categoria_em_uso: 'Essa categoria ainda tem lançamentos ou regras. Para tirá-la, junte com outra.', nome_invalido: 'Digite um nome de até 80 letras.',
   texto_curto: 'Digite pelo menos 3 letras da descrição.', lancamento_nao_existe: 'Esse lançamento não está mais no banco. Atualize e tente de novo.',
   icone_invalido: 'Esse ícone não existe no app.', valor_invalido: 'Digite o valor, por exemplo 45,90.', descricao_vazia: 'Escreva uma descrição.', categoria_obrigatoria: 'Lançamento feito à mão precisa de categoria.',
+  dia_invalido: 'Digite o dia do vencimento, de 1 a 31.', forma_invalida: 'Escolha a forma de pagamento.', conta_nao_existe: 'Essa conta não está mais no cadastro.',
+  conta_do_financiamento: 'A parcela do financiamento não muda por aqui: ela sai da lista no mês seguinte ao da última parcela.', sem_foto: 'O cadastro das contas fixas não está no banco.',
+  conta_mudou: 'A conta mudou desde a última leitura. Lendo as contas de novo: confira e edite outra vez.', desde_invalido: 'Escolha quando a conta começa a contar.',
+  categoria_ja_usada: 'Essa categoria já quita outra conta fixa. Escolha outra ou crie uma só para esta no Plano de contas.',
+  categoria_quitou_no_mes: 'Essa categoria quitou outra conta fixa neste mês. Ela fica livre no mês que vem; até lá, escolha outra.',
+  juntar_contas: 'As duas categorias quitam contas fixas diferentes. Troque a categoria de uma das contas antes de juntar.',
+  categoria_de_conta: 'Essa categoria quita uma conta fixa. Troque a categoria da conta antes de apagar.',
+  PGRST202: 'O banco ainda não tem essa função: falta colar no SQL Editor do Supabase o comando que veio com esta versão.',
 };
 const finMsg = (e) => FINMSG[e && e.code] || sbMsg(e);
 // Lê o fin_painel de novo depois de gravar (espera uma leitura em andamento acabar).
-async function finRecarregar() {
+async function finRecarregar(gravou) {
   for (let i = 0; syncBusy && i < 120; i++) await new Promise((r) => setTimeout(r, 250));
-  await syncNow(false);
+  const ok = await syncNow(false);
   render(true);
+  if (gravou && !ok && syncErr && SB.session() && current() !== 'dinheiro/sincronizar') toast('Gravado. A lista não atualizou agora: abra Sincronizar para ler de novo.', 'warn', 6000);
 }
-let finBusy = false;
+// finBusy: gravando. finLendo: lendo as contas de novo depois de gravar (um formulário aberto agora teria dados velhos).
+let finBusy = false, finLendo = false;
+const finOcupado = () => { if (!finBusy && !finLendo) return false; toast(finBusy ? 'Ainda gravando a mudança anterior: tente de novo em instantes.' : 'Atualizando as contas: tente de novo em instantes.', 'warn'); return true; };
 async function finGrava(passos, ok) {
-  if (finBusy) return false;
+  if (finOcupado()) return false;
   finBusy = true;
+  // Só a folha que pediu a gravação fecha no fim (pode ter sido trocada por outra enquanto gravava).
+  const folha = sheetRoot.querySelector('.sheet:not([inert])'), fecha = () => { if (folha && folha.isConnected && !folha.inert) closeSheet(); };
   sheetRoot.querySelectorAll('[data-fin]').forEach((b) => b.setAttribute('aria-disabled', 'true'));
   try {
     const r = await passos();
     finBusy = false;
-    closeSheet();
+    fecha();
     toast(`${I('check', 18)} <span>${ok(r)}</span>`, '', 3600);
-    finRecarregar();
+    finLendo = true;
+    finRecarregar(true).finally(() => { finLendo = false; });
     return true;
   } catch (e) {
     finBusy = false;
-    sheetRoot.querySelectorAll('[data-fin]').forEach((b) => b.removeAttribute('aria-disabled'));
+    if (folha && folha.isConnected) folha.querySelectorAll('[data-fin]').forEach((b) => b.removeAttribute('aria-disabled'));
     toast(esc(plain(finMsg(e))), 'warn', 6000);
+    // A conta mudou ou saiu (outro aparelho, ou uma gravação que a lista ainda não mostrava): o formulário tem dados
+    // velhos, então fecha e lê de novo.
+    if (e && (e.code === 'conta_mudou' || e.code === 'conta_nao_existe')) { fecha(); finLendo = true; finRecarregar().finally(() => { finLendo = false; }); }
     return false;
   }
 }
@@ -1876,6 +1918,7 @@ function pcSheet(nome) {
   if (nome && !c) return;
   PC_NOME = nome || null;
   const outras = planoCats().filter((x) => x.n !== nome).sort((a, b) => a.n.localeCompare(b.n, 'pt-BR'));
+  const quita = c ? contasFixas().filter(contaVisivel).find((x) => x.txCat === c.n) : null;
   openSheet(c ? esc(c.n) : 'Nova categoria', `${c && c.sis ? '<p class="small muted" style="margin:0 0 8px">O Painel usa esta categoria nas contas (fatura, transferências ou padrão das regras): o nome e o tipo ficam como estão. Dá para juntar outras nela.</p>' : ''}
     <label class="field"><span>Nome</span><input class="input" id="pc-nome" maxlength="80" autocomplete="off" value="${c ? esc(c.n) : ''}" placeholder="Grupo: detalhe, ex.: Moradia: diarista"${c && c.sis ? ' readonly' : ''}${c ? '' : ' data-autofocus'}></label>
     ${c && c.sis ? `<p class="small">Tipo: <b>${TIPOS[c.tipo] || esc(c.tipo)}</b></p>` : radios('Tipo', 'pc-tipo', Object.keys(TIPOS), c ? c.tipo : 'despesa', TIPOS)}
@@ -1885,7 +1928,8 @@ function pcSheet(nome) {
     <button class="btn block" style="margin-top:14px" data-fin data-act="pcSalvar" data-arg="${c ? esc(c.n) : ''}"${c && c.sis ? ' hidden' : ''}>Salvar</button>
     ${c && !c.sis ? `<label class="field" style="margin-top:18px"><span>Juntar com</span><select class="input" id="pc-junta"><option value="">Escolha a categoria que fica</option>${outras.map((x) => `<option value="${esc(x.n)}">${esc(x.n)}</option>`).join('')}</select></label>
       <button class="btn line block" style="margin-top:8px" data-fin data-act="pcJuntar" data-arg="${esc(c.n)}">Juntar e tirar ${esc(c.n)}</button>` : ''}
-    ${c ? `<div class="btnrow"><button class="btn line" data-act="pcVer" data-arg="${esc(c.n)}">Ver lançamentos (${c.q || 0})</button>${!c.sis && !c.q ? `<button class="btn ghost" data-fin data-act="pcApagar" data-arg="${esc(c.n)}">Apagar</button>` : ''}</div>` : ''}`, 'pc');
+    ${c ? `<div class="btnrow"><button class="btn line" data-act="pcVer" data-arg="${esc(c.n)}">Ver lançamentos (${c.q || 0})</button>${!c.sis && !c.q && !quita ? `<button class="btn ghost" data-fin data-act="pcApagar" data-arg="${esc(c.n)}">Apagar</button>` : ''}</div>` : ''}
+    ${c && !c.sis && !c.q && quita ? `<p class="xs muted" style="margin-top:8px">Quita a conta fixa ${esc(quita.n)}: para apagar, troque a categoria dela antes.</p>` : ''}`, 'pc');
 }
 // Categoria do extrato que ainda pede classificação recebe a do gasto rápido ligado a ele (fila: grava depois da leitura).
 const RECAT = [];
@@ -2190,7 +2234,7 @@ function Agenda() {
   const top = T.map((x, i) => `<div class="quest ${x.done ? 'done' : ''}"><button class="qcheck" aria-pressed="${!!x.done}" data-act="doneTop" data-arg="${esc(x.id)}" aria-label="${esc(x.t)}: ${x.done ? 'feito' : 'marcar como feito'}">${I('check', 28)}</button><div class="grow"><div class="t">${esc(x.t)}</div><div class="d">${(x.done ? x.doneAs === 'missao' : i === 0 && ref === 't1' && !S.quests.missao) ? `Top ${i + 1} · é a Missão de hoje (+20 XP)` : `Top ${i + 1} · +10 XP`}</div>${chips(x)}</div>${x.done ? '' : `<button class="iconbtn" data-act="topInbox" data-arg="${esc(x.id)}" aria-pressed="true" aria-label="Tirar ${esc(x.t)} do Top 3" style="color:var(--xp)">${I('star')}</button>`}</div>`).join('');
   const items = [
     { h: '—', t: s.tipo ? s.nome : 'Sem sessão no plano', d: s.tipo ? `${s.resumo || ''} · do plano` : s.resumo || '', c: 'var(--a-for)' },
-    ...(mb ? [{ h: '—', t: `Pagar ${mb.n.split(' · ')[0].toLowerCase()}`, d: `${brl(mb.v)} · ${relDue(mb)}`, c: 'var(--danger)' }] : []),
+    ...(mb ? [{ h: '—', t: pagarTxt(mb), d: `${brl(mb.v)} · ${relDue(mb)}`, c: 'var(--danger)' }] : []),
     ...S.inbox.filter((x) => x.quando === S.day && !x.done).map((x) => ({ h: hm(x.hora) || '—', t: x.t, d: x.top === S.day ? 'Top 3' : 'tarefa', c: 'var(--a-foc)' })),
     ...eventosDe(S.day).map((e) => ({ h: evH(e, S.day) || '—', t: e.t, d: evSub(e, S.day) || 'agenda', c: 'var(--ev)' })),
     ...meals.map((m) => ({ h: hm(m.hora) || '—', t: m.nome, d: `${m.hora ? `${m.hora} · ` : ''}${fmtInt(m.kcal)} kcal · ${fmtInt(m.p)} g de proteína`, c: 'var(--a-nut)' })),
@@ -2455,11 +2499,87 @@ function attrSheet(k) {
     <h3 class="small muted" style="margin:16px 0 4px;text-transform:uppercase;letter-spacing:.06em">Como subir</h3><ul style="padding-left:20px;margin:0">${a.subir.map((s) => `<li style="margin:4px 0">${s}</li>`).join('')}</ul>
     <p class="small muted" style="margin-top:14px">Fonte: ${a.fonte}. A conta começa no primeiro dia de uso, com no mínimo 7 dias. Notas: S ≥ 90 · A ≥ 75 · B ≥ 60 · C ≥ 40 · D ≥ 20.</p>`);
 }
+const contaBotoes = (id) => `<div class="btnrow wrap"><button class="btn line" data-fin data-act="contaEd" data-arg="${esc(id)}">${I('edit', 20)} Editar</button><button class="btn ghost" data-fin data-act="contaTira" data-arg="${esc(id)}">Não devo mais</button></div>`;
+const contaTabela = (met, cl, cv) => `<table class="bp" style="margin-top:12px"><tr><td>Forma de pagamento</td><td>${esc(met || '')}</td></tr><tr><td>${cl}</td><td style="white-space:normal;overflow-wrap:anywhere">${esc(cv)}</td></tr></table>`;
 function billSheet(id) {
-  const b = bills().find((x) => x.id === id); if (!b) return;
+  const b = bills().find((x) => x.id === id);
+  if (!b) { const f = contaCrua(id); if (f && contaFutura(f)) futuraSheet(f); return; }
+  const c = podeCat() ? contaCrua(b.id) : null;
+  const ed = c ? (c.passivo ? '<p class="xs muted" style="margin-top:12px">Parcela do financiamento: sai da lista no mês seguinte ao da última parcela.</p>' : contaBotoes(b.id)) : '';
+  // Conta fixa do cadastro: a categoria do extrato que a quita (ou nenhuma). Nas outras, o grupo.
+  const [cl, cv] = c ? ['Paga pela categoria', c.txCat || 'Nenhuma: você marca'] : ['Categoria', b.cat || ''];
   openSheet(esc(b.n), `<div class="big">${brl(b.v)}</div><div class="row-flex" style="margin-top:6px">${stChip(b.st)}<span class="small muted">${relDue(b)}</span></div>
-    <table class="bp" style="margin-top:12px"><tr><td>Forma de pagamento</td><td>${esc(b.met || '')}</td></tr><tr><td>Categoria</td><td>${esc(b.cat || '')}</td></tr></table>
-    ${b.pago ? `<p class="small muted" style="margin-top:14px">${b.met === 'Cartão' ? `Cobrada no ${esc(card0())}: entra na fatura, que é a conta a pagar.` : b.porExtrato ? 'Paga: o pagamento já apareceu no extrato.' : 'Marcada como paga por você. Sai da marcação quando o extrato mostrar o pagamento.'}</p>${S.paid[b.id] ? `<div class="btnrow"><button class="btn line" data-act="unpayBill" data-arg="${esc(b.id)}">${I('refresh', 20)} Desfazer pagamento</button></div>` : ''}` : `<div class="btnrow"><button class="btn" data-act="payBill" data-arg="${esc(b.id)}" data-autofocus>${I('check', 20)} Marcar como paga</button></div><p class="xs muted" style="margin-top:8px">${b.st === 'atrasado' ? 'Venceu, então não dá os +15 XP de conta em dia. Marcar agora tira a conta da lista.' : 'Paga até o vencimento: +15 XP.'}${b.id === missao() && !S.quests.missao ? ' É a Missão de hoje: +20 XP.' : ''}</p>`}`);
+    ${contaTabela(b.met, cl, cv)}
+    ${b.pago ? `<p class="small muted" style="margin-top:14px">${!saiDoBanco(b) ? `Cobrada no ${esc(cartaoDe())}: entra na fatura, que é a conta a pagar.` : b.porExtrato ? 'Paga: o pagamento já apareceu no extrato.' : 'Marcada como paga por você. Sai da marcação quando o extrato mostrar o pagamento.'}</p>${S.paid[b.id] ? `<div class="btnrow"><button class="btn line" data-fin data-act="unpayBill" data-arg="${esc(b.id)}">${I('refresh', 20)} Desfazer pagamento</button></div>` : ''}` : `<div class="btnrow"><button class="btn" data-fin data-act="payBill" data-arg="${esc(b.id)}" data-autofocus>${I('check', 20)} Marcar como paga</button></div><p class="xs muted" style="margin-top:8px">${b.st === 'atrasado' ? 'Venceu, então não dá os +15 XP de conta em dia. Marcar agora tira a conta da lista.' : 'Paga até o vencimento: +15 XP.'}${b.id === missao() && !S.quests.missao ? ' É a Missão de hoje: +20 XP.' : ''}</p>`}${ed}`);
+}
+// Contas fixas do cadastro (não as faturas), como o fin_painel mandou: é o que se edita. A parcela de um financiamento
+// vem com passivo e não muda por aqui.
+const contasFixas = () => ((D.REAL && D.REAL.contasPagar) || []).filter((b) => b && b.id && !b.fatura && b.met !== 'Fatura' && !String(b.id).startsWith('fatura'));
+const contaCrua = (id) => contasFixas().find((b) => b.id === id);
+// Conta que aparece no app (com valor e sem flex): só ela prende uma categoria do extrato.
+const contaVisivel = (b) => b.v != null && !b.flex;
+// Conta nova que só começa a contar num mês que ainda não chegou (desde): fica fora das contas do mês, numa lista à parte.
+const contaFutura = (c) => typeof c.desde === 'string' && c.desde > D.iso(diaNow()).slice(0, 7) && c.v != null && !c.flex;
+const mesDesde = (c, ano = true) => new Date(`${c.desde}-15T12:00`).toLocaleDateString('pt-BR', ano ? { month: 'long', year: 'numeric' } : { month: 'long' });
+function futuraSheet(c) {
+  openSheet(esc(c.n), `<div class="big">${brl(c.v)}</div><p class="small muted" style="margin-top:6px">Começa a contar em ${esc(mesDesde(c))}, com vencimento todo dia ${esc(String(c.dia))}. Até lá, não entra nas contas do mês.</p>
+    ${contaTabela(c.met, 'Paga pela categoria', c.txCat || 'Nenhuma: você marca')}${podeCat() ? contaBotoes(c.id) : ''}`);
+}
+// Mês 'AAAA-MM' de uma data, ou o seguinte.
+const mesDe = (d, mais = 0) => D.iso(new Date(d.getFullYear(), d.getMonth() + mais, 1)).slice(0, 7);
+let CT = null;
+function contaSheet(id) {
+  const c = id ? contaCrua(id) : null; if (id && (!c || c.passivo)) return;
+  if (finOcupado()) return;
+  // base: a conta como o app a viu. O banco recusa a gravação se outro aparelho mudou a conta nesse meio-tempo.
+  CT = { id: c ? c.id : null, base: c ? { n: c.n, v: c.v, dia: c.dia, met: c.met, txCat: c.txCat, estimado: c.estimado } : null, desdeAuto: true };
+  const cat = c ? c.txCat || '' : '', base = ['Boleto', 'Pix', 'Débito automático', 'Cartão'];
+  const mets = c && c.met && !base.includes(c.met) ? [...base, c.met] : base;
+  // Categorias de saída: sem receita, a receber e as do sistema (A classificar, Outros, Pagamento de fatura...), menos a
+  // que a conta já usa. Um lançamento quita uma conta só: a categoria de outra conta aparece sem poder escolher, e
+  // também a categoria em que outra conta foi paga neste mês, antes de ser editada (fica livre no mês que vem).
+  const mesCt = D.iso(diaNow()).slice(0, 7), deOutra = new Map();
+  contasFixas().filter((x) => contaVisivel(x) && x.id !== (c && c.id)).forEach((x) => {
+    const nm = billName({ n: x.n });
+    if (x.txCat) deOutra.set(x.txCat, `já quita ${nm}`);
+    if (x.antes && x.antes.m === mesCt && Array.isArray(x.antes.l)) x.antes.l.forEach((a) => { if (a && a.txCat && !deOutra.has(a.txCat)) deOutra.set(a.txCat, `quitou ${nm} neste mês`); });
+  });
+  const P = planoCats().filter((x) => x.n === cat || (!['receita', 'receber'].includes(x.tipo) && !x.sis)).sort((a, b) => a.n.localeCompare(b.n, 'pt-BR'));
+  const grupos = [...new Set(P.map((x) => grupoDe(x.n)))];
+  const opt = (x) => (deOutra.has(x.n) && x.n !== cat ? `<option value="${esc(x.n)}" disabled>${esc(x.n)} · ${esc(deOutra.get(x.n))}</option>`
+    : `<option value="${esc(x.n)}"${x.n === cat ? ' selected' : ''}>${esc(x.n)}</option>`);
+  const fora = cat && !P.some((x) => x.n === cat) ? `<option value="${esc(cat)}" selected>${esc(cat)} (fora do plano)</option>` : '';
+  const val = (x) => (x == null ? '' : esc(String(x)));
+  openSheet(c ? 'Editar conta' : 'Nova conta fixa', `<label class="field"><span>Nome</span><input class="input" id="ct-n" maxlength="80" autocomplete="off" placeholder="ex.: internet, aluguel" value="${c ? val(c.n) : ''}"${c ? '' : ' data-autofocus'}></label>
+    <div class="row-flex" style="gap:8px"><label class="field grow"><span>Valor</span><input class="input" id="ct-v" inputmode="decimal" placeholder="R$ 0,00" value="${c && c.v != null ? val(Number(c.v).toFixed(2).replace('.', ',')) : ''}"${c ? ' data-autofocus' : ''}></label>
+      <label class="field" style="width:118px"><span>Vence no dia</span><input class="input" id="ct-dia" data-in="ctdia" inputmode="numeric" maxlength="2" placeholder="1 a 31" value="${c ? val(c.dia) : ''}"></label></div>
+    ${c ? '' : radios('Começa a contar', 'ct-desde', ['este', 'proximo'], 'este', { este: 'Este mês', proximo: 'No mês que vem' })}
+    ${radios('Forma de pagamento', 'ct-met', mets, c && mets.includes(c.met) ? c.met : 'Boleto', { Cartão: 'No cartão' })}
+    ${radios('O valor', 'ct-varia', ['fixo', 'varia'], c && c.estimado ? 'varia' : 'fixo', { fixo: 'É sempre o mesmo', varia: 'Muda todo mês' })}
+    <label class="field"><span>Paga pela categoria do extrato</span><select class="input" id="ct-cat"><option value=""${cat ? '' : ' selected'}>Nenhuma: eu marco como paga</option>${fora}${grupos.map((g) => `<optgroup label="${esc(g)}">${P.filter((x) => grupoDe(x.n) === g).map(opt).join('')}</optgroup>`).join('')}</select></label>
+    <button class="btn block" style="margin-top:16px" data-fin data-act="contaSalvar">Salvar</button>
+    <p class="xs muted" style="margin-top:8px">Com categoria do extrato, a conta fica paga sozinha quando um lançamento dela aparece no extrato do mês; sem categoria, você marca como paga. Valor que muda (água, luz): digite a média.${c ? '' : ' Se a deste mês já foi paga, comece no mês que vem.'} Fica no Supabase.</p>`, 'ct');
+}
+// Conta nova: o dia que já passou neste mês sugere começar no mês que vem (a deste mês, em geral, já foi paga).
+function ctDesde(txt) {
+  const d = /^\d{1,2}$/.test(String(txt).trim()) ? +txt : NaN, hoje = diaNow(), dim = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).getDate();
+  const v = d >= 1 && d <= 31 && Math.min(d, dim) < hoje.getDate() ? 'proximo' : 'este';
+  sheetRoot.querySelectorAll('[aria-labelledby="ct-desde"] [role="radio"]').forEach((b) => { const on = b.dataset.val === v; b.setAttribute('aria-checked', on); b.tabIndex = on ? 0 : -1; });
+}
+function contaSalvar() {
+  const nome = (document.getElementById('ct-n')?.value || '').trim().replace(/\s+/g, ' '), v = parseMoney(document.getElementById('ct-v')?.value || '');
+  const dTxt = (document.getElementById('ct-dia')?.value || '').trim(), dia = /^\d{1,2}$/.test(dTxt) ? +dTxt : NaN;
+  const met = sheetRoot.querySelector('[aria-labelledby="ct-met"] [aria-checked="true"]')?.dataset.val || 'Boleto';
+  const varia = sheetRoot.querySelector('[aria-labelledby="ct-varia"] [aria-checked="true"]')?.dataset.val === 'varia';
+  const cat = document.getElementById('ct-cat')?.value || null;
+  if (!nome) { toast(FINMSG.nome_invalido, 'warn'); document.getElementById('ct-n').focus(); return; }
+  if (!(v > 0 && v < 1e6)) { toast(FINMSG.valor_invalido, 'warn'); document.getElementById('ct-v').focus(); return; }
+  if (!(dia >= 1 && dia <= 31)) { toast(FINMSG.dia_invalido, 'warn'); document.getElementById('ct-dia').focus(); return; }
+  const id = CT && CT.id, valor = Math.round(v * 100) / 100;
+  const prox = !id && sheetRoot.querySelector('[aria-labelledby="ct-desde"] [aria-checked="true"]')?.dataset.val === 'proximo';
+  const desde = prox ? mesDe(diaNow(), 1) : null;
+  finGrava(() => SB.fin('fin_conta_salvar', { p_id: id, p_nome: nome, p_valor: valor, p_dia: dia, p_met: met, p_categoria: cat, p_varia: varia, p_desde: desde, p_base: (CT && CT.base) || null }),
+    () => `${id ? 'Conta alterada' : 'Conta criada'}: ${esc(nome)}, ${brl(valor)} todo dia ${dia}${prox ? ', a partir do mês que vem' : ''}.`).then((ok) => { if (ok) CT = null; });
 }
 function examSheet(n) {
   const L = ((D.SAUDE && D.SAUDE.exames) || []).filter((e) => e.n === n); if (!L.length) return;
@@ -2573,7 +2693,9 @@ const A = {
       const ref = missao();
       if (ref !== 't1') {
         const b = bills().find((x) => x.id === ref);
-        if (b && b.pago && !S.paid[ref]) { setQuest('missao', !S.quests.missao); render(true); return; } // paga fora do app
+        // A conta da Missão foi paga e depois saiu da lista (Não devo mais): a Missão continua feita.
+        if (!b) { toast('A conta da Missão saiu das contas a pagar: a Missão de hoje continua feita.', '', 4200); return; }
+        if (b.pago && !S.paid[ref]) { setQuest('missao', !S.quests.missao); render(true); return; } // paga fora do app
         billSheet(ref); return;
       }
       const t = top1();
@@ -2620,11 +2742,22 @@ const A = {
   safe: () => safeSheet(),
   attr: (k) => attrSheet(k),
   bill: (id) => billSheet(id),
+  contaEd: (id) => contaSheet(id || null),
+  contaSalvar: () => contaSalvar(),
+  contaTira: (id) => {
+    const c = contaCrua(id); if (!c || c.passivo) return;
+    if (finOcupado()) return;
+    const marca = S.paid[id] ? ' A marcação de paga deste mês continua descontando do saldo até o extrato mostrar o pagamento: se foi engano, desfaça o pagamento antes.' : '';
+    if (!confirm(`Tirar “${c.n}” das contas a pagar? Ela sai da lista e não volta nos próximos meses. Os pagamentos que já estão no extrato não mudam.${marca}`)) return;
+    // A marcação de paga deste mês fica: até o extrato mostrar o pagamento, ele continua saindo do saldo (comTiradas).
+    finGrava(() => SB.fin('fin_conta_apagar', { p_id: id }), () => `${esc(c.n)} saiu das contas a pagar.`);
+  },
   exame: (n) => examSheet(n),
   chama: () => chamaSheet(),
   payBill: (id) => {
     const b = bills().find((x) => x.id === id); if (!b || b.pago) return;
-    S.paid[id] = true; S.paidAmt[id] = b.v; S.paidAt[id] = { m: D.iso(diaNow()).slice(0, 7), t: new Date().toISOString(), due: D.iso(b.due), n: billName(b), xp: b.st !== 'atrasado' ? 15 : 0 };
+    const raw = contaCrua(id);
+    S.paid[id] = true; S.paidAmt[id] = b.v; S.paidAt[id] = { m: D.iso(diaNow()).slice(0, 7), t: new Date().toISOString(), due: D.iso(b.due), n: billName(b), met: b.met || '', txCat: (raw && raw.txCat) || '', xp: b.st !== 'atrasado' ? 15 : 0 };
     lastFocusKey = focusKey(lastFocus) || lastFocusKey;
     closeSheet(true);
     if (b.st !== 'atrasado') addXP(15, 'Conta paga em dia'); else { touch(); toast(`${I('check', 18)} Conta marcada como paga`); }
@@ -2891,6 +3024,7 @@ const A = {
     g.querySelectorAll('[role="radio"]').forEach((b) => { const on = b === el; b.setAttribute('aria-checked', on); b.tabIndex = on ? 0 : -1; });
     if (g.getAttribute('aria-labelledby') === 'tx-alc' && TX) { TX.par = el.dataset.val === 'par'; txRender('[aria-labelledby="tx-alc"] [aria-checked="true"]'); }
     if (g.getAttribute('aria-labelledby') === 'ex-cat') { const s = document.getElementById('ex-cat-outra'); if (s) s.value = ''; }
+    if (g.getAttribute('aria-labelledby') === 'ct-desde' && CT) CT.desdeAuto = false;
   },
   // Lançamentos, categorias e plano de contas.
   tx: (id) => txSheet(id),
@@ -3041,6 +3175,7 @@ document.addEventListener('input', (e) => {
   if (el.dataset.in === 'exq') { exBusca = el.value; document.getElementById('exlist').innerHTML = exLista(); return; }
   if (el.dataset.in === 'lfq') { LF.q = el.value; LF.n = 60; document.getElementById('lflist').innerHTML = lfLista(); return; }
   if (el.dataset.in === 'pcq') { PCq = el.value; document.getElementById('pclist').innerHTML = pcLista(); return; }
+  if (el.dataset.in === 'ctdia' && CT && !CT.id && CT.desdeAuto) { ctDesde(el.value); return; }
   if (el.dataset.in === 'txq' && TX) { TX.q = el.value; const x = txById(TX.id); document.getElementById('tx-cats').innerHTML = catOpcoes(TX.q, x && x.cat, 'txCat'); return; }
   if (el.dataset.in === 'txtxt' && TX) { TX.txt = el.value; txPrevBusca(); return; }
   if (el.dataset.in === 'edp') { const sel = S.edAlvo, b = fichaList(sel, plan()).base, j = +el.dataset.arg; if (b[j]) { b[j].p = el.value; if (setBase(sel, b)) save(); } return; }
@@ -3129,7 +3264,7 @@ window.addEventListener('resize', fitRestbar);
 
 
 // ---------- Render ----------
-const VERSION = '0.9.2';
+const VERSION = '0.9.3';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
 const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/treino-editar': 'Editar treino', 'saude/exercicios': 'Exercícios', 'saude/campanha': 'Plano', 'saude/dieta': 'Dieta', 'saude/refeicao': 'Refeição', 'saude/exames': 'Exames', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Open Finance e arquivo', 'dinheiro/sincronizar': 'Sincronizar', 'dinheiro/lancamentos': 'Lançamentos', 'dinheiro/categorias': 'Plano de contas', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes' };
