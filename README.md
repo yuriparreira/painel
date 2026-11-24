@@ -20,7 +20,7 @@ XP, Chama, atributos, conquistas e o chefe do mês começam do zero e são calcu
 | Área | Telas |
 | --- | --- |
 | Hoje | check-in, missões do dia (Corpo, Combustível e Missão), linha do dia, resumo do dinheiro e da semana |
-| Saúde | energia pelo sono, peso, treino com cronômetro de descanso, treinos seus e base de exercícios, plano de treino, dieta do dia com o que você comeu de verdade (tabela TACO e Open Food Facts), exames e medidas |
+| Saúde | abas Resumo, Treino, Dieta, Medidas e Exames: energia pelo sono, treino com cronômetro de descanso, treinos seus e base de exercícios, plano de treino; dieta do dia com o que você comeu de verdade, plano alimentar editável ou pronto e banco de alimentos (tabela TACO e Open Food Facts); peso, medidas e exames |
 | Dinheiro | quanto pode gastar, contas a pagar, cartões e faturas, patrimônio, sincronização |
 | Agenda | Top 3 do dia, caixa de entrada com texto livre, próximos 7 dias |
 | Ficha | nível, XP, atributos, missões da semana, conquistas, chefe do mês, ajustes |
@@ -40,6 +40,7 @@ nuvem.js              seus registros na nuvem: junta o estado do celular e do co
 app.css               tokens de cor (claro e escuro) e componentes
 icons.js              ícones de traço em SVG
 alimentos.js          busca de alimentos (TACO no aparelho, Open Food Facts pela internet) e conta de calorias e macros
+dieta.js              planos de dieta: modelos prontos (TACO), cópia do plano do Supabase e conferência dos planos seus
 taco.js               Tabela Brasileira de Composição de Alimentos (TACO, 4ª ed., NEPA/UNICAMP), 597 alimentos por 100 g
 sw.js                 service worker: funciona offline após a primeira visita
 manifest.webmanifest  instalação como PWA
@@ -101,6 +102,15 @@ Os segredos (`PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`, `PLUGGY_ITEM_IDS`, `PLU
 - Alimentos: a **tabela TACO** (`taco.js`, 597 alimentos, valores por 100 g) funciona sem internet; **produtos de marca** vêm do [Open Food Facts](https://world.openfoodfacts.org) (base aberta, ODbL) pelo nome ou código de barras, só quando você toca em Buscar (o limite deles é de 10 buscas por minuto). Dá para criar um alimento com os valores do rótulo. Os 60 alimentos usados por último ficam como recentes, nos dois aparelhos.
 - No estado: o mapa do dia `meals` guarda `true` (seguiu o plano) ou `{ f: [itens] }`; refeições fora do plano têm chave `x~…`; os recentes ficam em `lastSets` com chave `~a:fonte`. Uma cópia antiga do app só vê a refeição como marcada.
 - Fonte da TACO: NEPA/UNICAMP, Tabela Brasileira de Composição de Alimentos, 4ª edição revisada e ampliada, 2011 (CSV de github.com/raulfdm/taco-api).
+
+## Saúde em abas, plano alimentar e banco de alimentos (0.10.0)
+
+- **Saúde** tem abas no topo: **Resumo** (energia, treino e dieta de hoje, peso, Apple Health, sono), **Treino** (hoje, próximo treino de força, plano de treino, base de exercícios, histórico), **Dieta**, **Medidas** (peso e medidas do corpo) e **Exames**. Trocar de aba não empilha o voltar.
+- **Dieta** tem três partes: **Hoje** (o registro do dia, como antes), **Plano** e **Alimentos**.
+- **Plano**: mostra o plano em uso por tipo de dia (treino, descanso, refeed), com as metas. O plano do Supabase não muda pelo app: **Editar** cria uma cópia sua com as mesmas refeições (o que já foi marcado hoje continua valendo). Num plano seu dá para mudar nome, hora, os dias e os alimentos de cada refeição, adicionar e apagar refeições, e as metas (calorias por tipo de dia e proteína; o Combustível conta com 90% da proteína). **Trocar plano** volta ao do Supabase, escolhe outro seu, abre os **planos prontos** ou monta um do zero. Ao trocar, o que já foi registrado hoje numa refeição que não existe no plano novo vira refeição fora do plano, com os mesmos valores.
+- **Planos prontos** (`dieta.js`): Equilibrado, Ganho de massa, Definição e Low carb moderado, montados com alimentos da TACO (e whey pela média dos rótulos) e ajustados à meta de calorias escolhida. São modelos gerais, não prescrição.
+- **Alimentos**: busca em tudo (refeições prontas, meus alimentos, recentes, TACO e, ao tocar, Open Food Facts), a TACO por grupo, e cada alimento abre com os valores e as ações: registrar hoje numa refeição, salvar em meus alimentos, editar ou apagar um seu, tirar dos recentes. **Meus alimentos** ficam (não saem com os 60 recentes). **Refeições prontas** guardam uma refeição que você repete; entram inteiras com um toque na busca de alimentos. Uma refeição registrada vira pronta em **Guardar como refeição pronta**.
+- Sem migração: tudo fica no estado do app (lastSets, chave a chave na nuvem): `~d:<id>` plano seu, `~d@` o plano em uso, `~m:<slug>` alimento seu, `~r:<id>` refeição pronta. A 0.9.3 ignora essas chaves e continua com o plano do Supabase.
 
 ## Revisão para o celular (0.9.1)
 

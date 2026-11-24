@@ -21,6 +21,9 @@ export const soma = (L) => (Array.isArray(L) ? L : []).reduce((a, it) => { const
 const T = TACO.map((r) => ({ id: `t${r[0]}`, n: r[2], gi: r[1], g: GRUPOS_TACO[r[1]] || '', b: [r[3], r[4], r[5], r[6]], fib: r[7], u: 'g', por: 100, s: `t${r[0]}`, k: norm(r[2]) }));
 export const tacoN = T.length;
 export const taco = (id) => T.find((x) => x.id === id) || null;
+// Os grupos da tabela com quantos alimentos cada um tem: [índice, nome, quantos]. E os alimentos de um grupo, por nome.
+export const gruposTaco = () => GRUPOS_TACO.map((n, g) => [g, n, T.filter((x) => x.gi === g).length]).filter((x) => x[1] && x[2]);
+export const tacoGrupo = (g) => T.filter((x) => x.gi === +g).sort((a, b) => a.n.localeCompare(b.n, 'pt-BR'));
 
 // Os do dia a dia vêm antes numa busca curta ("arroz" acha o tipo 1 cozido antes do carreteiro). Chave: grupo × 1000 + id.
 const COMUNS = new Set([[1, 3], [14, 561], [9, 488], [7, 458], [7, 457], [1, 53], [7, 461], [3, 182], [6, 410], [1, 7], [2, 88], [2, 91], [4, 260], [6, 326],
