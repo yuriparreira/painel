@@ -498,3 +498,14 @@ button.card { width: calc(100% - 32px); text-align: left; font: inherit; color: 
 .qbody > .go { flex: none; }
 .setbtns { display: flex; gap: 8px; margin-top: 8px; }
 .setbtns .btn { min-height: 44px; }
+
+/* Saúde: abas do topo (Resumo, Treino, Dieta, Medidas, Exames) e as da Dieta (Hoje, Plano, Alimentos). */
+.subnav { display: flex; gap: 2px; overflow-x: auto; padding: 2px 12px 0; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+.subnav::-webkit-scrollbar { display: none; }
+.subnav a { flex: 1 0 auto; min-height: 44px; display: flex; align-items: center; justify-content: center; padding: 0 8px; font-weight: 650; font-size: 15px; color: var(--muted); text-decoration: none; border-bottom: 2.5px solid transparent; margin-bottom: -1px; }
+.subnav a[aria-current="page"] { color: var(--primary); border-bottom-color: var(--primary); }
+.seg.segnav a { flex: 1; min-height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 10px; font-weight: 650; font-size: 14px; color: var(--muted); text-decoration: none; }
+.seg.segnav a[aria-current="page"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
+.row .ttl.wrap { white-space: normal; overflow-wrap: anywhere; }
+details summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; color: var(--primary); }
+@media (max-width: 360px) { .subnav { padding: 2px 6px 0; gap: 0; } .subnav a { font-size: 14px; padding: 0 4px; } }

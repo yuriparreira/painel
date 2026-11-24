@@ -2,6 +2,7 @@
 // do painel-dados.json carregado no aparelho; a saúde (plano, fichas, dieta, medidas, exames, o diário com o Apple
 // Health e a agenda do iPhone, que chegam pelo atalho) vem da função saude_painel do Supabase. A cópia fica só no
 // navegador. Sem dados, as telas ficam vazias e dizem de onde eles vêm.
+import * as DT from './dieta.js';
 
 export const DAY = 864e5;
 export const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
@@ -165,12 +166,17 @@ export const fmtKg = (v) => (Number.isFinite(v) ? v.toLocaleString('pt-BR', { mi
 // Os tipos de dia do plano alimentar. Cardio conta como dia de treino; descanso é descanso; refeed você escolhe.
 export const DIAS = { treino: 'Treino', descanso: 'Descanso', refeed: 'Refeed' };
 export const tipoDia = (tipo) => (tipo === 'REST' ? 'descanso' : 'treino');
+// Plano seu ativo (dieta.js), no lugar do plano alimentar do Supabase; null = o do Supabase.
+export let DIETA = null;
+export function usarDieta(p) { DIETA = p || null; }
+export const temDieta = () => !!(DIETA || (SAUDE && SAUDE.refeicoes.length));
 export function refeicoes(k) {
+  if (DIETA) return DT.refeicoes(DIETA, k);
   const L = (SAUDE && SAUDE.refeicoes) || [], nome = DIAS[k];
   return L.filter((r) => Array.isArray(r.tipos) && r.tipos.includes(nome)).map((r) => ({ id: slug(r.refeicao), nome: r.refeicao, hora: r.horario || '', itens: r.alimentos || '', kcal: num(r.kcal) || 0, p: num(r.p) || 0, c: num(r.c) || 0, g: num(r.g) || 0, versao: r.versao || '' }));
 }
-export const kcalDia = (k) => { const K = metas().kcal; return K && num(K[k]) ? num(K[k]) : null; };
-export function prot() { const m = num(metas().proteina); return m ? { meta: m, conta: Math.round(m * 0.9) } : null; } // conta = 90% da meta
+export const kcalDia = (k) => { const K = DIETA ? DIETA.kcal : metas().kcal; return K && num(K[k]) ? num(K[k]) : null; };
+export function prot() { const m = num(DIETA ? DIETA.prot : metas().proteina); return m ? { meta: m, conta: Math.round(m * 0.9) } : null; } // conta = 90% da meta
 
 // ---------- Dinheiro ----------
 // Tudo começa vazio: os números chegam pelo Open Finance (ou pelo arquivo do Painel) em useReal().
