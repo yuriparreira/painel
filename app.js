@@ -7,6 +7,9 @@ import * as D from './data.js';
 import { CATALOGO, GRUPOS } from './catalogo.js';
 import * as AL from './alimentos.js';
 import * as DT from './dieta.js';
+// Dentro de uma moldura de outro site (clickjacking), o Painel não abre: o GitHub Pages não deixa mandar o cabeçalho que bloqueia isso.
+let emMoldura = true; try { emMoldura = window.top !== window.self; } catch { /* moldura de outro site */ }
+if (emMoldura) { document.body.textContent = 'O Painel só abre na própria página.'; throw new Error('Painel em moldura'); }
 // Se o aparelho ainda guarda só os arquivos de uma versão sem o sync.js (sem internet, antes da atualização
 // terminar), o app abre sem o login em vez de ficar em branco.
 const sbOff = async () => { const e = new Error('offline'); e.code = 'offline'; throw e; };
@@ -2437,7 +2440,7 @@ function Sincronizar() {
   const err = LG.msg ? `<p class="small" id="sb-err" style="color:var(--danger);margin-top:8px">${LG.msg}</p>` : '';
   const inv = LG.msg ? ' aria-invalid="true" aria-describedby="sb-err"' : '';
   const note = LG.note ? `<p class="small" style="margin-top:8px">${I('check', 16, 'style="display:inline;vertical-align:-3px;color:var(--primary)"')} ${esc(LG.note)}</p>` : '';
-  const sair = (t) => `<div style="margin:10px 16px"><button class="btn ghost block" data-act="sbLogout"${busyAttr(leaving || nvSaindo)}>${leaving ? 'Saindo…' : nvSaindo ? 'Salvando na nuvem…' : t}</button></div>`;
+  const sair = (t, todos) => `<div style="margin:10px 16px"><button class="btn ghost block" data-act="sbLogout"${busyAttr(leaving || nvSaindo)}>${leaving ? 'Saindo…' : nvSaindo ? 'Salvando na nuvem…' : t}</button>${todos && !leaving && !nvSaindo ? `<button class="btn ghost block small" style="margin-top:4px" data-act="sbLogout" data-arg="todos">Sair de todos os aparelhos</button><p class="xs muted" style="margin:4px 4px 0">Perdeu o celular ou entrou num computador que não é seu? Isso encerra a sessão em todos eles.</p>` : ''}</div>`;
   let body;
   if (leaving) {
     body = `<div class="card"><div class="row-flex"><span class="badge-ic">${I('lock', 20)}</span><div class="grow"><b>Saindo…</b><div class="small muted">A sessão e os dados deste aparelho já foram apagados. Falta avisar o Supabase.</div></div></div></div>`;
@@ -2474,7 +2477,7 @@ function Sincronizar() {
       ${atalhoCard()}
       ${C.length ? `${sec('Conexões')}<div class="card tight">${C.map((c) => { const t = c.sinc ? new Date(c.sinc) : null, ok = c.status === 'SUCCESS' && !c.erro; return `<div class="row"><span class="badge-ic">${I('bank', 20)}</span><div class="grow"><div class="ttl">${esc(c.inst || 'Banco')}</div><div class="meta">${t ? `Atualizado ${dShort(t)} às ${hhmm(t)}` : 'Sem data'}${c.consentimento ? ` · consentimento até ${new Date(c.consentimento + 'T12:00').toLocaleDateString('pt-BR')}` : ''}</div></div><span class="chip st-${ok ? 'pago' : 'atrasado'}">${ok ? 'OK' : 'Atenção'}</span></div>`; }).join('')}</div>` : ''}
       ${R || D.SAUDE ? `${sec('Neste aparelho')}<div class="card">${R ? `<p class="small muted" style="margin:0">${(R.transacoes || []).length} lançamentos, ${(R.contas || []).length} contas e ${(R.cartoes || []).length} cartões. Ações, carro, financiamento e participações vêm da foto manual${R.snapshotEm ? ` de ${dShort(new Date(R.snapshotEm + 'T12:00'))}` : ''}.</p>` : ''}${D.SAUDE ? `<p class="small muted" style="margin:${R ? '8px' : '0'} 0 0">Saúde: ${saudeConta()}.</p>` : ''}</div>` : ''}
-      ${sair('Sair e apagar os dados deste aparelho')}`;
+      ${sair('Sair e apagar os dados deste aparelho', true)}`;
   }
   return { title: 'Sincronizar', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Sincronizar', 'Seus registros na nuvem, dinheiro (Open Finance) e saúde pelo Supabase, com login só seu.')}${netbar()}${body}
     <p class="xs muted" style="margin:14px 20px">${I('lock', 14, 'style="display:inline;vertical-align:-2px"')} Só a conta dona lê os dados. A sessão fica só neste aparelho.</p>` };
@@ -2885,10 +2888,11 @@ const A = {
   sbOtherEmail: () => { if (LG.busy) return; LG.step = 'email'; LG.msg = ''; LG.note = ''; LG.code = ''; SB.clearPending(); render(true, '#sb-email'); },
   // Sair: nada que esteja em andamento (leitura ou renovação da sessão) pode gravar de volta depois disso.
   // Com a nuvem: antes sobe o que falta deste aparelho; depois apaga daqui também os seus registros (estão na nuvem).
-  sbLogout: async () => {
+  sbLogout: async (arg) => {
     if (leaving || nvSaindo) return;
-    const naNuvem = !!(NV && NV.entrou());
-    if (!confirm(naNuvem ? 'Sair deste aparelho? A sessão e a cópia dos seus dados daqui são apagadas. Na nuvem fica tudo, para entrar de novo aqui ou em outro aparelho.' : 'Sair deste aparelho? A sessão e a cópia do dinheiro e da saúde daqui são apagadas. No Supabase nada muda.')) return;
+    const todos = arg === 'todos', naNuvem = !!(NV && NV.entrou());
+    if (todos && !confirm('Sair de todos os aparelhos? A sessão acaba aqui e nos outros aparelhos onde você entrou (lá, em até uma hora). Para voltar, entre de novo com o código do e-mail.')) return;
+    if (!todos && !confirm(naNuvem ? 'Sair deste aparelho? A sessão e a cópia dos seus dados daqui são apagadas. Na nuvem fica tudo, para entrar de novo aqui ou em outro aparelho.' : 'Sair deste aparelho? A sessão e a cópia do dinheiro e da saúde daqui são apagadas. No Supabase nada muda.')) return;
     let nv = 'fora';
     if (naNuvem) {
       nvSaindo = true; render(true); announce('Salvando na nuvem antes de sair…');
@@ -2904,7 +2908,7 @@ const A = {
       S = Object.assign(defaults(), { theme: S.theme, onboarded: true, day: D.iso(diaNow()), since: D.iso(diaNow()) }); bossMonth(S); saveLocal();
       NV.esquecer();
     }
-    const r = await SB.signOut();
+    const r = await SB.signOut(todos);
     try { sessionStorage.setItem('painel-saiu', r === true || r === 'ok' ? '1' : r === 'sem-rede' ? 'sem-rede' : 'erro'); if (nv !== 'fora') sessionStorage.setItem('painel-saiu-nuvem', '1'); } catch { /* sem aviso depois */ }
     location.reload();
   },
@@ -3655,7 +3659,7 @@ window.addEventListener('resize', fitRestbar);
 
 
 // ---------- Render ----------
-const VERSION = '0.10.0';
+const VERSION = '0.10.1';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
 const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/treino-editar': 'Editar treino', 'saude/exercicios': 'Exercícios', 'saude/campanha': 'Plano', 'saude/dieta': 'Dieta', 'saude/refeicao': 'Refeição', 'saude/exames': 'Exames', 'saude/treinos': 'Treino', 'saude/medidas': 'Medidas', 'saude/dieta-plano': 'Plano alimentar', 'saude/dieta-modelos': 'Planos prontos', 'saude/dieta-ref': 'Refeição do plano', 'saude/dieta-alimentos': 'Alimentos', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Open Finance e arquivo', 'dinheiro/sincronizar': 'Sincronizar', 'dinheiro/lancamentos': 'Lançamentos', 'dinheiro/categorias': 'Plano de contas', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes' };

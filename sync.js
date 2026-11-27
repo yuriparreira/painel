@@ -230,7 +230,9 @@ export const ATALHO_URL = `${SB_URL}/functions/v1/atalho`;
 // 'erro' (o Supabase não confirmou o fim da sessão lá).
 const limite = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new SyncError('timeout')), ms))]);
 const motivo = (e) => (e && e.code === 'offline' ? 'sem-rede' : 'erro');
-export async function signOut() {
+// todos = true encerra também as sessões dos outros aparelhos (celular perdido): o Supabase invalida todos os tokens de
+// renovação da conta; um aparelho que já tinha um token de acesso o usa até ele vencer (no máximo uma hora).
+export async function signOut(todos = false) {
   readDisk();
   const s = sess;
   endSession();
@@ -244,7 +246,7 @@ export async function signOut() {
       : call('/auth/v1/token?grant_type=refresh_token', { body: { refresh_token: s.refresh_token }, timeout: 10000 }))), 12000);
     return r && r.access_token;
   };
-  const sair = (tok) => call('/auth/v1/logout?scope=local', { token: tok, timeout: 8000 });
+  const sair = (tok) => call(`/auth/v1/logout?scope=${todos ? 'global' : 'local'}`, { token: tok, timeout: 8000 });
   const recusou = (e) => e.status === 400 || e.status === 401 || e.status === 403; // o Supabase já não aceita esta sessão
   let tok = s.access_token;
   for (;;) {
