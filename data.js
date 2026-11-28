@@ -187,7 +187,7 @@ export let CATS = [];
 export let SAVINGS = null;
 export let BALANCE = { ativo: [], passivo: [] };
 export function bills(paid = {}, faturaExtra = 0, t = new Date()) { return REAL ? realBills(paid, faturaExtra, t) : []; }
-export const ST = { pago: 'Pago', agendado: 'Agendado', avencer: 'A vencer', atrasado: 'Atrasado' };
+export const ST = { pago: 'Pago', agendado: 'Agendado', avencer: 'A vencer', atrasado: 'Atrasado', previsto: 'Previsto' };
 export function netWorthSeries() { return REAL ? (REAL.serieMensal || []).filter((x) => x && isoOk(x.mes + '-01') && Number.isFinite(x.pl)).map((x) => ({ d: new Date(+x.mes.slice(0, 4), +x.mes.slice(5, 7) - 1, 1), v: x.pl })) : []; }
 
 // Formato painel-financas/1: vem da função fin_painel do Supabase (depois do login) ou do painel-dados.json
@@ -260,6 +260,28 @@ function realBills(paid, faturaExtra, t) {
   }).filter(Boolean).sort((a, b) => a.due - b.due);
 }
 
+// Gastos de um mês por grupo, com a média dos 6 meses anteriores. A fatura paga no mês fica numa linha só quando o
+// detalhe do cartão não veio. "Moradia: água" e "Moradia: celular" somam em "Moradia"; o arquivo pode mandar grupos
+// próprios em gruposGasto. Estornos entram negativos e descontam no total do mês.
+function gastosDe(R, ref) {
+  const meses = Object.keys(R.gastosPorMes || {}).sort();
+  const G = R.gruposGasto || {}, grupo = (c) => G[c] || c.split(':')[0];
+  const porGrupo = (m) => { const o = {}; Object.entries((R.gastosPorMes || {})[m] || {}).forEach(([c, v]) => { const g = grupo(c); o[g] = (o[g] || 0) + (Number(v) || 0); }); const f = (R.cartaoPorMes || {})[m]; if (f) o['Fatura do cartão (sem detalhe)'] = f; return o; };
+  const atual = porGrupo(ref), ant = meses.filter((m) => m < ref).slice(-6).map(porGrupo);
+  const nomes = new Set([...Object.keys(atual), ...ant.flatMap((o) => Object.keys(o))]);
+  const all = [...nomes].map((n) => ({ n, v: r2(atual[n] || 0), avg: r2(ant.length ? sum(ant.map((o) => o[n] || 0)) / ant.length : atual[n] || 0) }));
+  const cats = all.filter((c) => c.v >= 0 && (c.v > 0.004 || c.avg > 0.004)).sort((a, b) => b.v - a.v).slice(0, 8);
+  const total = r2(sum(Object.values(atual)));
+  const media = ant.length ? r2(sum(ant.map((o) => sum(Object.values(o)))) / ant.length) : null;
+  const parcial = ref >= R.geradoEm.slice(0, 7);
+  const title = R.cartaoDetalhado ? `Gastos de ${mesCurto(ref)} · conta e fatura que vence no mês` : `Gastos de ${mesCurto(ref)} · conta e fatura paga no mês`;
+  return { m: ref, cats, rest: r2(total - sum(cats.map((c) => c.v))), total, media, nAnt: ant.length, parcial, title };
+}
+// Os meses com gastos, do mais novo para o mais velho (o mês corrente, se veio, é parcial).
+export const mesesGastos = () => (REAL ? Object.keys(REAL.gastosPorMes || {}).filter((m) => /^\d{4}-\d{2}$/.test(m)).sort().reverse() : []);
+export const gastosMes = (m) => (REAL && m && (REAL.gastosPorMes || {})[m] ? gastosDe(REAL, m) : null);
+export const mesPadrao = () => { const L = mesesGastos(); return (REAL && L.find((m) => m < REAL.geradoEm.slice(0, 7))) || L[0] || null; };
+
 // Valida e calcula tudo antes de trocar: um arquivo ou leitura com defeito não deixa a tela meio real, meio vazia.
 export function useReal(R) {
   if (!R || R.schema !== 'painel-financas/1') throw new Error('arquivo não é do Painel');
@@ -276,21 +298,10 @@ export function useReal(R) {
     const prox = fa && fm && fa.vence > fm.vence && fa.v != null && !fa.pagoEm ? { v: fa.v } : { v: k.usado || 0, deUso: true };
     return { n: k.n, limite: k.limite, vence: k.vence, faturas: { fechada: { v: last ? last.v : 0, st: 'Paga' }, aberta: { v: aberta }, proxima: prox }, real: { ...k, pagamentos: p } };
   });
-  // Gastos do último mês fechado, com a fatura paga no mês como uma linha só (o detalhe vem das faturas).
+  // Gastos do último mês fechado (o padrão da tela; os outros meses vêm de gastosMes).
   const meses = Object.keys(R.gastosPorMes || {}).sort(), ref = meses.filter((m) => m < R.geradoEm.slice(0, 7)).pop() || meses[meses.length - 1];
-  // "Moradia: água" e "Moradia: celular" somam em "Moradia"; o arquivo pode mandar grupos próprios em gruposGasto.
-  // Estornos entram negativos e descontam no total do mês.
-  const G = R.gruposGasto || {}, grupo = (c) => G[c] || c.split(':')[0];
-  const porGrupo = (m) => { const o = {}; Object.entries((R.gastosPorMes || {})[m] || {}).forEach(([c, v]) => { const g = grupo(c); o[g] = (o[g] || 0) + (Number(v) || 0); }); const f = (R.cartaoPorMes || {})[m]; if (f) o['Fatura do cartão (sem detalhe)'] = f; return o; };
-  let cats = [], catsTitle = 'Gastos · ainda sem lançamentos', catsRest = 0;
-  if (ref) {
-    const atual = porGrupo(ref), ant = meses.filter((m) => m < ref).slice(-6).map(porGrupo);
-    const nomes = new Set([...Object.keys(atual), ...ant.flatMap((o) => Object.keys(o))]);
-    const all = [...nomes].map((n) => ({ n, v: r2(atual[n] || 0), avg: r2(ant.length ? sum(ant.map((o) => o[n] || 0)) / ant.length : atual[n] || 0) }));
-    cats = all.filter((c) => c.v >= 0 && (c.v > 0.004 || c.avg > 0.004)).sort((a, b) => b.v - a.v).slice(0, 8);
-    catsRest = r2(sum(Object.values(atual)) - sum(cats.map((c) => c.v)));
-    catsTitle = R.cartaoDetalhado ? `Gastos de ${mesCurto(ref)} · conta e fatura que vence no mês` : `Gastos de ${mesCurto(ref)} · conta e fatura paga no mês`;
-  }
+  const G0 = ref ? gastosDe(R, ref) : null;
+  const cats = G0 ? G0.cats : [], catsTitle = G0 ? G0.title : 'Gastos · ainda sem lançamentos', catsRest = G0 ? G0.rest : 0;
   const caixinha = R.caixinha ? Math.max(0, r2(R.caixinha.aplicado - R.caixinha.resgatado)) : 0;
   // Sem os gastos essenciais na foto manual, os meses de reserva ficam sem número (nada de valor inventado).
   const ess = Number(R.essenciaisMes) > 0 ? Number(R.essenciaisMes) : null, reserva = r2(saldo + caixinha);

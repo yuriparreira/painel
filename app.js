@@ -7,6 +7,7 @@ import * as D from './data.js';
 import { CATALOGO, GRUPOS } from './catalogo.js';
 import * as AL from './alimentos.js';
 import * as DT from './dieta.js';
+import * as PG from './pagar.js';
 // Dentro de uma moldura de outro site (clickjacking), o Painel não abre: o GitHub Pages não deixa mandar o cabeçalho que bloqueia isso.
 let emMoldura = true; try { emMoldura = window.top !== window.self; } catch { /* moldura de outro site */ }
 if (emMoldura) { document.body.textContent = 'O Painel só abre na própria página.'; throw new Error('Painel em moldura'); }
@@ -386,7 +387,27 @@ const cardOf = (f) => S.expenses.filter((x) => x.met === CARD && (x.fat || 'aber
 const cardExtra = () => cardOf('aberta');
 const cardNext = () => cardOf('proxima');
 // Conta paga mostra o valor que foi pago (o mesmo que saiu do saldo), em qualquer tela.
-const bills = () => D.bills(S.paid, cardExtra(), diaNow()).map((b) => (b.pago && S.paidAmt[b.id] != null ? { ...b, v: S.paidAmt[b.id] } : b));
+// Contas a pagar lançadas no app (pagar.js): uma vez, parceladas ou todo mês. Entram em tudo o que usa bills(): lista,
+// calendário, Próximos 7 dias, Missão e o livre para gastar. Funções (não const): bills() roda já na abertura.
+function manuais() { return Object.keys(S.lastSets).filter((k) => k.startsWith(PG.K_C)).map((k) => { const c = PG.valida(S.lastSets[k]); return c ? { ...c, id: k.slice(PG.K_C.length) } : null; }).filter(Boolean); }
+function manualDe(id) { const c = PG.valida(S.lastSets[PG.K_C + id]); return c ? { ...c, id } : null; }
+const idManual = (id) => { const m = /^c:([^:]+):(\d+)$/.exec(String(id)); return m ? { id: m[1], k: +m[2] } : null; };
+// A parcela k como as outras contas da lista.
+function billManual(c, k) {
+  const id = `c:${c.id}:${k}`, due = PG.vence(c, k), pago = !!c.pg[k], auto = /autom/i.test(c.met), r = PG.rotulo(c, k);
+  const st = pago ? 'pago' : due < D.startOfDay(diaNow()) ? 'atrasado' : auto ? 'agendado' : 'avencer';
+  return { id, n: c.q > 1 ? `${c.n} · ${r}` : c.n, v: pago && S.paidAmt[id] != null ? S.paidAmt[id] : c.v, due, st, pago, porExtrato: false, met: c.met, cat: c.cat, auto, manual: c.id, k, hitTx: null };
+}
+// As do mês corrente: as que vencem nele e as de meses anteriores ainda não pagas (atrasadas).
+function manuaisAgora() {
+  const t = diaNow(), out = [];
+  manuais().forEach((c) => PG.parcelasAte(c, t.getFullYear(), t.getMonth()).forEach((k) => {
+    const b = billManual(c, k); if (!b.pago || (b.due.getMonth() === t.getMonth() && b.due.getFullYear() === t.getFullYear())) out.push(b);
+  }));
+  return out;
+}
+const bills = () => D.bills(S.paid, cardExtra(), diaNow()).map((b) => (b.pago && S.paidAmt[b.id] != null ? { ...b, v: S.paidAmt[b.id] } : b))
+  .concat(D.REAL ? manuaisAgora() : []).sort((a, b) => a.due - b.due);
 const bankIds = () => new Set(((D.REAL && D.REAL.contas) || []).map((c) => c.id).filter(Boolean));
 const tsOf = (s) => { const t = Date.parse(s || ''); return isNaN(t) ? 0 : t; };
 // Chave de um lançamento que vale entre leituras (o app não recebe o id): dia, valor, conta e descrição, com um
@@ -896,6 +917,13 @@ const navLinks = (L, at) => L.map(([k, l]) => `<a href="#/${k}" data-act="sub" d
 function saudeTopo(r, sub = '') {
   const at = r.startsWith('saude/dieta') ? 'saude/dieta' : r;
   return `${hdr('Saúde', sub)}<nav class="subnav" aria-label="Partes da Saúde">${navLinks(SNAV, at)}</nav>${netbar()}`;
+}
+// ---------- Dinheiro: as mesmas abas no topo, como na Saúde ----------
+const DNAV = [['dinheiro', 'Resumo'], ['dinheiro/contas', 'Contas'], ['dinheiro/cartoes', 'Cartões'], ['dinheiro/lancamentos', 'Extrato'], ['dinheiro/patrimonio', 'Patrimônio']];
+// A engrenagem leva ao que se mexe pouco: Open Finance, plano de contas, arquivo.
+function dinheiroTopo(r, sub = '', actions = '') {
+  const cfg = `<a class="iconbtn" href="#/dinheiro/sincronizar" aria-label="Open Finance e sincronização">${I('link')}</a>`;
+  return `${hdr('Dinheiro', sub, `${actions}${cfg}`)}<nav class="subnav" aria-label="Partes do Dinheiro">${navLinks(DNAV, r)}</nav>${netbar()}`;
 }
 const dietaSeg = (r) => `<nav class="seg segnav" aria-label="Dieta" style="margin:10px 16px 0">${navLinks([['saude/dieta', 'Hoje'], ['saude/dieta-plano', 'Plano'], ['saude/dieta-alimentos', 'Alimentos']], r)}</nav>`;
 function planoSub() {
@@ -1770,17 +1798,14 @@ function pendentesSheet() {
     ${(D.REAL.aClassificar || []).length ? `<h3 style="margin:16px 0 6px">Pix de terceiros para classificar</h3><div class="card tight" style="margin:0">${D.REAL.aClassificar.slice(0, 8).map((x) => `<div class="row"><div class="grow"><div class="ttl ellip">${esc(x.nome)}</div><div class="meta">${x.n} lançamento${x.n > 1 ? 's' : ''}</div></div><div class="amt num small">${x.entradas ? `+${brl0(x.entradas)}` : ''}${x.entradas && x.saidas ? '<br>' : ''}${x.saidas ? `−${brl0(x.saidas)}` : ''}</div></div>`).join('')}</div>${podeCat() ? '<button class="btn block" style="margin-top:12px" data-act="lfF" data-arg="classificar!">Classificar agora</button>' : ''}` : ''}`);
 }
 
-// Gastos do último mês fechado, como vieram (os anotados à mão são deste mês e aparecem em "Registrados à mão").
-const cats = () => D.CATS;
 function Dinheiro() {
   const exp = S.expenses.length ? `${sec('Registrados à mão', '<span class="small muted">ligados ao extrato quando ele chegar</span>')}<div class="card tight">${S.expenses.slice().reverse().map(expRow).join('')}</div>` : '';
   if (!D.REAL) {
-    return { title: 'Dinheiro', html: `${hdr('Dinheiro', `${cap(monLong(diaNow()))} · pessoa física`)}${netbar()}${semDinheiro()}${exp}
+    return { title: 'Dinheiro', html: `${dinheiroTopo('dinheiro', `${cap(monLong(diaNow()))} · pessoa física`)}${semDinheiro()}${exp}
       ${sec('Mais')}<a class="card cardlink" href="#/dinheiro/importar"><span class="badge-ic">${I('upload')}</span><div class="grow"><b>Open Finance e arquivo</b><div class="small muted">Login no Supabase ou o painel-dados.json do seu computador</div></div>${I('chevR', 24, 'class="ic chev"')}</a>` };
   }
   const M = money(), SV = D.SAVINGS;
   const up = bills().filter((b) => !b.pago && b.met !== 'Cartão' && D.diffDays(b.due, diaNow()) <= 7);
-  const C = cats(), rest = D.CATS_REST, tot = C.reduce((a, c) => a + c.v, 0) + rest, top = Math.max(1, ...C.map((c) => c.v));
   const pl = plTotal();
   const reserva = SV.reservaMeses != null
     ? `<div class="row-flex">${I('shieldHalf', 22, 'class="ic" style="color:var(--a-pat)"')}<div class="grow"><b class="num">${n1(SV.reservaMeses)} de ${SV.reservaMeta} meses</b><div class="small muted">de gastos essenciais (${brl0(SV.essenciais)}/mês${SV.essLabel ? ` ${esc(SV.essLabel)}` : ''})</div></div></div><div style="margin-top:10px">${bar((SV.reservaMeses / SV.reservaMeta) * 100, 'var(--a-pat)', 'lg')}</div>
@@ -1788,73 +1813,139 @@ function Dinheiro() {
     : `<div class="row-flex">${I('shieldHalf', 22, 'class="ic" style="color:var(--a-pat)"')}<div class="grow"><b class="num">${brl0(SV.reserva)} guardados</b><div class="small muted">Sem o valor dos gastos essenciais na foto manual, os meses de reserva ficam sem número.</div></div></div>`;
   return {
     title: 'Dinheiro',
-    html: `${hdr('Dinheiro', `${cap(monLong(diaNow()))} · pessoa física`, `<a class="iconbtn" href="#/dinheiro/importar" aria-label="Open Finance e arquivo">${I('upload')}</a>`)}${netbar()}${realLine()}
+    html: `${dinheiroTopo('dinheiro', `${cap(monLong(diaNow()))} · pessoa física`)}${realLine()}
       <div class="card">
         <button class="cardhead" data-act="safe"><span class="row-flex"><span class="muted small">${livreLabel(M)}</span>${I('info', 18, 'class="ic right muted"')}</span>
         ${livreBig(M)}<span class="sr">Ver a conta.</span></button>
+        ${(() => { const LD = logoDepois(M); return LD.L.length ? `<p class="xs muted" style="margin:4px 0 0">E ${brl0(LD.v)} vencem logo depois, até ${dShort(LD.ate)}.</p>` : ''; })()}
         <div class="kpis"><div class="kpi"><span>Em conta</span><b>${brlK(M.saldo)}</b></div>${fatKpi(M, M.fb && !M.fb.pago && M.fb.due ? `vence ${dShort(M.fb.due)}` : '')}<div class="kpi"><span>Patrimônio</span><b>${brlK(pl)}</b><small>${plMes(pl)}</small></div></div>
       </div>
-      ${sec('Próximos 7 dias', '<a href="#/dinheiro/contas">Calendário</a>')}
+      ${sec('Próximos 7 dias', '<a href="#/dinheiro/contas">Contas a pagar</a>')}
       <div class="card tight">${up.length ? up.map((b) => `<button class="row" data-act="bill" data-arg="${esc(b.id)}"><span class="badge-ic">${I('receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${esc(b.met)}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><p>Nada vence nos próximos 7 dias.</p></div>`}</div>
       ${sec('Reserva de emergência')}
       <div class="card">${reserva}</div>
-      ${sec(D.CATS_TITLE, SV.taxa == null ? '' : `<span class="small muted num">poupança ${esc(SV.taxa)}% · meta ${SV.meta}%</span>`)}
-      <div class="card">${C.map((c) => `<${fromSB() ? `button class="catbar" data-act="verGrupo" data-arg="${esc(c.n)}" aria-label="${esc(c.n)}: ${brl0(c.v)}. Ver lançamentos"` : 'div'} style="margin:10px 0"><div class="row-flex small">${catIc(c.n) ? I(catIc(c.n), 18, 'class="ic muted"') : ''}<span class="grow">${esc(c.n)}</span><b class="num">${brl0(c.v)}</b><span class="muted num" style="width:72px;text-align:right">${c.v > c.avg * 1.1 ? `${I('up', 14, 'style="display:inline;vertical-align:-2px"')} ${Math.round((c.v / c.avg - 1) * 100)}%` : 'na média'}</span></div>${bar((c.v / top) * 100, c.v > c.avg * 1.1 ? 'var(--xp-fill)' : 'var(--primary)')}</${fromSB() ? 'button' : 'div'}>`).join('')}
-        ${C.length ? '' : '<div class="empty"><p>Ainda sem gastos no Open Finance.</p></div>'}
-        <p class="small muted">Total ${brl0(tot)}${Math.abs(rest) >= 1 ? `, com ${rest > 0 ? '' : '−'}${brl0(Math.abs(rest))} de outras categorias e estornos` : ''}. Comparação com a média dos 6 meses anteriores. ${D.REAL.cartaoDetalhado ? 'As compras do cartão entram no mês em que a fatura vence.' : 'A fatura aparece numa linha só até as faturas do cartão chegarem.'}</p></div>
+      ${gastosCard()}
       ${exp}
       ${(D.REAL.pendentes || []).length ? `${sec('Para completar o painel')}<button class="card cardlink" data-act="pendentes"><span class="badge-ic">${I('target')}</span><div class="grow"><b>${D.REAL.pendentes.length === 1 ? 'Falta 1 item' : `Faltam ${D.REAL.pendentes.length} itens`}</b><div class="small muted">${esc(D.REAL.pendentes.slice(0, 2).map((x) => x.n).join(', '))}${D.REAL.pendentes.length > 2 ? ' e outros' : ''}</div></div>${I('chevR', 24, 'class="ic chev"')}</button>` : ''}
       ${sec('Mais')}
-      <a class="card cardlink" href="#/dinheiro/lancamentos"><span class="badge-ic">${I('file')}</span><div class="grow"><b>Lançamentos</b><div class="small muted">${podeCat() ? 'Trocar categoria e lançar à mão' : 'Busca por descrição, categoria e mês'}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
       ${podeCat() ? `<a class="card cardlink" href="#/dinheiro/categorias"><span class="badge-ic">${I('tag')}</span><div class="grow"><b>Plano de contas</b><div class="small muted">Categorias, tipos e suas regras</div></div>${I('chevR', 24, 'class="ic chev"')}</a>` : ''}
-      <a class="card cardlink" href="#/dinheiro/cartoes"><span class="badge-ic">${I('card')}</span><div class="grow"><b>Cartões e faturas</b><div class="small muted">Limite, faturas pagas e lançamentos</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
-      <a class="card cardlink" href="#/dinheiro/patrimonio"><span class="badge-ic">${I('pie')}</span><div class="grow"><b>Patrimônio</b><div class="small muted">Balanço, evolução e alocação</div></div>${I('chevR', 24, 'class="ic chev"')}</a>
       <a class="card cardlink" href="#/dinheiro/importar"><span class="badge-ic">${I('upload')}</span><div class="grow"><b>Open Finance e arquivo</b><div class="small muted">${fromSB() ? `Open Finance de ${fmtSync()}` : `Seus dados de ${dShort(realDate())}`}</div></div>${I('chevR', 24, 'class="ic chev"')}</a>`,
   };
+}
+// Gastos por mês: os meses que vieram do Open Finance, um de cada vez, contra a média dos 6 anteriores.
+let GMES = null; // null = o último mês fechado
+function gastosCard() {
+  const L = D.mesesGastos(), m = L.includes(GMES) ? GMES : D.mesPadrao(), G = D.gastosMes(m), SV = D.SAVINGS;
+  if (!G) return `${sec('Gastos')}<div class="card"><div class="empty"><p>Ainda sem gastos no Open Finance.</p></div></div>`;
+  const top = Math.max(1, ...G.cats.map((c) => c.v)), mesTxt = cap(monLong(new Date(m + '-15T12:00')));
+  const dv = G.media ? G.total / G.media - 1 : null;
+  const chips = L.slice(0, 13).map((k) => `<button class="pick" aria-pressed="${k === m}" data-act="gMes" data-arg="${k}">${D.mesCurto(k)}</button>`).join('');
+  const linha = (c) => `<${fromSB() ? `button class="catbar" data-act="verGrupo" data-arg="${esc(c.n)}" aria-label="${esc(c.n)}: ${brl0(c.v)}. Ver lançamentos"` : 'div'} style="margin:10px 0"><div class="row-flex small">${catIc(c.n) ? I(catIc(c.n), 18, 'class="ic muted"') : ''}<span class="grow">${esc(c.n)}</span><b class="num">${brl0(c.v)}</b><span class="muted num" style="width:72px;text-align:right">${G.nAnt && c.v > c.avg * 1.1 ? `${I('up', 14, 'style="display:inline;vertical-align:-2px"')} ${c.avg > 0 ? `${Math.round((c.v / c.avg - 1) * 100)}%` : 'novo'}` : G.nAnt ? 'na média' : ''}</span></div>${bar((c.v / top) * 100, G.nAnt && c.v > c.avg * 1.1 ? 'var(--xp-fill)' : 'var(--primary)')}</${fromSB() ? 'button' : 'div'}>`;
+  return `${sec('Gastos por mês', SV && SV.taxa != null ? `<span class="small muted num">poupança ${esc(SV.taxa)}% · meta ${SV.meta}%</span>` : '')}
+    <div class="hscroll" role="group" aria-label="Mês dos gastos">${chips}</div>
+    <div class="card"><div class="small muted">${mesTxt}${G.parcial ? ' · até hoje' : ''}</div><div class="mid num">${brl0(G.total)}</div>
+      ${G.media ? `<div class="small muted">Média de ${G.nAnt} ${G.nAnt === 1 ? 'mês' : 'meses'} antes: <b class="num" style="color:var(--ink)">${brl0(G.media)}</b>${G.parcial ? '' : ` · <span class="num"${dv > 0.1 ? ' style="color:var(--ink);font-weight:650"' : ''}>${dv >= 0 ? '+' : '−'}${Math.abs(Math.round(dv * 100))}%</span>`}</div>` : ''}
+      ${G.cats.map(linha).join('')}
+      ${G.cats.length ? '' : '<div class="empty"><p>Sem gastos neste mês.</p></div>'}
+      <p class="small muted">${Math.abs(G.rest) >= 1 ? `Inclui ${G.rest > 0 ? '' : '−'}${brl0(Math.abs(G.rest))} de outras categorias e estornos. ` : ''}Cada grupo contra a média dos meses anteriores.${G.parcial ? ' O mês ainda não acabou: compare com cuidado.' : ''} ${D.REAL.cartaoDetalhado ? 'As compras do cartão entram no mês em que a fatura vence.' : 'A fatura aparece numa linha só até as faturas do cartão chegarem.'}</p></div>`;
 }
 // Depois de paga, a fatura do mês sai de cena: o card mostra a próxima, que recebe os gastos novos no cartão.
 const fatKpi = (M, sub = '') => (semCartao() ? '<div class="kpi"><span>Cartão</span><b>—</b><small>nenhum no Open Finance</small></div>' : M.fb.pago ? `<div class="kpi"><span>Próxima fatura</span><b>${brlK(M.proxima)}</b><small>a aberta já foi paga</small></div>` : `<div class="kpi"><span>Fatura aberta</span><b>${brlK(M.fatura)}</b>${sub ? `<small>${sub}</small>` : ''}</div>`);
 const expRow = (x) => `<div class="row"><span class="badge-ic">${I(x.met === CARD ? 'card' : 'wallet', 20)}</span><div class="grow"><div class="ttl">${esc(x.cat)}</div><div class="meta">${dShort(dayAt(x.d))} · ${esc(cardName(x.met))}${x.met === CARD ? (x.fat === 'proxima' ? ', próxima fatura' : ', fatura aberta') : ''}</div></div><div class="amt num">${brl(x.v)}</div><button class="iconbtn" data-act="delExpense" data-arg="${esc(x.id)}" aria-label="Apagar gasto de ${brl(x.v)} em ${esc(x.cat.toLowerCase())}">${I('x')}</button></div>`;
 function plTotal() { const a = D.BALANCE.ativo.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0); const p = D.BALANCE.passivo.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0); return a - p; }
 
-function Contas() {
-  if (!D.REAL) return { title: 'Contas a pagar', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Contas a pagar')}${semDinheiro()}` };
-  const all = bills(), now = diaNow(), fut = contasFixas().filter(contaFutura).sort((a, b) => a.desde.localeCompare(b.desde) || a.dia - b.dia);
-  const m0 = new Date(now.getFullYear(), now.getMonth() + S.calOff, 1);
-  const first = (m0.getDay() + 6) % 7, dim = new Date(m0.getFullYear(), m0.getMonth() + 1, 0).getDate();
-  let cells = D.DOW.map((d) => `<div class="dh">${d.slice(0, 1)}</div>`).join('');
-  for (let i = 0; i < first; i++) cells += '<span></span>';
-  for (let d = 1; d <= dim; d++) {
-    const date = new Date(m0.getFullYear(), m0.getMonth(), d), id = D.iso(date);
-    const bs = all.filter((b) => D.iso(b.due) === id);
-    const isT = id === D.iso(now);
-    const stTxt = Object.entries(bs.reduce((o, b) => ((o[b.st] = (o[b.st] || 0) + 1), o), {})).map(([st, n]) => `${n} ${{ pago: n > 1 ? 'pagas' : 'paga', agendado: n > 1 ? 'agendadas' : 'agendada', avencer: 'a vencer', atrasado: n > 1 ? 'atrasadas' : 'atrasada' }[st]}`).join(', ');
-    cells += `<button class="${isT ? 'today' : ''}" aria-pressed="${S.calSel === id}" data-act="calsel" data-arg="${id}" aria-label="${d} de ${mon(date)}${isT ? ', hoje' : ''}${bs.length ? `: ${stTxt}` : ''}"><span>${d}</span><span class="dots">${bs.map((b) => `<i class="dot-${b.st}"></i>`).join('')}</span></button>`;
+// As contas de um mês (off: 0 este, 1 o que vem, -1 o anterior). Este mês: as de bills(), com as atrasadas de antes.
+// Meses que vêm: as que já se sabe que vencem lá (fatura que vence no mês que vem), as parcelas lançadas aqui e as contas
+// fixas e faturas previstas (st 'previsto': o valor de agora ou a média; a fatura do mês que vem pelo uso do cartão).
+// Meses que passaram: só as lançadas aqui (o resto do que saiu da conta está no Extrato).
+function contasDoMes(off) {
+  const t = diaNow(), m0 = new Date(t.getFullYear(), t.getMonth() + off, 1), ano = m0.getFullYear(), mes = m0.getMonth(), mk = D.iso(m0).slice(0, 7);
+  const noMes = (b) => b.due.getFullYear() === ano && b.due.getMonth() === mes, B = bills();
+  if (off === 0) return B.filter((b) => noMes(b) || (b.manual && !b.pago && b.due < m0));
+  const out = off > 0 ? B.filter(noMes) : [], tem = new Set(out.map((b) => b.id));
+  manuais().forEach((c) => { const k = PG.parcelaDoMes(c, ano, mes); if (k != null && !tem.has(`c:${c.id}:${k}`)) out.push(billManual(c, k)); });
+  if (off > 0) {
+    const dim = new Date(ano, mes + 1, 0).getDate(), prev = (o) => ({ pago: false, previsto: true, st: 'previsto', porExtrato: false, auto: /autom/i.test(o.met || ''), ...o });
+    contasFixas().filter((c) => contaVisivel(c) && !tem.has(c.id) && !(typeof c.desde === 'string' && c.desde > mk) && Number(c.dia) >= 1).forEach((c) => {
+      let n = c.n;
+      if (c.passivo) {
+        const cur = B.find((b) => b.id === c.id), mm = cur && /· (\d+)\/(\d+)$/.exec(cur.n);
+        if (!mm || +mm[1] + off > +mm[2]) return;
+        n = `${c.n} · ${+mm[1] + off}/${mm[2]}`;
+      }
+      out.push(prev({ id: `${c.id}@${mk}`, base: c.id, n: n + (c.estimado ? ' · valor médio' : ''), v: c.v, due: new Date(ano, mes, Math.min(+c.dia, dim)), met: c.met, cat: c.cat || '' }));
+    });
+    // Faturas: só a do mês que vem, que já tem compras. A do cartão principal pelo que ele já usou; as outras pelo valor do cadastro.
+    if (off === 1) {
+      ((D.REAL && D.REAL.contasPagar) || []).filter((c) => c && (c.fatura || String(c.id || '').startsWith('fatura'))).forEach((c) => {
+        const id = c.fatura ? 'fatura' : c.id; if (tem.has(id) || !B.some((b) => b.id === id)) return;
+        const v = id === 'fatura' ? money().proxima : Number(c.v); const dia = c.venceEm ? +c.venceEm.slice(8, 10) : +c.dia;
+        if (!(v > 0) || !(dia >= 1)) return;
+        out.push(prev({ id: `${id}@${mk}`, n: `${billName(c)} · estimada`, v: Math.round(v * 100) / 100, due: new Date(ano, mes, Math.min(dia, dim)), met: c.met || 'Fatura', cat: 'Cartão', fatura: true }));
+      });
+    }
   }
-  const inMonth = all.filter((b) => b.due.getMonth() === m0.getMonth() && b.due.getFullYear() === m0.getFullYear());
-  let list = S.calSel ? all.filter((b) => D.iso(b.due) === S.calSel) : inMonth;
-  if (S.billFilter !== 'todas') list = list.filter((b) => b.st === S.billFilter);
-  // Contas pagas no cartão já estão dentro da fatura: não entram duas vezes no total.
-  const conta = inMonth.filter((b) => b.met !== 'Cartão');
-  const tot = conta.reduce((a, b) => a + b.v, 0), pago = conta.filter((b) => b.pago).reduce((a, b) => a + b.v, 0), noCartao = inMonth.length - conta.length;
-  const F = [['todas', 'Todas'], ['avencer', 'A vencer'], ['agendado', 'Agendadas'], ['atrasado', 'Atrasadas'], ['pago', 'Pagas']];
+  return out.sort((a, b) => a.due - b.due);
+}
+// Lista ou calendário: fica só neste aparelho.
+let ctView = (() => { try { return localStorage.getItem('painel-contas-vista') === 'cal' ? 'cal' : 'lista'; } catch { return 'lista'; } })();
+const DOW3 = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+const MES3 = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+function billMeta(b) {
+  const onde = b.met === 'Cartão' ? `no ${esc(cartaoDe())}, entra na fatura` : esc(b.met || '');
+  const k = D.diffDays(b.due, diaNow());
+  const q = b.pago ? 'paga' : b.previsto ? 'prevista' : k < 0 ? `venceu ${rel(b.due)}` : k <= 7 ? `vence ${rel(b.due)}` : '';
+  return [q, onde, b.manual ? 'lançada aqui' : ''].filter(Boolean).join(' · ');
+}
+function billRow(b, m0) {
+  const hoje = D.iso(b.due) === D.iso(diaNow()), outro = b.due.getMonth() !== m0.getMonth() || b.due.getFullYear() !== m0.getFullYear();
+  return `<button class="row" data-act="bill" data-arg="${esc(b.id)}" aria-label="${esc(b.n)}, ${brl(b.v)}, ${D.ST[b.st]}, ${dShort(b.due)}"><div class="apd${hoje ? ' hoje' : ''}" aria-hidden="true"><b>${b.due.getDate()}</b><span>${outro ? MES3[b.due.getMonth()] : DOW3[b.due.getDay()]}</span></div><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${billMeta(b)}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`;
+}
+function Contas() {
+  if (!D.REAL) return { title: 'Contas a pagar', html: `${dinheiroTopo('dinheiro/contas')}${semDinheiro()}` };
+  const now = diaNow(), off = S.calOff, m0 = new Date(now.getFullYear(), now.getMonth() + off, 1), all = contasDoMes(off);
+  // Contas fixas novas que só começam num mês que vem: à parte neste mês, e como previstas no mês delas.
+  const fut = contasFixas().filter(contaFutura).sort((a, b) => a.desde.localeCompare(b.desde) || a.dia - b.dia);
+  // Contas no cartão já estão dentro da fatura: não entram duas vezes nos totais.
+  const conta = all.filter((b) => b.met !== 'Cartão'), soma = (L) => L.reduce((a, b) => a + b.v, 0);
+  const tot = soma(conta), pago = soma(conta.filter((b) => b.pago)), atras = soma(conta.filter((b) => b.st === 'atrasado')), noCartao = all.length - conta.length;
+  const F = [['todas', 'Todas'], ['avencer', 'A pagar'], ['atrasado', 'Atrasadas'], ['pago', 'Pagas']];
+  const passa = (b) => S.billFilter === 'todas' || (S.billFilter === 'avencer' ? ['avencer', 'agendado', 'previsto'].includes(b.st) : b.st === S.billFilter);
+  let list = (S.calSel && ctView === 'cal' ? all.filter((b) => D.iso(b.due) === S.calSel) : all).filter(passa);
+  let corpo;
+  if (ctView === 'cal') {
+    const first = (m0.getDay() + 6) % 7, dim = new Date(m0.getFullYear(), m0.getMonth() + 1, 0).getDate();
+    let cells = D.DOW.map((d) => `<div class="dh">${d.slice(0, 1)}</div>`).join('');
+    for (let i = 0; i < first; i++) cells += '<span></span>';
+    for (let d = 1; d <= dim; d++) {
+      const date = new Date(m0.getFullYear(), m0.getMonth(), d), id = D.iso(date), bs = all.filter((b) => D.iso(b.due) === id), isT = id === D.iso(now);
+      const stTxt = Object.entries(bs.reduce((o, b) => ((o[b.st] = (o[b.st] || 0) + 1), o), {})).map(([st, n]) => `${n} ${{ pago: n > 1 ? 'pagas' : 'paga', agendado: n > 1 ? 'agendadas' : 'agendada', avencer: 'a vencer', atrasado: n > 1 ? 'atrasadas' : 'atrasada', previsto: n > 1 ? 'previstas' : 'prevista' }[st]}`).join(', ');
+      cells += `<button class="${isT ? 'today' : ''}" aria-pressed="${S.calSel === id}" data-act="calsel" data-arg="${id}" aria-label="${d} de ${mon(date)}${isT ? ', hoje' : ''}${bs.length ? `: ${stTxt}` : ''}"><span>${d}</span><span class="dots">${bs.slice(0, 4).map((b) => `<i class="dot-${b.st}"></i>`).join('')}</span></button>`;
+    }
+    const lg = [['pago', 'paga'], ['agendado', 'agendada'], ['avencer', 'a vencer'], ['atrasado', 'atrasada'], ...(off > 0 ? [['previsto', 'prevista']] : [])];
+    corpo = `<div class="card"><div class="cal">${cells}</div><div class="legend" style="margin-top:8px">${lg.map(([k, l]) => `<span><i class="dot-${k}" style="width:8px;height:8px;border-radius:50%"></i>${l}</span>`).join('')}</div></div>
+      ${S.calSel ? `<div class="sec"><h2>${dShort(new Date(S.calSel + 'T12:00'))}</h2><button class="link" data-act="calsel" data-arg="${S.calSel}">Ver o mês todo</button></div>` : ''}`;
+  } else corpo = '';
+  const vazio = off < 0 ? 'Nos meses que passaram aparecem só as contas lançadas aqui. O que saiu da conta está no Extrato.' : S.billFilter === 'todas' ? 'Nenhuma conta neste mês.' : 'Nenhuma conta com esse filtro.';
+  const kpi = (l, v, sub = '') => `<div class="kpi"><span>${l}</span><b>${brlK(v)}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
   return {
     title: 'Contas a pagar',
-    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Contas a pagar', `${brl0(tot)} no mês · ${brl0(pago)} já pagos${noCartao ? ` · ${noCartao} no cartão, dentro da fatura` : ''}`)}
-      <div class="card"><div class="row-flex"><button class="iconbtn" data-act="calnav" data-arg="-1" aria-label="Mês anterior">${I('chevL')}</button><b class="grow" style="text-align:center">${cap(monLong(m0))}</b><button class="iconbtn" data-act="calnav" data-arg="1" aria-label="Próximo mês">${I('chevR')}</button></div>
-        <div class="cal">${cells}</div>
-        <div class="legend" style="margin-top:8px"><span><i class="dot-pago" style="width:8px;height:8px;border-radius:50%"></i>paga</span><span><i class="dot-agendado" style="width:8px;height:8px;border-radius:50%"></i>agendada</span><span><i class="dot-avencer" style="width:8px;height:8px;border-radius:50%"></i>a vencer</span><span><i class="dot-atrasado" style="width:8px;height:8px;border-radius:50%"></i>atrasada</span></div></div>
-      <div class="hscroll" role="group" aria-label="Filtrar contas">${F.map(([k, l]) => `<button class="pick" aria-pressed="${S.billFilter === k}" data-act="billf" data-arg="${k}">${l}</button>`).join('')}</div>
-      ${S.calSel ? `<div class="sec"><h2>${dShort(new Date(S.calSel + 'T12:00'))}</h2><button class="link" data-act="calsel" data-arg="${S.calSel}">Ver o mês todo</button></div>` : ''}
-      <div class="card tight">${list.length ? list.map((b) => `<button class="row" data-act="bill" data-arg="${esc(b.id)}"><span class="badge-ic">${I(b.cat === 'Cartão' ? 'card' : b.cat === 'Transporte' ? 'car' : /^Investiment/.test(b.cat || '') ? 'trend' : 'receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(b.n)}</div><div class="meta">${relDue(b)} · ${b.met === 'Cartão' ? `no ${esc(cartaoDe())}, entra na fatura` : esc(b.met || '')}</div></div><div class="amt"><div class="num">${brl(b.v)}</div>${stChip(b.st)}</div></button>`).join('') : `<div class="empty"><span class="badge-ic">${I('receipt')}</span><p>Nenhuma conta com esse filtro.</p></div>`}</div>
-      ${fut.length ? `<section id="ct-fut" aria-labelledby="ct-fut-t"><div class="sec"><h2 id="ct-fut-t">${fut.every((c) => c.desde === mesDe(now, 1)) ? 'Começam no mês que vem' : 'Começam depois'}</h2></div><div class="card tight">${fut.map((c) => `<button class="row" data-act="bill" data-arg="${esc(c.id)}"><span class="badge-ic">${I('receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(c.n)}</div><div class="meta">a partir de ${esc(mesDesde(c, false))} · dia ${esc(String(c.dia))} · ${c.met === 'Cartão' ? 'no cartão' : esc(c.met || '')}</div></div><div class="amt"><div class="num">${brl(c.v)}</div></div></button>`).join('')}</div></section>` : ''}
-      ${podeCat() ? `<div class="btnrow" style="margin:0 16px"><button class="btn line" data-act="contaEd" data-arg="">${I('plus', 20)} Nova conta fixa</button></div>` : ''}
-      <p class="small muted" style="margin:14px 20px">Pagar até o vencimento dá +15 XP. ${fromSB() ? `A fatura do cartão vem do Open Finance. As contas fixas são as do seu cadastro${podeCat() ? ' (toque numa para editar ou tirar)' : ''}: as que têm categoria do extrato ficam pagas quando o pagamento aparece nele, e as outras você marca como paga.` : 'As contas vêm do arquivo do Painel.'}</p>`,
+    html: `${dinheiroTopo('dinheiro/contas', 'Contas a pagar', `<button class="iconbtn" data-act="cpEd" data-arg="" aria-label="Nova conta a pagar">${I('plus')}</button>`)}
+      <div class="mesbar"><button class="iconbtn" data-act="calnav" data-arg="-1" aria-label="Mês anterior"${off <= -12 ? ' disabled' : ''}>${I('chevL')}</button><b aria-live="polite">${cap(monLong(m0))} ${m0.getFullYear() !== now.getFullYear() ? m0.getFullYear() : ''}</b>${off ? `<button class="link small" data-act="calnav" data-arg="${-off}">Hoje</button>` : ''}<button class="iconbtn" data-act="calnav" data-arg="1" aria-label="Próximo mês"${off >= 12 ? ' disabled' : ''}>${I('chevR')}</button></div>
+      <div class="card"><div class="kpis" style="margin-top:0">${kpi(off > 0 ? 'Previsto no mês' : 'Total do mês', tot)}${kpi('Pago', pago)}${kpi(atras ? 'Atrasado' : 'A pagar', atras || tot - pago, atras ? 'pague primeiro' : '')}</div>
+        ${noCartao ? `<p class="xs muted" style="margin:10px 0 0">${noCartao === 1 ? '1 conta no cartão fica' : `${noCartao} contas no cartão ficam`} dentro da fatura e não somam de novo.</p>` : ''}</div>
+      <div class="seg" role="group" aria-label="Ver como" style="margin:6px 16px 0"><button aria-pressed="${ctView === 'lista'}" data-act="ctVista" data-arg="lista">Lista</button><button aria-pressed="${ctView === 'cal'}" data-act="ctVista" data-arg="cal">Calendário</button></div>
+      ${corpo}
+      <div class="hscroll" role="group" aria-label="Filtrar contas" style="margin-top:8px">${F.map(([k, l]) => `<button class="pick" aria-pressed="${S.billFilter === k}" data-act="billf" data-arg="${k}">${l}</button>`).join('')}</div>
+      <div class="card tight">${list.length ? list.map((b) => billRow(b, m0)).join('') : `<div class="empty"><span class="badge-ic">${I('receipt')}</span><p>${vazio}</p></div>`}</div>
+      ${off === 0 && fut.length ? `<section id="ct-fut" aria-labelledby="ct-fut-t"><div class="sec"><h2 id="ct-fut-t">${fut.every((c) => c.desde === mesDe(now, 1)) ? 'Começam no mês que vem' : 'Começam depois'}</h2></div><div class="card tight">${fut.map((c) => `<button class="row" data-act="bill" data-arg="${esc(c.id)}"><span class="badge-ic">${I('receipt', 20)}</span><div class="grow"><div class="ttl ellip">${esc(c.n)}</div><div class="meta">a partir de ${esc(mesDesde(c, false))} · dia ${esc(String(c.dia))} · ${c.met === 'Cartão' ? 'no cartão' : esc(c.met || '')}</div></div><div class="amt"><div class="num">${brl(c.v)}</div></div></button>`).join('')}</div></section>` : ''}
+      <div class="btnrow wrap" style="margin:0 16px"><button class="btn line" data-act="cpEd" data-arg="">${I('plus', 20)} Conta a pagar</button>${podeCat() ? `<button class="btn ghost" data-act="contaEd" data-arg="">${I('plus', 20)} Conta fixa do extrato</button>` : ''}</div>
+      <p class="small muted" style="margin:14px 20px">${off > 0 ? 'Previstas: as contas fixas com o valor de agora (ou a média) e a fatura do mês que vem pelo que o cartão já tem. ' : ''}Conta a pagar: uma vez, parcelada ou todo mês, lançada por você. Conta fixa do extrato${podeCat() ? '' : ' (com o Open Finance)'}: fica paga sozinha quando o pagamento aparece no extrato. A fatura do cartão vem do Open Finance. Pagar até o vencimento dá +15 XP.</p>`,
   };
 }
 
 function CartoesReal() {
-  if (!D.CARDS.length) return { title: 'Cartões e faturas', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Cartões e faturas', esc((D.REAL.notas || {}).cartoes || ''))}${realLine()}<div class="card"><div class="empty"><span class="badge-ic">${I('card', 28)}</span><b>Nenhum cartão ${fromSB() ? 'no Open Finance' : 'nos seus dados'}</b><p>${fromSB() ? 'Quando um cartão for conectado no Meu Pluggy, ele aparece aqui depois da próxima sincronização.' : 'O arquivo carregado não traz cartões.'}</p></div></div>` };
+  if (!D.CARDS.length) return { title: 'Cartões e faturas', html: `${dinheiroTopo('dinheiro/cartoes', esc((D.REAL.notas || {}).cartoes || ''))}${realLine()}<div class="card"><div class="empty"><span class="badge-ic">${I('card', 28)}</span><b>Nenhum cartão ${fromSB() ? 'no Open Finance' : 'nos seus dados'}</b><p>${fromSB() ? 'Quando um cartão for conectado no Meu Pluggy, ele aparece aqui depois da próxima sincronização.' : 'O arquivo carregado não traz cartões.'}</p></div></div>` };
   const i = Math.min(S.card, D.CARDS.length - 1), k = D.CARDS[i].real, now = diaNow();
   const usado = k.usado || 0, lim = Number(k.limite) || 0, pc = lim ? (usado / lim) * 100 : 0;
   let vdate = null;
@@ -1870,7 +1961,7 @@ function CartoesReal() {
   const nL = LA.length, L = LA.slice(-25).reverse();
   return {
     title: 'Cartões e faturas',
-    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Cartões e faturas', esc(N.cartoes || 'Limite e pagamentos pelos seus arquivos'))}${realLine()}
+    html: `${dinheiroTopo('dinheiro/cartoes', esc(N.cartoes || 'Limite e pagamentos pelos seus arquivos'))}${realLine()}
       <div class="seg" role="group" aria-label="Escolher cartão" style="margin:4px 16px 0">${D.CARDS.map((x, j) => `<button aria-pressed="${i === j}" data-act="card" data-arg="${j}">${esc(x.n.replace('Cartão ', ''))}</button>`).join('')}</div>
       <div class="card"><div class="row-flex"><span class="small muted grow">Limite usado${refU ? ` em ${esc(refU)}` : ''}</span><b class="num">${lim ? `${brl0(usado)} de ${brl0(lim)}` : brl0(usado)}</b></div><div style="margin-top:8px">${bar(pc, pc > 50 ? 'var(--xp-fill)' : 'var(--primary)', 'lg')}</div>
         <p class="small muted" style="margin-top:8px">${lim ? `Disponível ${brl0(lim - usado)}.` : 'O banco não informa o limite.'}${k.faturaAtual && k.faturaAtual.v != null ? ` Fatura que vence em ${dShort(new Date(k.faturaAtual.vence + 'T12:00'))}: ${brl(k.faturaAtual.v)}.` : vdate ? ` Vence todo dia ${esc(k.vence)}; a próxima em ${dShort(vdate)} (${rel(vdate)}).` : ''}</p></div>
@@ -1883,7 +1974,7 @@ function CartoesReal() {
 }
 
 function Cartoes() {
-  if (!D.REAL) return { title: 'Cartões e faturas', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Cartões e faturas')}${semDinheiro()}` };
+  if (!D.REAL) return { title: 'Cartões e faturas', html: `${dinheiroTopo('dinheiro/cartoes')}${semDinheiro()}` };
   return CartoesReal();
 }
 // ---------- Lançamentos, categorias e plano de contas (Open Finance) ----------
@@ -2012,14 +2103,14 @@ function lfLista() {
     ${L.length > V.length ? `<div style="margin:0 16px"><button class="btn line block" data-act="lfMais">Mostrar mais ${lfCorte(L, V.length + 60) - V.length}</button></div>` : ''}`;
 }
 function Lancamentos() {
-  if (!D.REAL) return { title: 'Lançamentos', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Lançamentos')}${semDinheiro()}` };
+  if (!D.REAL) return { title: 'Lançamentos', html: `${dinheiroTopo('dinheiro/lancamentos')}${semDinheiro()}` };
   const T = D.REAL.transacoes || [], meses = [...new Set(T.map((x) => x.d.slice(0, 7)))].sort().reverse();
   const ncl = T.filter((x) => /classificar|sem categoria/i.test(x.cat || '')).length;
   const aviso = !fromSB() ? '<p class="small muted" style="margin:0 20px 8px">Trocar categoria e lançar à mão funcionam com o Open Finance (login no Supabase).</p>'
     : !Array.isArray(D.REAL.categorias) ? '<p class="small muted" style="margin:0 20px 8px">Para trocar categorias pelo app, o banco precisa da atualização desta versão (migração reclassificar).</p>' : '';
   return {
     title: 'Lançamentos',
-    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Lançamentos', podeCat() ? 'Toque num lançamento para trocar a categoria' : `${T.length} lançamentos`, podeCat() ? `<button class="iconbtn" data-act="manNovo" aria-label="Lançar à mão">${I('plus')}</button>` : '')}${aviso}
+    html: `${dinheiroTopo('dinheiro/lancamentos', podeCat() ? 'Toque num lançamento para trocar a categoria' : `${T.length} lançamentos`, podeCat() ? `<button class="iconbtn" data-act="manNovo" aria-label="Lançar à mão">${I('plus')}</button>` : '')}${aviso}
       <div class="card"><label class="field" style="margin:0"><span>Buscar</span><input class="input" id="lfq" data-in="lfq" value="${esc(LF.q)}" placeholder="descrição, categoria ou valor" autocomplete="off" type="search"></label>
         <div class="picks" role="radiogroup" aria-label="Filtro" style="margin-top:10px">${LF_F.map(([k, l]) => `<button type="button" class="pick" role="radio" aria-checked="${LF.f === k}" tabindex="${LF.f === k ? 0 : -1}" data-act="lfF" data-arg="${k}">${l}${k === 'classificar' && ncl ? ` (${ncl})` : ''}</button>`).join('')}</div>
         <div class="row-flex" style="margin-top:10px;gap:8px"><label class="grow"><span class="sr">Mês</span><select class="input" data-in="lfmes" aria-label="Mês"><option value="">Todos os meses</option>${meses.map((m) => `<option value="${m}"${m === LF.mes ? ' selected' : ''}>${cap(monLong(new Date(m + '-15T12:00')))} ${m.slice(0, 4)}</option>`).join('')}</select></label></div>
@@ -2198,7 +2289,7 @@ async function aplicarRecat() {
 }
 
 function Patrimonio() {
-  if (!D.REAL) return { title: 'Patrimônio', html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Patrimônio')}${semDinheiro()}` };
+  if (!D.REAL) return { title: 'Patrimônio', html: `${dinheiroTopo('dinheiro/patrimonio')}${semDinheiro()}` };
   const A = D.BALANCE.ativo, P = D.BALANCE.passivo;
   const ta = A.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0), tp = P.flatMap((g) => g.itens).reduce((s, i) => s + i[1], 0), pl = ta - tp;
   const ser = D.netWorthSeries();
@@ -2211,7 +2302,7 @@ function Patrimonio() {
   const table = (side, label, tot) => `<table class="bp"><caption class="sr">${label}</caption>${side.map((g) => `<tr><th colspan="2">${g.g}</th></tr>${g.itens.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${brl0(v)}</td></tr>`).join('')}`).join('')}<tr class="tot"><td>Total ${label.toLowerCase()}</td><td>${brl0(tot)}</td></tr></table>`;
   return {
     title: 'Patrimônio',
-    html: `${backbar('dinheiro', 'Dinheiro')}${hdr('Patrimônio', fromSB() ? `Open Finance de ${dShort(realDate())}, mais a foto manual` : `Foto de ${dShort(realDate())}, com os seus arquivos`)}${realLine()}
+    html: `${dinheiroTopo('dinheiro/patrimonio', fromSB() ? `Open Finance de ${dShort(realDate())}, mais a foto manual` : `Foto de ${dShort(realDate())}, com os seus arquivos`)}${realLine()}
       <div class="card"><div class="small muted">Patrimônio líquido</div><div class="big">${brl0(pl)}</div><div class="small muted">${hasSer ? `${sg(ser[L].v - ser[L - 1].v)} desde o fim de ${mon(ser[L - 1].d)}${L >= 2 ? ` · ${sg(ser[L].v - ser[0].v)} desde o fim de ${mon(ser[0].d)}` : ''}` : 'Ainda sem a série mensal: a evolução aparece depois da primeira foto manual.'}</div>
         ${!hasSer ? '' : lineChart(ser.map((x) => x.v), { area: true, label: `Patrimônio líquido desde o fim de ${mon(ser[0].d)}, de ${brl0(ser[0].v)} para ${brl0(pl)}`, fmt: (v) => Math.round(v / 1000) + 'k', labels: [[0, mon(ser[0].d)], ...(L >= 2 ? [[Math.round(L / 2), mon(ser[Math.round(L / 2)].d)]] : []), [L, 'hoje']] })}
         ${N.serie ? `<p class="xs muted" style="margin-top:8px">${esc(N.serie)}</p>` : ''}</div>
@@ -2734,6 +2825,11 @@ function showUpdate() {
 }
 
 
+// O que vence nos 10 dias depois do fim do mês (fatura do dia 5, financiamento): fora do livre, mas à vista.
+function logoDepois(M) {
+  const ate = D.addDays(M.payday, 10), L = contasDoMes(1).filter((b) => !b.pago && b.met !== 'Cartão' && b.v > 0 && b.due > M.payday && b.due <= ate);
+  return { ate, L, v: L.reduce((a, b) => a + b.v, 0) };
+}
 function safeSheet() {
   const M = money();
   openSheet(M.livre < 0 ? 'Falta para as contas' : 'Livre para gastar', `<p class="small muted" style="margin:0 0 8px">Até o fim do mês, ${dShort(M.payday)} (${rel(M.payday)}).</p>
@@ -2741,6 +2837,7 @@ function safeSheet() {
     <tr><td>− Contas até ${dShort(M.payday)} (${M.due.length})<div class="xs muted">${M.due.map((b) => esc(b.n.split(' · ')[0])).join(', ') || 'nenhuma'}</div></td><td>${brl(-M.contas)}</td></tr>
     ${semCartao() ? '' : `<tr><td>− Fatura do ${esc(card0())}${M.faturaAntes ? `, vence ${dShort(M.fb.due)}` : M.fb.pago ? ', já paga' : `: vence ${dShort(M.fb.due)}, depois do fim do mês`}</td><td>${brl(-M.faturaAntes)}</td></tr>`}
     <tr class="tot"><td>${M.livre < 0 ? 'Falta' : 'Livre'}</td><td>${brl(M.livre)}</td></tr></table>
+    ${(() => { const LD = logoDepois(M); return LD.L.length ? `<div class="card soft" style="margin:12px 0 0"><b>Logo depois, até ${dShort(LD.ate)}: ${brl(LD.v)}</b><div class="xs muted" style="margin-top:4px">${LD.L.map((b) => `${esc(billName(b))} (${dShort(b.due)})`).join(', ')}. Não entra no número acima, que vai até o fim do mês; deixe separado se a renda não chegar antes.</div></div>` : ''; })()}
     <p class="small muted" style="margin-top:12px">Pagar uma conta não muda esse número: sai do saldo e da lista ao mesmo tempo. ${semCartao() ? '' : M.fb.pago ? 'A fatura aberta já foi paga: compras novas no cartão vão para a próxima e não mexem neste número.' : 'Gastar no cartão reduz, porque aumenta a fatura que vence antes do fim do mês.'} Use “Registrar → Gasto” para ver.</p>`);
 }
 function energiaSheet() {
@@ -2759,9 +2856,13 @@ function attrSheet(k) {
 }
 const contaBotoes = (id) => `<div class="btnrow wrap"><button class="btn line" data-fin data-act="contaEd" data-arg="${esc(id)}">${I('edit', 20)} Editar</button><button class="btn ghost" data-fin data-act="contaTira" data-arg="${esc(id)}">Não devo mais</button></div>`;
 const contaTabela = (met, cl, cv) => `<table class="bp" style="margin-top:12px"><tr><td>Forma de pagamento</td><td>${esc(met || '')}</td></tr><tr><td>${cl}</td><td style="white-space:normal;overflow-wrap:anywhere">${esc(cv)}</td></tr></table>`;
+// A conta pelo id: as de agora ou as do mês aberto em Contas (previstas, parcelas de outro mês).
+const billAny = (id) => bills().find((x) => x.id === id) || contasDoMes(S.calOff).find((x) => x.id === id) || null;
 function billSheet(id) {
-  const b = bills().find((x) => x.id === id);
+  const b = billAny(id);
   if (!b) { const f = contaCrua(id); if (f && contaFutura(f)) futuraSheet(f); return; }
+  if (b.previsto) return previstaSheet(b);
+  if (b.manual) return manualSheet(b);
   const c = podeCat() ? contaCrua(b.id) : null;
   const ed = c ? (c.passivo ? '<p class="xs muted" style="margin-top:12px">Parcela do financiamento: sai da lista no mês seguinte ao da última parcela.</p>' : contaBotoes(b.id)) : '';
   // Conta fixa do cadastro: a categoria do extrato que a quita (ou nenhuma). Nas outras, o grupo.
@@ -2779,6 +2880,56 @@ const contaVisivel = (b) => b.v != null && !b.flex;
 // Conta nova que só começa a contar num mês que ainda não chegou (desde): fica fora das contas do mês, numa lista à parte.
 const contaFutura = (c) => typeof c.desde === 'string' && c.desde > D.iso(diaNow()).slice(0, 7) && c.v != null && !c.flex;
 const mesDesde = (c, ano = true) => new Date(`${c.desde}-15T12:00`).toLocaleDateString('pt-BR', ano ? { month: 'long', year: 'numeric' } : { month: 'long' });
+function previstaSheet(b) {
+  const c = b.base && podeCat() ? contaCrua(b.base) : null;
+  openSheet(esc(b.n), `<div class="big">${brl(b.v)}</div><div class="row-flex" style="margin-top:6px">${stChip('previsto')}<span class="small muted">vence ${dShort(b.due)} (${rel(b.due)})</span></div>
+    ${contaTabela(b.met, 'Categoria', b.cat || (b.fatura ? 'Cartão' : ''))}
+    <p class="small muted" style="margin-top:14px">${b.fatura ? 'Estimativa: o que o cartão já tem para a fatura do mês que vem. O valor certo chega com o Open Finance quando ela fechar.' : 'Prevista: entra nas contas a pagar quando o mês chegar, com o valor do cadastro.'}</p>${c && !c.passivo ? contaBotoes(c.id) : ''}`);
+}
+function manualSheet(b) {
+  const c = manualDe(b.manual); if (!c) return;
+  const sd = PG.saldo(c), r = PG.rotulo(c, b.k);
+  const tab = `<table class="bp" style="margin-top:12px"><tr><td>Forma de pagamento</td><td>${esc(c.met)}</td></tr>${c.cat ? `<tr><td>Categoria</td><td style="white-space:normal">${esc(c.cat)}</td></tr>` : ''}<tr><td>Repete</td><td>${c.q === 1 ? 'Uma vez' : c.q === 0 ? 'Todo mês' : `Parcela ${r}`}</td></tr>${sd && c.q > 1 ? `<tr><td>Falta pagar</td><td>${sd.falta} de ${c.q} · ${brl(sd.v)}</td></tr>` : ''}</table>`;
+  const pay = b.pago ? `<p class="small muted" style="margin-top:14px">${b.met === 'Cartão' ? `Cobrada no ${esc(cartaoDe())}: entra na fatura.` : `Paga em ${dShort(D.dayOf(c.pg[b.k]))}.${S.paid[b.id] ? ' Sai do saldo até o extrato mostrar o pagamento.' : ''}`}</p><div class="btnrow"><button class="btn line" data-fin data-act="unpayBill" data-arg="${esc(b.id)}">${I('refresh', 20)} Desfazer pagamento</button></div>`
+    : `<div class="btnrow"><button class="btn" data-act="payBill" data-arg="${esc(b.id)}" data-autofocus>${I('check', 20)} Marcar como paga</button></div><p class="xs muted" style="margin-top:8px">${b.st === 'atrasado' ? 'Venceu, então não dá os +15 XP de conta em dia.' : 'Paga até o vencimento: +15 XP.'}</p>`;
+  openSheet(esc(b.n), `<div class="big">${brl(b.v)}</div><div class="row-flex" style="margin-top:6px">${stChip(b.st)}<span class="small muted">${relDue(b)}</span></div>${tab}${pay}
+    <div class="btnrow wrap"><button class="btn line" data-act="cpEd" data-arg="${esc(c.id)}">${I('edit', 20)} Editar</button><button class="btn ghost" data-act="cpDel" data-arg="${esc(c.id)}">${c.q === 1 ? 'Apagar' : 'Apagar todas as parcelas'}</button></div>`);
+}
+// Nova conta a pagar (ou editar): uma vez, parcelada ou todo mês. Fica nos seus registros, não no Supabase.
+let CP = null;
+function cpSheet(id) {
+  const c = id ? manualDe(id) : null; if (id && !c) return;
+  CP = { id: c ? c.id : null };
+  const rep = c ? (c.q === 1 ? 'uma' : c.q === 0 ? 'mensal' : 'parcelada') : 'uma', val = (x) => esc(String(x));
+  const cats = planoCats().filter((x) => !['receita', 'receber'].includes(x.tipo) && !x.sis).map((x) => x.n).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  openSheet(c ? 'Editar conta a pagar' : 'Nova conta a pagar', `<label class="field"><span>Descrição</span><input class="input" id="cp-n" maxlength="80" autocomplete="off" placeholder="ex.: IPVA, dentista, notebook" value="${c ? val(c.n) : ''}" data-autofocus></label>
+    ${radios('Repete', 'cp-rep', ['uma', 'parcelada', 'mensal'], rep, { uma: 'Uma vez', parcelada: 'Parcelada', mensal: 'Todo mês' })}
+    <div id="cp-parc"${rep === 'parcelada' ? '' : ' hidden'}><label class="field" style="max-width:140px"><span>Parcelas</span><input class="input num" id="cp-q" inputmode="numeric" maxlength="3" placeholder="2 a 360" value="${c && c.q > 1 ? c.q : ''}"></label>
+      ${radios('O valor digitado é', 'cp-vt', ['parcela', 'total'], 'parcela', { parcela: 'De cada parcela', total: 'O total' })}</div>
+    <div class="row-flex" style="gap:8px"><label class="field grow"><span>Valor</span><input class="input num" id="cp-v" inputmode="decimal" placeholder="R$ 0,00" value="${c ? val(c.v.toFixed(2).replace('.', ',')) : ''}"></label>
+      <label class="field" style="width:160px"><span>${rep === 'uma' ? 'Vencimento' : 'Primeiro vencimento'}</span><input class="input" id="cp-d" type="date" value="${c ? c.d : D.iso(diaNow())}"></label></div>
+    ${radios('Forma de pagamento', 'cp-met', PG.METS, c ? c.met : 'Boleto', { Cartão: 'No cartão' })}
+    <label class="field"><span>Categoria (opcional)</span><input class="input" id="cp-cat" list="cp-cats" maxlength="60" autocomplete="off" placeholder="ex.: Transporte: IPVA" value="${c ? val(c.cat) : ''}"><datalist id="cp-cats">${cats.map((n) => `<option value="${esc(n)}"></option>`).join('')}</datalist></label>
+    <button class="btn block" style="margin-top:16px" data-act="cpSalvar">Salvar</button>
+    <p class="xs muted" style="margin-top:8px">Parcelada: uma conta por mês, no mesmo dia do primeiro vencimento. Todo mês: até você apagar. Entra no livre para gastar enquanto não for paga; marcada como paga, sai do saldo até o extrato mostrar o pagamento. No cartão, entra na fatura e não conta duas vezes.${c && Object.keys(c.pg).length ? ' As parcelas já pagas continuam pagas.' : ''}</p>`, 'cp');
+}
+function cpSalvar() {
+  const g = (sel) => sheetRoot.querySelector(`[aria-labelledby="${sel}"] [aria-checked="true"]`)?.dataset.val;
+  const nome = (document.getElementById('cp-n')?.value || '').trim().replace(/\s+/g, ' '), rep = g('cp-rep') || 'uma';
+  let v = parseMoney(document.getElementById('cp-v')?.value || ''); const d = document.getElementById('cp-d')?.value || '';
+  const qTxt = (document.getElementById('cp-q')?.value || '').trim(), q = rep === 'uma' ? 1 : rep === 'mensal' ? 0 : /^\d{1,3}$/.test(qTxt) ? +qTxt : NaN;
+  if (!nome) { toast('Escreva o que é a conta.', 'warn'); document.getElementById('cp-n').focus(); return; }
+  if (rep === 'parcelada' && !(q >= 2 && q <= 360)) { toast('Parcelas: de 2 a 360.', 'warn'); document.getElementById('cp-q').focus(); return; }
+  if (rep === 'parcelada' && g('cp-vt') === 'total' && v > 0) v = Math.round((v / q) * 100) / 100;
+  if (!(v > 0 && v < 1e7)) { toast('Valor inválido.', 'warn'); document.getElementById('cp-v').focus(); return; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < '2000-01-01' || d > '2100-12-31') { toast('Escolha a data do vencimento.', 'warn'); document.getElementById('cp-d').focus(); return; }
+  const antigo = CP && CP.id ? manualDe(CP.id) : null, id = antigo ? antigo.id : newId('c');
+  // Parcelas pagas que continuam existindo ficam pagas (com o primeiro vencimento mudado, a parcela 1 continua a 1).
+  const pg = {}; if (antigo) Object.entries(antigo.pg).forEach(([k, dt]) => { if (q === 0 || +k < q) pg[k] = dt; });
+  S.lastSets[PG.K_C + id] = { n: nome.slice(0, 80), v, d, q, met: g('cp-met') || 'Boleto', cat: (document.getElementById('cp-cat')?.value || '').trim().slice(0, 60), pg, t: Date.now() };
+  save(); closeSheet(); render(true);
+  toast(`${I('check', 18)} ${antigo ? 'Conta atualizada' : q > 1 ? `${q} parcelas lançadas` : 'Conta lançada'}`);
+}
 function futuraSheet(c) {
   openSheet(esc(c.n), `<div class="big">${brl(c.v)}</div><p class="small muted" style="margin-top:6px">Começa a contar em ${esc(mesDesde(c))}, com vencimento todo dia ${esc(String(c.dia))}. Até lá, não entra nas contas do mês.</p>
     ${contaTabela(c.met, 'Paga pela categoria', c.txCat || 'Nenhuma: você marca')}${podeCat() ? contaBotoes(c.id) : ''}`);
@@ -3001,6 +3152,17 @@ const A = {
   safe: () => safeSheet(),
   attr: (k) => attrSheet(k),
   bill: (id) => billSheet(id),
+  cpEd: (id) => cpSheet(id || null),
+  cpSalvar: () => cpSalvar(),
+  cpDel: (id) => {
+    const c = manualDe(id); if (!c) return;
+    if (!confirm(c.q === 1 ? `Apagar “${c.n}”?` : `Apagar “${c.n}” e todas as parcelas, também as já pagas?`)) return;
+    // A conta some de vez: as marcações de paga dela também (não ficam descontando do saldo).
+    Object.keys(S.paid).filter((k) => k.startsWith(`c:${id}:`)).forEach((k) => { delete S.paid[k]; delete S.paidAmt[k]; delete S.paidAt[k]; });
+    delete S.lastSets[PG.K_C + id]; save(); closeSheet(true); render(true); toast('Conta apagada');
+  },
+  ctVista: (v) => { ctView = v === 'cal' ? 'cal' : 'lista'; S.calSel = null; try { localStorage.setItem('painel-contas-vista', ctView); } catch { /* só nesta sessão */ } render(true, `[data-act="ctVista"][data-arg="${ctView}"]`); },
+  gMes: (m) => { GMES = m; render(true, `[data-act="gMes"][data-arg="${m}"]`); },
   contaEd: (id) => contaSheet(id || null),
   contaSalvar: () => contaSalvar(),
   contaTira: (id) => {
@@ -3014,8 +3176,9 @@ const A = {
   exame: (n) => examSheet(n),
   chama: () => chamaSheet(),
   payBill: (id) => {
-    const b = bills().find((x) => x.id === id); if (!b || b.pago) return;
-    const raw = contaCrua(id);
+    const b = billAny(id); if (!b || b.pago || b.previsto) return;
+    const raw = contaCrua(id), mi = idManual(id);
+    if (mi) { const o = S.lastSets[PG.K_C + mi.id]; if (!o || typeof o !== 'object') return; S.lastSets[PG.K_C + mi.id] = { ...o, pg: { ...(o.pg || {}), [mi.k]: D.iso(diaNow()) }, t: Date.now() }; }
     S.paid[id] = true; S.paidAmt[id] = b.v; S.paidAt[id] = { m: D.iso(diaNow()).slice(0, 7), t: new Date().toISOString(), due: D.iso(b.due), n: billName(b), met: b.met || '', txCat: (raw && raw.txCat) || '', xp: b.st !== 'atrasado' ? 15 : 0 };
     lastFocusKey = focusKey(lastFocus) || lastFocusKey;
     closeSheet(true);
@@ -3024,7 +3187,9 @@ const A = {
     render(true);
   },
   unpayBill: (id) => {
-    if (!S.paid[id]) return;
+    const mi = idManual(id), o = mi ? S.lastSets[PG.K_C + mi.id] : null;
+    if (!S.paid[id] && !(o && o.pg && o.pg[mi.k])) return;
+    if (o && o.pg) { const pg = { ...o.pg }; delete pg[mi.k]; S.lastSets[PG.K_C + mi.id] = { ...o, pg, t: Date.now() }; }
     const at = S.paidAt[id];
     const xp = at && Number.isFinite(at.xp) ? at.xp : 0; // o que foi dado ao marcar (marcação de antes do XP zerado: nada)
     delete S.paid[id]; delete S.paidAmt[id]; delete S.paidAt[id];
@@ -3333,7 +3498,7 @@ const A = {
   dbPrEd: (id) => { if (!prontaDe(id)) return; abreDp({ k: 'r', id }); go('#/saude/dieta-ref'); },
   card: (i) => { S.card = +i; save(); render(true); },
   bp: (k) => { S.bp = k; save(); render(true); },
-  calnav: (d) => { S.calOff += +d; S.calSel = null; save(); render(true); },
+  calnav: (d) => { S.calOff = Math.max(-12, Math.min(12, S.calOff + +d)); S.calSel = null; save(); render(true); },
   calsel: (id) => { S.calSel = S.calSel === id ? null : id; save(); render(true); },
   billf: (k) => { S.billFilter = k; save(); render(true); },
   agview: (k) => { S.agView = k; save(); render(true); },
@@ -3403,6 +3568,10 @@ const A = {
     if (g.getAttribute('aria-labelledby') === 'tx-alc' && TX) { TX.par = el.dataset.val === 'par'; txRender('[aria-labelledby="tx-alc"] [aria-checked="true"]'); }
     if (g.getAttribute('aria-labelledby') === 'ex-cat') { const s = document.getElementById('ex-cat-outra'); if (s) s.value = ''; }
     if (g.getAttribute('aria-labelledby') === 'ct-desde' && CT) CT.desdeAuto = false;
+    if (g.getAttribute('aria-labelledby') === 'cp-rep') {
+      const p = document.getElementById('cp-parc'); if (p) p.hidden = el.dataset.val !== 'parcelada';
+      const l = document.getElementById('cp-d')?.previousElementSibling; if (l) l.textContent = el.dataset.val === 'uma' ? 'Vencimento' : 'Primeiro vencimento';
+    }
   },
   // Lançamentos, categorias e plano de contas.
   tx: (id) => txSheet(id),
@@ -3659,7 +3828,7 @@ window.addEventListener('resize', fitRestbar);
 
 
 // ---------- Render ----------
-const VERSION = '0.10.1';
+const VERSION = '0.11.0';
 function current() { const h = location.hash.replace(/^#\/?/, ''); return ROUTES[h] ? h : 'hoje'; }
 const TOP = ['hoje', 'saude', 'dinheiro', 'agenda', 'ficha'];
 const TITLES = { onboarding: 'Boas-vindas', hoje: 'Hoje', saude: 'Saúde', 'saude/treino': 'Treino', 'saude/treino-editar': 'Editar treino', 'saude/exercicios': 'Exercícios', 'saude/campanha': 'Plano', 'saude/dieta': 'Dieta', 'saude/refeicao': 'Refeição', 'saude/exames': 'Exames', 'saude/treinos': 'Treino', 'saude/medidas': 'Medidas', 'saude/dieta-plano': 'Plano alimentar', 'saude/dieta-modelos': 'Planos prontos', 'saude/dieta-ref': 'Refeição do plano', 'saude/dieta-alimentos': 'Alimentos', dinheiro: 'Dinheiro', 'dinheiro/contas': 'Contas', 'dinheiro/cartoes': 'Cartões', 'dinheiro/patrimonio': 'Patrimônio', 'dinheiro/importar': 'Open Finance e arquivo', 'dinheiro/sincronizar': 'Sincronizar', 'dinheiro/lancamentos': 'Lançamentos', 'dinheiro/categorias': 'Plano de contas', agenda: 'Agenda', ficha: 'Ficha', ajustes: 'Ajustes' };
