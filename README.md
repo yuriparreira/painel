@@ -54,6 +54,14 @@ Sem build e sem dependências: JavaScript puro em módulos ES. Para rodar localm
 
 O repositório é público para usar o GitHub Pages grátis, então **nenhum dado pessoal real entra aqui**: nada de extratos, valores, exames, endereços de agenda, segredos ou tokens. A única chave aqui é a publicável do Supabase, em `sync.js`: ela é feita para ficar no navegador, e quem protege os dados é o RLS do banco, que só deixa a conta dona ler. Os dados de verdade ficam no banco do Supabase, que só a conta dona lê, e na cópia do próprio aparelho. O token do atalho do iPhone também nunca entra aqui: ele aparece só no app, uma vez.
 
+### Proteções no navegador (0.10.1)
+
+- **Política de conteúdo (CSP)** no `index.html`: o navegador só roda scripts deste site (nada inline, nada de `eval`) e só conversa com o Supabase do Painel e o Open Food Facts. Se um texto de fora conseguisse virar código, ele não teria para onde mandar os dados. Um serviço novo precisa entrar no `connect-src`.
+- **Sem referrer**: links para fora (YouTube) não levam o endereço do Painel.
+- **Não abre em moldura** de outro site (clickjacking); o GitHub Pages não deixa mandar o cabeçalho `frame-ancestors`, então o `app.js` confere.
+- **Sair de todos os aparelhos** (Dinheiro › Sincronizar): para celular perdido. Encerra as sessões da conta no Supabase; um aparelho que já tinha um token de acesso o usa até ele vencer (no máximo uma hora).
+- Todo texto que vem de fora (banco, saúde, agenda, Open Food Facts, o que você digita) passa por `esc()` antes de virar HTML.
+
 ## Sincronização com o Open Finance
 
 A pasta `supabase/` tem só a estrutura do banco e as funções; nenhum dado real.
