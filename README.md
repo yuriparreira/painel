@@ -41,6 +41,7 @@ app.css               tokens de cor (claro e escuro) e componentes
 icons.js              ícones de traço em SVG
 alimentos.js          busca de alimentos (TACO no aparelho, Open Food Facts pela internet) e conta de calorias e macros
 dieta.js              planos de dieta: modelos prontos (TACO), cópia do plano do Supabase e conferência dos planos seus
+pagar.js              contas a pagar lançadas no app: uma vez, parceladas ou todo mês (vencimentos e parcelas)
 taco.js               Tabela Brasileira de Composição de Alimentos (TACO, 4ª ed., NEPA/UNICAMP), 597 alimentos por 100 g
 sw.js                 service worker: funciona offline após a primeira visita
 manifest.webmanifest  instalação como PWA
@@ -148,6 +149,14 @@ Comparando com apps de finanças (Nubank, Mobills, Organizze), de dieta (MyFitne
 - `migrations/20261104222000_saude_painel_agenda.sql`: `saude_painel()` passa a mandar a agenda (de ontem até 15 dias) e quando o atalho mandou cada parte.
 - `functions/atalho`: recebe o atalho (sem JWT do Supabase: confere o token no cabeçalho `x-painel-token` ou `Authorization: Bearer`), entende datas e números do iPhone em português e responde uma linha que o atalho mostra numa notificação, começando com OK, AVISO ou ERRO. A resposta mostra só valores que vieram na própria chamada; do banco vêm só as contagens. Sem token válido nada é gravado; com ele, uma chamada que não deu para ler anota só o motivo em `atalho_log` (90 dias). `ATALHO_BRUTO=1` nos segredos guarda também o corpo cru por 14 dias, para ajustar a leitura.
 - O token é gerado em Sincronizar → Atalho do iPhone e aparece uma vez só. Gerar outro desliga o anterior. Quem tem o token consegue mandar dados de saúde e trocar a agenda que veio do atalho, nada mais.
+
+## Dinheiro em abas e contas a pagar como num ERP (0.11.0)
+
+- **Abas no topo**, como na Saúde: Resumo, Contas, Cartões, Extrato e Patrimônio. O ícone de link no canto leva ao Open Finance; Plano de contas e arquivo ficam no Resumo, em Mais.
+- **Contas a pagar**: lista por vencimento (dia, dia da semana, status) ou calendário; total, pago e atrasado do mês; filtros A pagar, Atrasadas e Pagas. Meses que vêm (até 12): as contas fixas previstas com o valor de agora, a parcela do financiamento com o número dela e a fatura do mês que vem estimada pelo que o cartão já tem. Meses que passaram: só as contas lançadas aqui.
+- **Conta a pagar lançada à mão** (`pagar.js`): uma vez, parcelada (2 a 360, valor da parcela ou total) ou todo mês, com forma de pagamento e categoria. Fica nos seus registros (`lastSets`, chave `~c:<id>`, vai para a nuvem com o login); nada muda no Supabase. Parcela não paga de um mês anterior aparece como atrasada no mês de agora. Marcada como paga, sai do saldo até o extrato mostrar o débito do mesmo valor, como as contas fixas. No cartão, entra na fatura e não soma de novo.
+- **Gastos por mês**: escolha o mês nos chips; total, média dos 6 meses anteriores e cada grupo contra a média dele. O mês em andamento aparece como "até hoje".
+- **Livre para gastar**: saldo das contas − contas não pagas até o fim do mês (fixas, faturas de todos os cartões, financiamento, lançadas aqui e atrasadas) − a fatura do cartão principal se vence até o fim do mês. Gasto à vista anotado sai do saldo; no cartão, aumenta a fatura. Fora do número, mas à vista: o que vence nos 10 dias depois do fim do mês ("logo depois").
 
 ## Contas fixas pelo app (0.9.3)
 
